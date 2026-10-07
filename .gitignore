@@ -1,0 +1,16 @@
+.vs/
+bin/
+obj/
+TestResults/
+*.user
+*.suo
+*.pdb
+*.cache
+artifacts/
+samples/output/
+tests/output/
+lib/*.dll
+
+# Local-only documents that may contain workstation/security details.
+docs/此电脑加密文本读取指南.md
+docs/Codex获取加密文档标准流程.md
