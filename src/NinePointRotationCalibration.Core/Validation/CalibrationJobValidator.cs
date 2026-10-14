@@ -66,8 +66,8 @@ namespace NinePointRotationCalibration
                 MatchParameters parameters = template.MatchParameters;
                 if (!InRange(parameters.MinScore, 0.0, 1.0))
                     result.Add(ValidationSeverity.Error, "MIN_SCORE_INVALID", "Minimum match score must be in [0, 1].", "Template.MatchParameters.MinScore");
-                if (parameters.NumMatches < 1)
-                    result.Add(ValidationSeverity.Error, "NUM_MATCHES_INVALID", "Number of matches must be at least one.", "Template.MatchParameters.NumMatches");
+                if (parameters.NumMatches < 0)
+                    result.Add(ValidationSeverity.Error, "NUM_MATCHES_INVALID", "Number of matches must be non-negative; zero returns all matches.", "Template.MatchParameters.NumMatches");
                 if (!InRange(parameters.MaxOverlap, 0.0, 1.0))
                     result.Add(ValidationSeverity.Error, "MAX_OVERLAP_INVALID", "Maximum overlap must be in [0, 1].", "Template.MatchParameters.MaxOverlap");
                 if (!InRange(parameters.Greediness, 0.0, 1.0))

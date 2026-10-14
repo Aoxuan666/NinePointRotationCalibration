@@ -24,7 +24,7 @@ namespace NinePointRotationCalibration
 
         /// <summary>使用内置 HALCON 模板引擎创建 SDK。</summary>
         public NinePointRotationCalibrationSdk()
-            : this(new HalconTemplateEngine(), true)
+            : this(new XldTemplateMatchingEngine(), true)
         {
         }
 
@@ -401,11 +401,13 @@ namespace NinePointRotationCalibration
         /// <param name="referenceImage">模板参考图。</param>
         /// <param name="currentTemplate">已有模板；为空时创建新模板。</param>
         /// <param name="owner">父窗口。</param>
+        /// <param name="enableDetectionRoi">是否在编辑器中启用随定位模板保存的检测区域。</param>
         /// <returns>确认时返回更新后的模板。</returns>
         public TemplateSetupResult OpenTemplateDialog(
             Bitmap referenceImage,
             TemplateDefinition currentTemplate = null,
-            IWin32Window owner = null)
+            IWin32Window owner = null,
+            bool enableDetectionRoi = false)
         {
             ThrowIfDisposed();
             if (referenceImage == null)
@@ -425,7 +427,11 @@ namespace NinePointRotationCalibration
             {
                 TemplateEditorState initial = CoreUiMapper.FromCoreTemplate(baseline);
                 using (SdkCalibrationWorkflow workflow = new SdkCalibrationWorkflow(_templateEngine, workflowJob))
-                using (TemplateEditorForm form = new TemplateEditorForm(referenceImage, initial, workflow.TemplateEditorService))
+                using (TemplateEditorForm form = new TemplateEditorForm(
+                    referenceImage,
+                    initial,
+                    workflow.TemplateEditorService,
+                    enableDetectionRoi))
                 {
                     DialogResult dialogResult = owner == null ? form.ShowDialog() : form.ShowDialog(owner);
                     if (dialogResult != DialogResult.OK || form.ResultState == null)

@@ -1,0 +1,73 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="15.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Microsoft.Common.props')" />
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+    <ProjectGuid>{D6B84ADB-31D8-4546-8FA0-C024517B9187}</ProjectGuid>
+    <OutputType>WinExe</OutputType>
+    <TargetFrameworkVersion>v4.7.2</TargetFrameworkVersion>
+    <FileAlignment>512</FileAlignment>
+    <RootNamespace>NinePointRotationCalibration.Station</RootNamespace>
+    <AssemblyName>NinePointRotationCalibration.Station</AssemblyName>
+    <LangVersion>7.3</LangVersion>
+    <PlatformTarget>x64</PlatformTarget>
+    <Prefer32Bit>false</Prefer32Bit>
+    <ApplicationIcon />
+    <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <DahuaSdkPath Condition="'$(DahuaSdkPath)' == '' And Exists('$(MSBuildThisFileDirectory)..\..\lib\Dahua\x64\MVSDK_Net.dll')">$(MSBuildThisFileDirectory)..\..\lib\Dahua\x64\MVSDK_Net.dll</DahuaSdkPath>
+    <DahuaSdkPath Condition="'$(DahuaSdkPath)' == '' And Exists('C:\Program Files\HuarayTech\MV Viewer\Development\DOTNET DLL\IMV\DOTNET_4.0\x64\MVSDK_Net.dll')">C:\Program Files\HuarayTech\MV Viewer\Development\DOTNET DLL\IMV\DOTNET_4.0\x64\MVSDK_Net.dll</DahuaSdkPath>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>full</DebugType>
+    <Optimize>false</Optimize>
+    <OutputPath>bin\Debug\</OutputPath>
+    <DefineConstants>DEBUG;TRACE</DefineConstants>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
+    <DebugType>pdbonly</DebugType>
+    <Optimize>true</Optimize>
+    <OutputPath>bin\Release\</OutputPath>
+    <DefineConstants>TRACE</DefineConstants>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="Microsoft.CSharp" />
+    <Reference Include="MVSDK_Net" Condition="Exists('$(DahuaSdkPath)')">
+      <HintPath>$(DahuaSdkPath)</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="System" />
+    <Reference Include="System.Core" />
+    <Reference Include="System.Drawing" />
+    <Reference Include="System.Runtime.Serialization" />
+    <Reference Include="System.Web.Extensions" />
+    <Reference Include="System.Windows.Forms" />
+    <Reference Include="System.Xml" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="**\*.cs" Exclude="bin\**\*;obj\**\*;Views\BlobDebugForm.cs;Views\BlobDebugForm.Designer.cs" />
+    <Compile Include="Views\BlobDebugForm.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="Views\BlobDebugForm.Designer.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\NinePointRotationCalibration.Core\NinePointRotationCalibration.Core.csproj">
+      <Project>{C2B85295-F6D0-4796-BB94-C4AC40152435}</Project>
+      <Name>NinePointRotationCalibration.Core</Name>
+    </ProjectReference>
+    <ProjectReference Include="..\NinePointRotationCalibration.Halcon\NinePointRotationCalibration.Halcon.csproj">
+      <Project>{4E476655-695E-4B5D-B6D6-F4A9A886E605}</Project>
+      <Name>NinePointRotationCalibration.Halcon</Name>
+    </ProjectReference>
+    <ProjectReference Include="..\NinePointRotationCalibration.Sdk\NinePointRotationCalibration.Sdk.csproj">
+      <Project>{BCE21A3F-A5B1-4FAA-AC5B-56CD08878646}</Project>
+      <Name>NinePointRotationCalibration.Sdk</Name>
+    </ProjectReference>
+  </ItemGroup>
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+</Project>

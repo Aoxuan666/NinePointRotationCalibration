@@ -103,7 +103,9 @@ namespace NinePointRotationCalibration
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 TemplateDefinition template = CoreUiMapper.ToCoreTemplate(state, _baseline.Template, image.Width, image.Height);
-                TemplateMatchResult match = _engine.Locate(image, template, true);
+                // Test matching only needs the pose. Skipping contour transformation avoids
+                // allocating and drawing thousands of points on every test.
+                TemplateMatchResult match = _engine.Locate(image, template, false);
                 cancellationToken.ThrowIfCancellationRequested();
                 return CoreUiMapper.FromCoreTemplateTest(match);
             }, cancellationToken);

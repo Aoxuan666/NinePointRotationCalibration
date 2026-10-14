@@ -202,6 +202,12 @@ namespace NinePointRotationCalibration.Core.Tests
 
             JobValidationResult validation = CalibrationJobValidator.Validate(job, CalibrationValidationScope.Full);
             True(validation.IsValid, "expected a valid full job; errors=" + validation.ErrorCount);
+
+            job.Template.MatchParameters.NumMatches = 0;
+            validation = CalibrationJobValidator.Validate(job, CalibrationValidationScope.Full);
+            True(validation.IsValid, "zero matches must mean return all matches");
+            job.Template.MatchParameters.NumMatches = -1;
+            AssertIssue(job, CalibrationValidationScope.Configuration, "NUM_MATCHES_INVALID");
         }
 
         private static void TestUnknownEnumValues()

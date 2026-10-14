@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.Serialization;
 using NinePointRotationCalibration.WinForms.Geometry;
 
 namespace NinePointRotationCalibration.WinForms.Models
@@ -11,20 +12,33 @@ namespace NinePointRotationCalibration.WinForms.Models
         public TemplateEditorParameters()
         {
             ModelType = TemplateModelType.Shape;
-            NumLevels = 0;
-            AngleStartDegrees = -30.0;
-            AngleExtentDegrees = 60.0;
+            NumLevels = 5;
+            MatchNumLevels = 0;
+            AngleStartDegrees = -0.3 * 180.0 / Math.PI;
+            AngleExtentDegrees = 0.6 * 180.0 / Math.PI;
+            MatchAngleStartDegrees = -10.0;
+            MatchAngleExtentDegrees = 20.0;
+            _hasSeparateMatchParameters = true;
             AngleStepDegrees = 0.0;
             Optimization = "auto";
             Metric = "use_polarity";
+            ShapeMetric = "use_polarity";
+            NccMetric = "use_polarity";
             Contrast = 30.0;
-            MinimumContrast = 10.0;
-            MinimumScore = 0.6;
-            Greediness = 0.8;
-            MaximumOverlap = 0.5;
+            MinimumContrast = 20.0;
+            FeatureExtractionMode = ShapeFeatureExtractionMode.EdgeContours;
+            EdgeSigma = 1.2;
+            EdgeLowThreshold = 60.0;
+            EdgeHighThreshold = 100.0;
+            MinimumContourLengthPixels = 9.0;
+            FeaturePointSpacingPixels = 6.0;
+            MaximumFeaturePointCount = 20000;
+            MinimumScore = 0.5;
+            Greediness = 0.85;
+            MaximumOverlap = 0.3;
             MatchCount = 1;
-            SubPixel = "least_squares";
-            TimeoutMilliseconds = 2000;
+            SubPixel = "interpolation";
+            TimeoutMilliseconds = 0;
             ContourPointSpacingPixels = 3.0;
             AllowPartialMatch = false;
             BrushRadius = 12.0;
@@ -34,9 +48,18 @@ namespace NinePointRotationCalibration.WinForms.Models
 
         public int NumLevels { get; set; }
 
+        [field: OptionalField]
+        public int MatchNumLevels { get; set; }
+
         public double AngleStartDegrees { get; set; }
 
         public double AngleExtentDegrees { get; set; }
+
+        [field: OptionalField]
+        public double MatchAngleStartDegrees { get; set; }
+
+        [field: OptionalField]
+        public double MatchAngleExtentDegrees { get; set; }
 
         public double AngleStepDegrees { get; set; }
 
@@ -44,9 +67,27 @@ namespace NinePointRotationCalibration.WinForms.Models
 
         public string Metric { get; set; }
 
+        public string ShapeMetric { get; set; }
+
+        public string NccMetric { get; set; }
+
         public double Contrast { get; set; }
 
         public double MinimumContrast { get; set; }
+
+        public ShapeFeatureExtractionMode FeatureExtractionMode { get; set; }
+
+        public double EdgeSigma { get; set; }
+
+        public double EdgeLowThreshold { get; set; }
+
+        public double EdgeHighThreshold { get; set; }
+
+        public double MinimumContourLengthPixels { get; set; }
+
+        public double FeaturePointSpacingPixels { get; set; }
+
+        public int MaximumFeaturePointCount { get; set; }
 
         public double MinimumScore { get; set; }
 
@@ -65,6 +106,19 @@ namespace NinePointRotationCalibration.WinForms.Models
         public bool AllowPartialMatch { get; set; }
 
         public double BrushRadius { get; set; }
+
+        [OptionalField]
+        private bool _hasSeparateMatchParameters;
+
+        [OnDeserialized]
+        private void OnDeserialized(StreamingContext context)
+        {
+            if (_hasSeparateMatchParameters) return;
+            MatchNumLevels = NumLevels;
+            MatchAngleStartDegrees = AngleStartDegrees;
+            MatchAngleExtentDegrees = AngleExtentDegrees;
+            _hasSeparateMatchParameters = true;
+        }
 
         public TemplateEditorParameters DeepClone()
         {
@@ -91,6 +145,8 @@ namespace NinePointRotationCalibration.WinForms.Models
         public RotatedRectangle TemplateRoi { get; set; }
 
         public RotatedRectangle SearchRoi { get; set; }
+
+        public RotatedRectangle DetectionRoi { get; set; }
 
         public ImageCoordinate ReferenceAnchor { get; set; }
 
@@ -145,6 +201,7 @@ namespace NinePointRotationCalibration.WinForms.Models
             {
                 TemplateRoi = TemplateRoi == null ? null : TemplateRoi.DeepClone(),
                 SearchRoi = SearchRoi == null ? null : SearchRoi.DeepClone(),
+                DetectionRoi = DetectionRoi == null ? null : DetectionRoi.DeepClone(),
                 ReferenceAnchor = ReferenceAnchor,
                 AnchorLocked = AnchorLocked,
                 TemplateRoiLocked = TemplateRoiLocked,

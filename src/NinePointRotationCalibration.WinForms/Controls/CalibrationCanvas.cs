@@ -18,10 +18,25 @@ namespace NinePointRotationCalibration.WinForms.Controls
         private const double MaximumZoom = 50.0;
         private const float HandleRadius = 5.0f;
         private const float HandleHitRadius = 9.0f;
-        private const float RotationHandleDistance = 28.0f;
+
+        private static readonly CanvasRoiTarget[] RoiBodyHitOrder =
+        {
+            CanvasRoiTarget.Template,
+            CanvasRoiTarget.Detection,
+            CanvasRoiTarget.Search
+        };
 
         private readonly List<MaskStroke> _maskStrokes = new List<MaskStroke>();
+        private readonly Timer _zoomRenderTimer;
         private Bitmap _image;
+        private Bitmap _interactivePreview;
+        // Re-sampling a multi-megapixel source on every mouse move is the main
+        // cost while editing an ROI. Reuse one high-quality scaled frame for
+        // the current zoom; panning and ROI edits then only blit this bitmap.
+        private Bitmap _scaledImage;
+        private int _scaledImageWidth;
+        private int _scaledImageHeight;
+        private double _scaledImageZoom = double.NaN;
         private double _zoom = 1.0;
         private double _offsetX;
         private double _offsetY;
@@ -29,6 +44,7 @@ namespace NinePointRotationCalibration.WinForms.Controls
         private bool _viewInitialized;
         private RotatedRectangle _templateRoi;
         private RotatedRectangle _searchRoi;
+        private RotatedRectangle _detectionRoi;
         private ImageCoordinate _anchor;
         private bool _anchorVisible = true;
         private CanvasEditTool _tool = CanvasEditTool.Select;
@@ -40,11 +56,14 @@ namespace NinePointRotationCalibration.WinForms.Controls
         private Point _dragStartScreen;
         private Point _lastScreen;
         private ImageCoordinate _dragStartImage;
+        private CanvasRoiTarget _selectionAtMouseDown;
         private RotatedRectangle _dragStartRoi;
+        private double _dragStartPointerAngleDegrees;
         private ImageCoordinate _dragStartAnchor;
         private RoiHandle _activeHandle;
         private MaskStroke _activeStroke;
         private bool _transactionChanged;
+        private bool _fastViewport;
 
         public CalibrationCanvas()
         {
@@ -59,6 +78,14 @@ namespace NinePointRotationCalibration.WinForms.Controls
             ForeColor = Color.WhiteSmoke;
             TabStop = true;
             MinimumSize = new Size(240, 180);
+            _zoomRenderTimer = new Timer { Interval = 120 };
+            _zoomRenderTimer.Tick += (sender, args) =>
+            {
+                _zoomRenderTimer.Stop();
+                _fastViewport = false;
+                InvalidateImageCache();
+                Invalidate();
+            };
         }
 
         public event EventHandler<RoiChangedEventArgs> RoiChanged;
@@ -149,6 +176,17 @@ namespace NinePointRotationCalibration.WinForms.Controls
         }
 
         [Browsable(false)]
+        public RotatedRectangle DetectionRoi
+        {
+            get { return _detectionRoi == null ? null : _detectionRoi.DeepClone(); }
+            set
+            {
+                _detectionRoi = value == null ? null : value.DeepClone();
+                Invalidate();
+            }
+        }
+
+        [Browsable(false)]
         public ImageCoordinate ReferenceAnchor
         {
             get { return _anchor; }
@@ -214,11 +252,19 @@ namespace NinePointRotationCalibration.WinForms.Controls
         {
             Bitmap replacement = image == null ? null : new Bitmap(image);
             Bitmap previous = _image;
+            InvalidateImageCache();
+            if (_interactivePreview != null)
+            {
+                _interactivePreview.Dispose();
+                _interactivePreview = null;
+            }
             _image = replacement;
             if (previous != null)
             {
                 previous.Dispose();
             }
+
+            _interactivePreview = CreateInteractivePreview(_image);
 
             _viewInitialized = false;
             if (_image != null)
@@ -278,6 +324,7 @@ namespace NinePointRotationCalibration.WinForms.Controls
             double availableHeight = Math.Max(1.0, ClientSize.Height - (padding * 2.0));
             _zoom = Math.Min(availableWidth / _image.Width, availableHeight / _image.Height);
             _zoom = Clamp(_zoom, MinimumZoom, MaximumZoom);
+            InvalidateImageCache();
             _offsetX = (ClientSize.Width - (_image.Width * _zoom)) / 2.0;
             _offsetY = (ClientSize.Height - (_image.Height * _zoom)) / 2.0;
             _autoFit = true;
@@ -294,6 +341,7 @@ namespace NinePointRotationCalibration.WinForms.Controls
             }
 
             _zoom = 1.0;
+            InvalidateImageCache();
             _offsetX = (ClientSize.Width - _image.Width) / 2.0;
             _offsetY = (ClientSize.Height - _image.Height) / 2.0;
             _autoFit = false;
@@ -325,6 +373,7 @@ namespace NinePointRotationCalibration.WinForms.Controls
 
         public PointF ImageToClient(ImageCoordinate point)
         {
+            EnsureViewInitialized();
             return new PointF(
                 (float)(_offsetX + (point.Column * _zoom)),
                 (float)(_offsetY + (point.Row * _zoom)));
@@ -332,6 +381,7 @@ namespace NinePointRotationCalibration.WinForms.Controls
 
         public ImageCoordinate ClientToImage(PointF point)
         {
+            EnsureViewInitialized();
             if (_zoom <= 0.0)
             {
                 return new ImageCoordinate();
@@ -344,10 +394,21 @@ namespace NinePointRotationCalibration.WinForms.Controls
 
         protected override void Dispose(bool disposing)
         {
-            if (disposing && _image != null)
+            if (disposing)
             {
-                _image.Dispose();
-                _image = null;
+                _zoomRenderTimer.Stop();
+                _zoomRenderTimer.Dispose();
+                InvalidateImageCache();
+                if (_image != null)
+                {
+                    _image.Dispose();
+                    _image = null;
+                }
+                if (_interactivePreview != null)
+                {
+                    _interactivePreview.Dispose();
+                    _interactivePreview = null;
+                }
             }
 
             base.Dispose(disposing);
@@ -367,7 +428,7 @@ namespace NinePointRotationCalibration.WinForms.Controls
             base.OnPaint(eventArgs);
             Graphics graphics = eventArgs.Graphics;
             graphics.Clear(BackColor);
-            bool interactive = _dragOperation != DragOperation.None;
+            bool interactive = _dragOperation != DragOperation.None || _fastViewport;
             graphics.SmoothingMode = interactive ? SmoothingMode.None : SmoothingMode.AntiAlias;
             graphics.PixelOffsetMode = interactive ? PixelOffsetMode.HighSpeed : PixelOffsetMode.HighQuality;
 
@@ -379,11 +440,15 @@ namespace NinePointRotationCalibration.WinForms.Controls
 
             if (!_viewInitialized)
             {
-                FitImage();
+                // Avoid raising ViewChanged/Invalidate while already painting.
+                EnsureViewInitialized();
             }
 
             DrawImageLayer(graphics);
-            DrawOverlayLayer(graphics, _editorOverlay, false);
+            if (!interactive)
+            {
+                DrawOverlayLayer(graphics, _editorOverlay, false);
+            }
             if (MaskVisible)
             {
                 DrawMaskLayer(graphics);
@@ -420,6 +485,9 @@ namespace NinePointRotationCalibration.WinForms.Controls
             _offsetY = eventArgs.Y - (anchor.Row * _zoom);
             _autoFit = false;
             _viewInitialized = true;
+            _fastViewport = true;
+            _zoomRenderTimer.Stop();
+            _zoomRenderTimer.Start();
             OnViewChanged();
             Invalidate();
         }
@@ -431,6 +499,7 @@ namespace NinePointRotationCalibration.WinForms.Controls
             _lastScreen = eventArgs.Location;
             _dragStartScreen = eventArgs.Location;
             _dragStartImage = ClientToImage(eventArgs.Location);
+            _selectionAtMouseDown = _selectedRoi;
             _transactionChanged = false;
 
             if (eventArgs.Button == MouseButtons.Middle)
@@ -467,7 +536,9 @@ namespace NinePointRotationCalibration.WinForms.Controls
                 return;
             }
 
-            if (_tool == CanvasEditTool.DrawTemplateRoi || _tool == CanvasEditTool.DrawSearchRoi)
+            if (_tool == CanvasEditTool.DrawTemplateRoi ||
+                _tool == CanvasEditTool.DrawSearchRoi ||
+                _tool == CanvasEditTool.DrawDetectionRoi)
             {
                 if (!IsInsideImage(_dragStartImage))
                 {
@@ -476,7 +547,9 @@ namespace NinePointRotationCalibration.WinForms.Controls
 
                 CanvasRoiTarget target = _tool == CanvasEditTool.DrawTemplateRoi
                     ? CanvasRoiTarget.Template
-                    : CanvasRoiTarget.Search;
+                    : _tool == CanvasEditTool.DrawSearchRoi
+                        ? CanvasRoiTarget.Search
+                        : CanvasRoiTarget.Detection;
                 if (IsTargetLocked(target))
                 {
                     return;
@@ -513,6 +586,9 @@ namespace NinePointRotationCalibration.WinForms.Controls
                 SelectedRoi = hit.Target;
                 if (IsTargetLocked(hit.Target))
                 {
+                    _activeHandle = hit.Handle;
+                    _dragOperation = DragOperation.SelectRoi;
+                    Capture = true;
                     Cursor = Cursors.Default;
                     Invalidate();
                     return;
@@ -523,6 +599,9 @@ namespace NinePointRotationCalibration.WinForms.Controls
                 _activeHandle = hit.Handle;
                 if (hit.Handle.Kind == RoiHandleKind.Rotate)
                 {
+                    _dragStartPointerAngleDegrees = GetPointerAngleDegrees(
+                        _dragStartRoi,
+                        _dragStartImage);
                     _dragOperation = DragOperation.RotateRoi;
                 }
                 else if (hit.Handle.Kind == RoiHandleKind.Resize)
@@ -667,9 +746,9 @@ namespace NinePointRotationCalibration.WinForms.Controls
             {
                 roi.CenterRow += rowDirection * step;
                 roi.CenterColumn += columnDirection * step;
-                ClampRoiCenter(roi);
             }
 
+            ClampRoiCenter(roi);
             SetRoi(_selectedRoi, roi);
             OnRoiChanged(_selectedRoi, true);
             eventArgs.Handled = true;
@@ -697,21 +776,160 @@ namespace NinePointRotationCalibration.WinForms.Controls
                 (float)_offsetY,
                 (float)(_image.Width * _zoom),
                 (float)(_image.Height * _zoom));
-            bool interactive = _dragOperation != DragOperation.None;
-            graphics.InterpolationMode = interactive
-                ? InterpolationMode.Bilinear
-                : _zoom >= 4.0
-                ? InterpolationMode.NearestNeighbor
-                : InterpolationMode.HighQualityBicubic;
-            graphics.DrawImage(
-                _image,
-                destination,
-                new RectangleF(0, 0, _image.Width, _image.Height),
-                GraphicsUnit.Pixel);
+            Bitmap displayImage = _fastViewport
+                ? (_interactivePreview ?? _image)
+                : GetDisplayImage();
+            if (ReferenceEquals(displayImage, _image))
+            {
+                bool interactive = _dragOperation != DragOperation.None || _fastViewport;
+                graphics.InterpolationMode = interactive
+                    ? InterpolationMode.Bilinear
+                    : _zoom >= 4.0
+                        ? InterpolationMode.NearestNeighbor
+                        : InterpolationMode.HighQualityBicubic;
+                graphics.DrawImage(
+                    _image,
+                    destination,
+                    new RectangleF(0, 0, _image.Width, _image.Height),
+                    GraphicsUnit.Pixel);
+            }
+            else
+            {
+                graphics.CompositingMode = CompositingMode.SourceCopy;
+                graphics.InterpolationMode = InterpolationMode.NearestNeighbor;
+                graphics.PixelOffsetMode = PixelOffsetMode.Half;
+                // Preserve the exact floating-point viewport transform. The
+                // cache dimensions are rounded to whole pixels, so blitting it
+                // unscaled at an integer origin would let ROI/point overlays
+                // drift by up to a pixel from the underlying image.
+                graphics.DrawImage(
+                    displayImage,
+                    destination,
+                    new RectangleF(0, 0, displayImage.Width, displayImage.Height),
+                    GraphicsUnit.Pixel);
+                graphics.CompositingMode = CompositingMode.SourceOver;
+            }
             using (Pen border = new Pen(Color.FromArgb(90, Color.White), 1.0f))
             {
                 graphics.DrawRectangle(border, destination.X, destination.Y, destination.Width, destination.Height);
             }
+        }
+
+        private Bitmap GetDisplayImage()
+        {
+            if (_image == null)
+            {
+                return null;
+            }
+
+            int width = Math.Max(1, (int)Math.Round(_image.Width * _zoom));
+            int height = Math.Max(1, (int)Math.Round(_image.Height * _zoom));
+
+            // At (or above) native resolution a cache consumes as much memory as
+            // the source and gives no useful speed-up. GDI's direct path is fast.
+            if (_zoom >= 1.0 || width >= _image.Width || height >= _image.Height)
+            {
+                InvalidateImageCache();
+                return _image;
+            }
+
+            if (_scaledImage != null &&
+                _scaledImageWidth == width &&
+                _scaledImageHeight == height &&
+                Math.Abs(_scaledImageZoom - _zoom) < 0.000001)
+            {
+                return _scaledImage;
+            }
+
+            InvalidateImageCache();
+            Bitmap scaled = new Bitmap(width, height, PixelFormat.Format24bppRgb);
+            scaled.SetResolution(
+                _image.HorizontalResolution > 0.0f ? _image.HorizontalResolution : 96.0f,
+                _image.VerticalResolution > 0.0f ? _image.VerticalResolution : 96.0f);
+            using (Graphics cacheGraphics = Graphics.FromImage(scaled))
+            {
+                cacheGraphics.CompositingMode = CompositingMode.SourceCopy;
+                cacheGraphics.CompositingQuality = CompositingQuality.HighSpeed;
+                cacheGraphics.SmoothingMode = SmoothingMode.None;
+                cacheGraphics.PixelOffsetMode = PixelOffsetMode.Half;
+                cacheGraphics.InterpolationMode = InterpolationMode.HighQualityBilinear;
+                cacheGraphics.DrawImage(
+                    _image,
+                    new Rectangle(0, 0, width, height),
+                    new Rectangle(0, 0, _image.Width, _image.Height),
+                    GraphicsUnit.Pixel);
+            }
+
+            _scaledImage = scaled;
+            _scaledImageWidth = width;
+            _scaledImageHeight = height;
+            _scaledImageZoom = _zoom;
+            return _scaledImage;
+        }
+
+        private static Bitmap CreateInteractivePreview(Bitmap source)
+        {
+            if (source == null)
+            {
+                return null;
+            }
+
+            const int maximumDimension = 1600;
+            int previewWidth = source.Width;
+            int previewHeight = source.Height;
+            if (Math.Max(previewWidth, previewHeight) <= maximumDimension)
+            {
+                return null;
+            }
+
+            double scale = (double)maximumDimension / Math.Max(previewWidth, previewHeight);
+            previewWidth = Math.Max(1, (int)Math.Round(previewWidth * scale));
+            previewHeight = Math.Max(1, (int)Math.Round(previewHeight * scale));
+            Bitmap preview = new Bitmap(previewWidth, previewHeight, PixelFormat.Format24bppRgb);
+            using (Graphics graphics = Graphics.FromImage(preview))
+            {
+                graphics.CompositingMode = CompositingMode.SourceCopy;
+                graphics.CompositingQuality = CompositingQuality.HighSpeed;
+                graphics.SmoothingMode = SmoothingMode.None;
+                graphics.PixelOffsetMode = PixelOffsetMode.Half;
+                graphics.InterpolationMode = InterpolationMode.Bilinear;
+                graphics.DrawImage(
+                    source,
+                    new Rectangle(0, 0, previewWidth, previewHeight),
+                    new Rectangle(0, 0, source.Width, source.Height),
+                    GraphicsUnit.Pixel);
+            }
+            return preview;
+        }
+
+        private void InvalidateImageCache()
+        {
+            if (_scaledImage != null)
+            {
+                _scaledImage.Dispose();
+                _scaledImage = null;
+            }
+
+            _scaledImageWidth = 0;
+            _scaledImageHeight = 0;
+            _scaledImageZoom = double.NaN;
+        }
+
+        private void EnsureViewInitialized()
+        {
+            if (_viewInitialized || _image == null || ClientSize.Width <= 0 || ClientSize.Height <= 0)
+            {
+                return;
+            }
+
+            const double padding = 12.0;
+            double availableWidth = Math.Max(1.0, ClientSize.Width - (padding * 2.0));
+            double availableHeight = Math.Max(1.0, ClientSize.Height - (padding * 2.0));
+            _zoom = Clamp(Math.Min(availableWidth / _image.Width, availableHeight / _image.Height), MinimumZoom, MaximumZoom);
+            _offsetX = (ClientSize.Width - (_image.Width * _zoom)) / 2.0;
+            _offsetY = (ClientSize.Height - (_image.Height * _zoom)) / 2.0;
+            _autoFit = true;
+            _viewInitialized = true;
         }
 
         private void DrawMaskLayer(Graphics graphics)
@@ -778,6 +996,7 @@ namespace NinePointRotationCalibration.WinForms.Controls
         private void DrawEditingLayer(Graphics graphics)
         {
             DrawRoi(graphics, _searchRoi, CanvasRoiTarget.Search, Color.DeepSkyBlue);
+            DrawRoi(graphics, _detectionRoi, CanvasRoiTarget.Detection, Color.LimeGreen);
             DrawRoi(graphics, _templateRoi, CanvasRoiTarget.Template, Color.Gold);
             if (_anchorVisible)
             {
@@ -804,7 +1023,9 @@ namespace NinePointRotationCalibration.WinForms.Controls
                 graphics.DrawPolygon(pen, corners);
             }
 
-            string title = target == CanvasRoiTarget.Template ? "模板 ROI" : "搜索 ROI";
+            string title = target == CanvasRoiTarget.Template
+                ? "模板 ROI"
+                : target == CanvasRoiTarget.Search ? "搜索 ROI" : "检测 ROI";
             DrawLabel(graphics, title, corners[0], color);
 
             if (!selected || IsTargetLocked(target))
@@ -822,12 +1043,6 @@ namespace NinePointRotationCalibration.WinForms.Controls
                 PointF location = handle.Location;
                 if (handle.Kind == RoiHandleKind.Rotate)
                 {
-                    PointF top = ImageToClient(roi.LocalToImage(0.0, -roi.HalfHeight));
-                    using (Pen connector = new Pen(color, 1.25f))
-                    {
-                        graphics.DrawLine(connector, top, location);
-                    }
-
                     using (Brush fill = new SolidBrush(Color.FromArgb(235, 35, 38, 42)))
                     using (Pen outline = new Pen(color, 2.0f))
                     {
@@ -916,15 +1131,23 @@ namespace NinePointRotationCalibration.WinForms.Controls
                 foreach (CanvasPointOverlay point in overlay.Points.Where(item => item != null))
                 {
                     PointF center = ImageToClient(point.Position);
-                    float radius = Math.Max(3.0f, point.RadiusPixels);
+                    float radius = Math.Max(1.5f, point.RadiusPixels);
+                    bool hasLabel = !string.IsNullOrWhiteSpace(point.Label);
+                    bool drawOutline = radius >= 3.0f || point.IsSelected || hasLabel;
                     using (Brush brush = new SolidBrush(Color.FromArgb(point.IsSelected ? 235 : 185, point.Color)))
-                    using (Pen outline = new Pen(Color.FromArgb(230, Color.Black), 1.5f))
                     {
                         graphics.FillEllipse(brush, center.X - radius, center.Y - radius, radius * 2.0f, radius * 2.0f);
-                        graphics.DrawEllipse(outline, center.X - radius, center.Y - radius, radius * 2.0f, radius * 2.0f);
                     }
 
-                    if (!string.IsNullOrWhiteSpace(point.Label))
+                    if (drawOutline)
+                    {
+                        using (Pen outline = new Pen(Color.FromArgb(230, Color.Black), 1.5f))
+                        {
+                            graphics.DrawEllipse(outline, center.X - radius, center.Y - radius, radius * 2.0f, radius * 2.0f);
+                        }
+                    }
+
+                    if (hasLabel)
                     {
                         DrawAvoidingLabel(graphics, point.Label, center, point.Color, occupiedLabels);
                     }
@@ -1213,16 +1436,20 @@ namespace NinePointRotationCalibration.WinForms.Controls
                 return;
             }
 
-            double deltaColumn = current.Column - _dragStartRoi.CenterColumn;
-            double deltaRow = current.Row - _dragStartRoi.CenterRow;
-            if ((deltaColumn * deltaColumn) + (deltaRow * deltaRow) < 0.0001)
+            double centerDeltaColumn = current.Column - _dragStartRoi.CenterColumn;
+            double centerDeltaRow = current.Row - _dragStartRoi.CenterRow;
+            if ((centerDeltaColumn * centerDeltaColumn) + (centerDeltaRow * centerDeltaRow) < 0.0001)
             {
                 return;
             }
 
+            double currentPointerAngleDegrees = GetPointerAngleDegrees(_dragStartRoi, current);
+            double pointerDeltaDegrees = RotatedRectangle.NormalizeAngle(
+                currentPointerAngleDegrees - _dragStartPointerAngleDegrees);
             RotatedRectangle roi = _dragStartRoi.DeepClone();
             roi.AngleDegrees = RotatedRectangle.NormalizeAngle(
-                (Math.Atan2(deltaRow, deltaColumn) * 180.0 / Math.PI) + 90.0);
+                _dragStartRoi.AngleDegrees + pointerDeltaDegrees);
+            ClampRoiCenter(roi);
             SetRoi(_selectedRoi, roi);
             _transactionChanged = true;
             OnRoiChanged(_selectedRoi, false);
@@ -1269,6 +1496,12 @@ namespace NinePointRotationCalibration.WinForms.Controls
             if (!_transactionChanged)
             {
                 _activeStroke = null;
+                if ((operation == DragOperation.MoveRoi || operation == DragOperation.SelectRoi) &&
+                    _activeHandle.Kind == RoiHandleKind.Body &&
+                    _lastScreen == _dragStartScreen)
+                {
+                    CycleOverlappingRoiSelection(_dragStartScreen);
+                }
                 return;
             }
 
@@ -1298,11 +1531,42 @@ namespace NinePointRotationCalibration.WinForms.Controls
             Invalidate();
         }
 
+        private void CycleOverlappingRoiSelection(Point location)
+        {
+            if (_tool != CanvasEditTool.Select)
+            {
+                return;
+            }
+
+            ImageCoordinate imagePoint = ClientToImage(location);
+            List<CanvasRoiTarget> hits = new List<CanvasRoiTarget>();
+            foreach (CanvasRoiTarget target in RoiBodyHitOrder)
+            {
+                RotatedRectangle candidate = GetRoi(target);
+                if (candidate != null && candidate.Contains(imagePoint))
+                {
+                    hits.Add(target);
+                }
+            }
+
+            if (hits.Count <= 1)
+            {
+                return;
+            }
+
+            int selectedIndex = hits.IndexOf(_selectionAtMouseDown);
+            SelectedRoi = selectedIndex < 0
+                ? hits[0]
+                : hits[(selectedIndex + 1) % hits.Count];
+        }
+
         private RoiHit HitTestRois(Point location)
         {
+            ImageCoordinate imagePoint = ClientToImage(location);
+            RotatedRectangle selected = null;
             if (_selectedRoi != CanvasRoiTarget.None)
             {
-                RotatedRectangle selected = GetRoi(_selectedRoi);
+                selected = GetRoi(_selectedRoi);
                 RoiHandle handle = HitHandle(selected, location);
                 if (handle.Kind != RoiHandleKind.None)
                 {
@@ -1310,15 +1574,19 @@ namespace NinePointRotationCalibration.WinForms.Controls
                 }
             }
 
-            ImageCoordinate imagePoint = ClientToImage(location);
-            if (_templateRoi != null && _templateRoi.Contains(imagePoint))
+            bool selectedContains = selected != null && selected.Contains(imagePoint);
+            if (selectedContains)
             {
-                return new RoiHit(CanvasRoiTarget.Template, RoiHandle.Body);
+                return new RoiHit(_selectedRoi, RoiHandle.Body);
             }
 
-            if (_searchRoi != null && _searchRoi.Contains(imagePoint))
+            foreach (CanvasRoiTarget target in RoiBodyHitOrder)
             {
-                return new RoiHit(CanvasRoiTarget.Search, RoiHandle.Body);
+                RotatedRectangle candidate = GetRoi(target);
+                if (candidate != null && candidate.Contains(imagePoint))
+                {
+                    return new RoiHit(target, RoiHandle.Body);
+                }
             }
 
             return RoiHit.None;
@@ -1346,44 +1614,32 @@ namespace NinePointRotationCalibration.WinForms.Controls
 
         private IEnumerable<RoiHandle> GetHandles(RotatedRectangle roi)
         {
-            int[] values = { -1, 0, 1 };
-            foreach (int vertical in values)
-            {
-                foreach (int horizontal in values)
-                {
-                    if (horizontal == 0 && vertical == 0)
-                    {
-                        continue;
-                    }
+            yield return new RoiHandle(
+                RoiHandleKind.Resize,
+                1,
+                0,
+                ImageToClient(roi.LocalToImage(roi.HalfWidth, 0.0)));
+            yield return new RoiHandle(
+                RoiHandleKind.Resize,
+                -1,
+                0,
+                ImageToClient(roi.LocalToImage(-roi.HalfWidth, 0.0)));
+            yield return new RoiHandle(
+                RoiHandleKind.Resize,
+                0,
+                1,
+                ImageToClient(roi.LocalToImage(0.0, roi.HalfHeight)));
+            yield return new RoiHandle(
+                RoiHandleKind.Resize,
+                0,
+                -1,
+                ImageToClient(roi.LocalToImage(0.0, -roi.HalfHeight)));
 
-                    if (horizontal != 0 || vertical != 0)
-                    {
-                        ImageCoordinate image = roi.LocalToImage(
-                            horizontal * roi.HalfWidth,
-                            vertical * roi.HalfHeight);
-                        yield return new RoiHandle(
-                            RoiHandleKind.Resize,
-                            horizontal,
-                            vertical,
-                            ImageToClient(image));
-                    }
-                }
-            }
-
-            PointF center = ImageToClient(new ImageCoordinate(roi.CenterRow, roi.CenterColumn));
-            PointF top = ImageToClient(roi.LocalToImage(0.0, -roi.HalfHeight));
-            double vectorX = top.X - center.X;
-            double vectorY = top.Y - center.Y;
-            double length = Math.Sqrt((vectorX * vectorX) + (vectorY * vectorY));
-            if (length < 0.001)
-            {
-                length = 1.0;
-            }
-
-            PointF rotation = new PointF(
-                top.X + (float)((vectorX / length) * RotationHandleDistance),
-                top.Y + (float)((vectorY / length) * RotationHandleDistance));
-            yield return new RoiHandle(RoiHandleKind.Rotate, 0, -1, rotation);
+            yield return new RoiHandle(
+                RoiHandleKind.Rotate,
+                1,
+                -1,
+                ImageToClient(roi.LocalToImage(roi.HalfWidth, -roi.HalfHeight)));
         }
 
         private bool HitAnchor(Point point)
@@ -1406,7 +1662,9 @@ namespace NinePointRotationCalibration.WinForms.Controls
                 return Cursors.Cross;
             }
 
-            if (_tool == CanvasEditTool.DrawTemplateRoi || _tool == CanvasEditTool.DrawSearchRoi)
+            if (_tool == CanvasEditTool.DrawTemplateRoi ||
+                _tool == CanvasEditTool.DrawSearchRoi ||
+                _tool == CanvasEditTool.DrawDetectionRoi)
             {
                 return Cursors.Cross;
             }
@@ -1430,17 +1688,7 @@ namespace NinePointRotationCalibration.WinForms.Controls
 
             if (hit.Handle.Kind == RoiHandleKind.Resize)
             {
-                if (hit.Handle.Horizontal == 0)
-                {
-                    return Cursors.SizeNS;
-                }
-
-                if (hit.Handle.Vertical == 0)
-                {
-                    return Cursors.SizeWE;
-                }
-
-                return hit.Handle.Horizontal == hit.Handle.Vertical ? Cursors.SizeNWSE : Cursors.SizeNESW;
+                return hit.Handle.Horizontal == 0 ? Cursors.SizeNS : Cursors.SizeWE;
             }
 
             return Cursors.SizeAll;
@@ -1451,7 +1699,8 @@ namespace NinePointRotationCalibration.WinForms.Controls
             return _tool == CanvasEditTool.EraseMask ||
                    _tool == CanvasEditTool.RestoreMask ||
                    _tool == CanvasEditTool.DrawTemplateRoi ||
-                   _tool == CanvasEditTool.DrawSearchRoi
+                   _tool == CanvasEditTool.DrawSearchRoi ||
+                   _tool == CanvasEditTool.DrawDetectionRoi
                 ? Cursors.Cross
                 : Cursors.Default;
         }
@@ -1460,7 +1709,9 @@ namespace NinePointRotationCalibration.WinForms.Controls
         {
             return target == CanvasRoiTarget.Template
                 ? _templateRoi
-                : target == CanvasRoiTarget.Search ? _searchRoi : null;
+                : target == CanvasRoiTarget.Search
+                    ? _searchRoi
+                    : target == CanvasRoiTarget.Detection ? _detectionRoi : null;
         }
 
         private void SetRoi(CanvasRoiTarget target, RotatedRectangle roi)
@@ -1472,6 +1723,10 @@ namespace NinePointRotationCalibration.WinForms.Controls
             else if (target == CanvasRoiTarget.Search)
             {
                 _searchRoi = roi;
+            }
+            else if (target == CanvasRoiTarget.Detection)
+            {
+                _detectionRoi = roi;
             }
 
             Invalidate();
@@ -1503,8 +1758,36 @@ namespace NinePointRotationCalibration.WinForms.Controls
                 return;
             }
 
-            roi.CenterRow = Clamp(roi.CenterRow, 0.0, _image.Height - 1.0);
-            roi.CenterColumn = Clamp(roi.CenterColumn, 0.0, _image.Width - 1.0);
+            RectangleF bounds = roi.GetAxisAlignedBounds();
+            double maximumRow = Math.Max(0.0, _image.Height - 1.0);
+            double maximumColumn = Math.Max(0.0, _image.Width - 1.0);
+            double rowOffset = GetBoundsContainmentOffset(bounds.Top, bounds.Bottom, maximumRow);
+            double columnOffset = GetBoundsContainmentOffset(bounds.Left, bounds.Right, maximumColumn);
+            roi.CenterRow += rowOffset;
+            roi.CenterColumn += columnOffset;
+        }
+
+        private static double GetBoundsContainmentOffset(double minimum, double maximum, double imageMaximum)
+        {
+            double span = maximum - minimum;
+            if (span > imageMaximum)
+            {
+                return (imageMaximum * 0.5) - ((minimum + maximum) * 0.5);
+            }
+
+            if (minimum < 0.0)
+            {
+                return -minimum;
+            }
+
+            return maximum > imageMaximum ? imageMaximum - maximum : 0.0;
+        }
+
+        private static double GetPointerAngleDegrees(RotatedRectangle roi, ImageCoordinate point)
+        {
+            return Math.Atan2(
+                point.Row - roi.CenterRow,
+                point.Column - roi.CenterColumn) * 180.0 / Math.PI;
         }
 
         private bool IsInsideImage(ImageCoordinate point)
@@ -1559,6 +1842,7 @@ namespace NinePointRotationCalibration.WinForms.Controls
         {
             None,
             Pan,
+            SelectRoi,
             CreateRoi,
             MoveRoi,
             ResizeRoi,

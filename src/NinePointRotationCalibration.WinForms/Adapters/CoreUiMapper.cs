@@ -15,6 +15,9 @@ namespace NinePointRotationCalibration.WinForms.Adapters
     /// </summary>
     public static class CoreUiMapper
     {
+        private const string DefaultMetric = "use_polarity";
+        private const string EdgeContourMetric = "ignore_local_polarity";
+
         public static TemplateEditorState FromCoreTemplate(Core.TemplateDefinition template)
         {
             TemplateEditorState state = new TemplateEditorState();
@@ -25,6 +28,7 @@ namespace NinePointRotationCalibration.WinForms.Adapters
 
             state.TemplateRoi = FromCoreRegion(template.TemplateRoi);
             state.SearchRoi = FromCoreRegion(template.SearchRegion);
+            state.DetectionRoi = FromCoreRegion(template.DetectionRoi);
             state.ReferenceAnchor = FromCorePoint(template.ReferenceAnchor);
             state.AnchorLocked = template.IsReferenceAnchorLocked;
             state.MaskInverted = template.IsMaskInverted;
@@ -45,15 +49,41 @@ namespace NinePointRotationCalibration.WinForms.Adapters
             Core.NccModelParameters ncc = template.NccParameters ?? new Core.NccModelParameters();
             Core.MatchParameters match = template.MatchParameters ?? new Core.MatchParameters();
             bool shapeModel = template.ModelType == Core.TemplateModelType.Shape;
+            string shapeMetric = NormalizeMetric(shape.Metric);
+            string nccMetric = NormalizeMetric(ncc.Metric);
             state.Parameters.ModelType = template.ModelType;
             state.Parameters.NumLevels = shapeModel ? shape.NumLevels : ncc.NumLevels;
+            state.Parameters.MatchNumLevels = match.NumLevels;
             state.Parameters.AngleStartDegrees = RadiansToDegrees(shapeModel ? shape.AngleStartRad : ncc.AngleStartRad);
             state.Parameters.AngleExtentDegrees = RadiansToDegrees(shapeModel ? shape.AngleExtentRad : ncc.AngleExtentRad);
+            state.Parameters.MatchAngleStartDegrees = RadiansToDegrees(match.AngleStartRad);
+            state.Parameters.MatchAngleExtentDegrees = RadiansToDegrees(match.AngleExtentRad);
             state.Parameters.AngleStepDegrees = RadiansToDegrees(shapeModel ? shape.AngleStepRad : ncc.AngleStepRad);
             state.Parameters.Optimization = shape.Optimization;
-            state.Parameters.Metric = shapeModel ? shape.Metric : ncc.Metric;
+            state.Parameters.ShapeMetric = shapeMetric;
+            state.Parameters.NccMetric = nccMetric;
             state.Parameters.Contrast = shape.Contrast;
             state.Parameters.MinimumContrast = shape.MinContrast;
+            Core.ShapeFeatureExtractionSettings extraction = shape.FeatureExtraction;
+            if (extraction == null)
+            {
+                state.Parameters.FeatureExtractionMode = Core.ShapeFeatureExtractionMode.LegacyImageDomain;
+            }
+            else
+            {
+                state.Parameters.FeatureExtractionMode = extraction.Mode;
+                state.Parameters.EdgeSigma = extraction.EdgeSigma;
+                state.Parameters.EdgeLowThreshold = extraction.EdgeLowThreshold;
+                state.Parameters.EdgeHighThreshold = extraction.EdgeHighThreshold;
+                state.Parameters.MinimumContourLengthPixels = extraction.MinimumContourLengthPixels;
+                state.Parameters.FeaturePointSpacingPixels = extraction.PointSpacingPixels;
+                state.Parameters.MaximumFeaturePointCount = extraction.MaximumPointCount;
+            }
+            state.Parameters.Metric = shapeModel
+                ? state.Parameters.FeatureExtractionMode == Core.ShapeFeatureExtractionMode.EdgeContours
+                    ? EdgeContourMetric
+                    : shapeMetric
+                : nccMetric;
             state.Parameters.MinimumScore = match.MinScore;
             state.Parameters.Greediness = match.Greediness;
             state.Parameters.MaximumOverlap = match.MaxOverlap;
@@ -117,6 +147,7 @@ namespace NinePointRotationCalibration.WinForms.Adapters
             template.ModelType = parameters.ModelType;
             template.TemplateRoi = ToCoreRegion(state.TemplateRoi);
             template.SearchRegion = ToCoreRegion(state.SearchRoi);
+            template.DetectionRoi = ToCoreRegion(state.DetectionRoi);
             template.ReferenceAnchor = ToCorePoint(state.ReferenceAnchor);
             template.IsReferenceAnchorLocked = state.AnchorLocked;
             template.IsMaskInverted = state.MaskInverted;
@@ -141,14 +172,39 @@ namespace NinePointRotationCalibration.WinForms.Adapters
             {
                 template.ShapeParameters = new Core.ShapeModelParameters();
             }
+            string activeMetric = NormalizeMetric(parameters.Metric);
+            string shapeMetric = NormalizeMetric(parameters.ShapeMetric);
+            string nccMetric = NormalizeMetric(parameters.NccMetric);
+            if (parameters.ModelType == Core.TemplateModelType.Shape)
+            {
+                shapeMetric = parameters.FeatureExtractionMode == Core.ShapeFeatureExtractionMode.EdgeContours
+                    ? EdgeContourMetric
+                    : activeMetric;
+            }
+            else
+            {
+                nccMetric = activeMetric;
+            }
             template.ShapeParameters.NumLevels = parameters.NumLevels;
             template.ShapeParameters.AngleStartRad = DegreesToRadians(parameters.AngleStartDegrees);
             template.ShapeParameters.AngleExtentRad = DegreesToRadians(parameters.AngleExtentDegrees);
             template.ShapeParameters.AngleStepRad = DegreesToRadians(parameters.AngleStepDegrees);
             template.ShapeParameters.Optimization = parameters.Optimization;
-            template.ShapeParameters.Metric = parameters.Metric;
+            template.ShapeParameters.Metric = parameters.FeatureExtractionMode == Core.ShapeFeatureExtractionMode.EdgeContours
+                ? EdgeContourMetric
+                : shapeMetric;
             template.ShapeParameters.Contrast = (int)Math.Round(parameters.Contrast);
             template.ShapeParameters.MinContrast = (int)Math.Round(parameters.MinimumContrast);
+            template.ShapeParameters.FeatureExtraction = new Core.ShapeFeatureExtractionSettings
+            {
+                Mode = parameters.FeatureExtractionMode,
+                EdgeSigma = parameters.EdgeSigma,
+                EdgeLowThreshold = parameters.EdgeLowThreshold,
+                EdgeHighThreshold = parameters.EdgeHighThreshold,
+                MinimumContourLengthPixels = parameters.MinimumContourLengthPixels,
+                PointSpacingPixels = parameters.FeaturePointSpacingPixels,
+                MaximumPointCount = parameters.MaximumFeaturePointCount
+            };
 
             if (template.NccParameters == null)
             {
@@ -158,19 +214,19 @@ namespace NinePointRotationCalibration.WinForms.Adapters
             template.NccParameters.AngleStartRad = DegreesToRadians(parameters.AngleStartDegrees);
             template.NccParameters.AngleExtentRad = DegreesToRadians(parameters.AngleExtentDegrees);
             template.NccParameters.AngleStepRad = DegreesToRadians(parameters.AngleStepDegrees);
-            template.NccParameters.Metric = parameters.Metric;
+            template.NccParameters.Metric = nccMetric;
 
             if (template.MatchParameters == null)
             {
                 template.MatchParameters = new Core.MatchParameters();
             }
-            template.MatchParameters.AngleStartRad = DegreesToRadians(parameters.AngleStartDegrees);
-            template.MatchParameters.AngleExtentRad = DegreesToRadians(parameters.AngleExtentDegrees);
+            template.MatchParameters.AngleStartRad = DegreesToRadians(parameters.MatchAngleStartDegrees);
+            template.MatchParameters.AngleExtentRad = DegreesToRadians(parameters.MatchAngleExtentDegrees);
             template.MatchParameters.MinScore = parameters.MinimumScore;
             template.MatchParameters.NumMatches = parameters.MatchCount;
             template.MatchParameters.MaxOverlap = parameters.MaximumOverlap;
             template.MatchParameters.SubPixel = parameters.SubPixel;
-            template.MatchParameters.NumLevels = parameters.NumLevels;
+            template.MatchParameters.NumLevels = parameters.MatchNumLevels;
             template.MatchParameters.Greediness = parameters.Greediness;
             template.MatchParameters.TimeoutMilliseconds = parameters.TimeoutMilliseconds;
             template.MatchParameters.ContourPointSpacingPixels = parameters.ContourPointSpacingPixels;
@@ -455,12 +511,15 @@ namespace NinePointRotationCalibration.WinForms.Adapters
             }
             if (region.Kind == Core.RegionKind.Rectangle1 || region.Kind == Core.RegionKind.Rectangle2)
             {
+                // HALCON Length1/Length2 are the horizontal/vertical half
+                // extents at Phi=0. Only the visual angle direction differs
+                // from the canvas because image rows increase downwards.
                 return new RotatedRectangle(
                     region.CenterRow,
                     region.CenterColumn,
                     region.Length1,
                     region.Length2,
-                    region.Kind == Core.RegionKind.Rectangle2 ? RadiansToDegrees(region.PhiRadians) : 0.0);
+                    region.Kind == Core.RegionKind.Rectangle2 ? -RadiansToDegrees(region.PhiRadians) : 0.0);
             }
             if (region.Kind == Core.RegionKind.Circle)
             {
@@ -480,7 +539,7 @@ namespace NinePointRotationCalibration.WinForms.Adapters
                 Kind = Core.RegionKind.Rectangle2,
                 CenterRow = rectangle.CenterRow,
                 CenterColumn = rectangle.CenterColumn,
-                PhiRadians = DegreesToRadians(rectangle.AngleDegrees),
+                PhiRadians = -DegreesToRadians(rectangle.AngleDegrees),
                 Length1 = rectangle.HalfWidth,
                 Length2 = rectangle.HalfHeight
             };
@@ -600,6 +659,11 @@ namespace NinePointRotationCalibration.WinForms.Adapters
         private static double DegreesToRadians(double degrees)
         {
             return degrees * Math.PI / 180.0;
+        }
+
+        private static string NormalizeMetric(string metric)
+        {
+            return string.IsNullOrWhiteSpace(metric) ? DefaultMetric : metric;
         }
 
         private static double RadiansToDegrees(double radians)

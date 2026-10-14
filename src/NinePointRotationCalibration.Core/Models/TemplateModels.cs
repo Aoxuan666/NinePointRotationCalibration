@@ -1,9 +1,57 @@
 using System;
 using System.Collections.Generic;
+using System.Runtime.Serialization;
 using System.Security.Cryptography;
 
 namespace NinePointRotationCalibration
 {
+    public enum ShapeFeatureExtractionMode
+    {
+        LegacyImageDomain = 0,
+        EdgeContours = 1
+    }
+
+    [Serializable]
+    public sealed class ShapeFeatureExtractionSettings
+    {
+        public ShapeFeatureExtractionSettings()
+        {
+            Mode = ShapeFeatureExtractionMode.EdgeContours;
+            EdgeSigma = 1.2;
+            EdgeLowThreshold = 60.0;
+            EdgeHighThreshold = 100.0;
+            MinimumContourLengthPixels = 9.0;
+            PointSpacingPixels = 6.0;
+            MaximumPointCount = 20000;
+        }
+
+        [field: OptionalField]
+        public ShapeFeatureExtractionMode Mode { get; set; }
+
+        [field: OptionalField]
+        public double EdgeSigma { get; set; }
+
+        [field: OptionalField]
+        public double EdgeLowThreshold { get; set; }
+
+        [field: OptionalField]
+        public double EdgeHighThreshold { get; set; }
+
+        [field: OptionalField]
+        public double MinimumContourLengthPixels { get; set; }
+
+        [field: OptionalField]
+        public double PointSpacingPixels { get; set; }
+
+        [field: OptionalField]
+        public int MaximumPointCount { get; set; }
+
+        public ShapeFeatureExtractionSettings DeepClone()
+        {
+            return (ShapeFeatureExtractionSettings)MemberwiseClone();
+        }
+    }
+
     [Serializable]
     public sealed class RegionDefinition
     {
@@ -84,14 +132,15 @@ namespace NinePointRotationCalibration
     {
         public ShapeModelParameters()
         {
-            NumLevels = 0;
-            AngleStartRad = -Math.PI;
-            AngleExtentRad = Math.PI * 2.0;
+            NumLevels = 5;
+            AngleStartRad = -0.3;
+            AngleExtentRad = 0.6;
             AngleStepRad = 0.0;
             Optimization = "auto";
-            Metric = "use_polarity";
+            Metric = "ignore_local_polarity";
             Contrast = 30;
-            MinContrast = 10;
+            MinContrast = 20;
+            FeatureExtraction = new ShapeFeatureExtractionSettings();
         }
 
         public int NumLevels { get; set; }
@@ -103,7 +152,15 @@ namespace NinePointRotationCalibration
         public int Contrast { get; set; }
         public int MinContrast { get; set; }
 
-        public ShapeModelParameters DeepClone() { return (ShapeModelParameters)MemberwiseClone(); }
+        [field: OptionalField]
+        public ShapeFeatureExtractionSettings FeatureExtraction { get; set; }
+
+        public ShapeModelParameters DeepClone()
+        {
+            ShapeModelParameters clone = (ShapeModelParameters)MemberwiseClone();
+            clone.FeatureExtraction = FeatureExtraction == null ? null : FeatureExtraction.DeepClone();
+            return clone;
+        }
     }
 
     [Serializable]
@@ -132,14 +189,14 @@ namespace NinePointRotationCalibration
     {
         public MatchParameters()
         {
-            AngleStartRad = -Math.PI;
-            AngleExtentRad = Math.PI * 2.0;
+            AngleStartRad = -10.0 * Math.PI / 180.0;
+            AngleExtentRad = 20.0 * Math.PI / 180.0;
             MinScore = 0.5;
             NumMatches = 1;
-            MaxOverlap = 0.5;
-            SubPixel = "least_squares";
+            MaxOverlap = 0.3;
+            SubPixel = "interpolation";
             NumLevels = 0;
-            Greediness = 0.9;
+            Greediness = 0.85;
             TimeoutMilliseconds = 0;
             ContourPointSpacingPixels = 3.0;
         }
@@ -177,6 +234,8 @@ namespace NinePointRotationCalibration
         public TemplateModelType ModelType { get; set; }
         public RegionDefinition TemplateRoi { get; set; }
         public RegionDefinition SearchRegion { get; set; }
+        [field: OptionalField]
+        public RegionDefinition DetectionRoi { get; set; }
         public List<TemplateMaskShape> MaskRegions { get; set; }
         public List<TemplateEraseStroke> EraseStrokes { get; set; }
         public ShapeModelParameters ShapeParameters { get; set; }
@@ -229,6 +288,7 @@ namespace NinePointRotationCalibration
             TemplateDefinition clone = (TemplateDefinition)MemberwiseClone();
             clone.TemplateRoi = TemplateRoi == null ? null : TemplateRoi.DeepClone();
             clone.SearchRegion = SearchRegion == null ? null : SearchRegion.DeepClone();
+            clone.DetectionRoi = DetectionRoi == null ? null : DetectionRoi.DeepClone();
             clone.ShapeParameters = ShapeParameters == null ? null : ShapeParameters.DeepClone();
             clone.NccParameters = NccParameters == null ? null : NccParameters.DeepClone();
             clone.MatchParameters = MatchParameters == null ? null : MatchParameters.DeepClone();

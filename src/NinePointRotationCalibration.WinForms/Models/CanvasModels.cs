@@ -10,6 +10,7 @@ namespace NinePointRotationCalibration.WinForms.Models
         Select,
         DrawTemplateRoi,
         DrawSearchRoi,
+        DrawDetectionRoi,
         MoveAnchor,
         EraseMask,
         RestoreMask
@@ -19,7 +20,8 @@ namespace NinePointRotationCalibration.WinForms.Models
     {
         None,
         Template,
-        Search
+        Search,
+        Detection
     }
 
     [Serializable]

@@ -4,6 +4,7 @@ using System.Drawing;
 using System.IO;
 using System.IO.Compression;
 using System.Text;
+using System.Text.RegularExpressions;
 using NinePointRotationCalibration;
 using NinePointRotationCalibration.Halcon;
 
@@ -18,6 +19,7 @@ namespace NinePointRotationCalibration.Sdk.Tests
         private static int Main()
         {
             Run("Complete package round-trip", CompletePackageRoundTrip);
+            Run("Legacy package without detection ROI and feature extraction loads", LegacyPackageWithoutNewTemplateMembersLoads);
             Run("Repeated save replaces package", RepeatedSaveReplacesPackage);
             Run("Corrupted model hash is rejected", CorruptedModelHashIsRejected);
             Run("Missing model hash is rejected", MissingModelHashIsRejected);
@@ -127,6 +129,69 @@ namespace NinePointRotationCalibration.Sdk.Tests
 
             actual.ModelData[0] ^= 0xff;
             True(source.Template.ModelData[0] == InitialModel[0], "loaded model must not alias source model bytes");
+        }
+
+        private static void LegacyPackageWithoutNewTemplateMembersLoads(string directory)
+        {
+            string path = Path.Combine(directory, "legacy-template-members.nprcal");
+            CalibrationJob source = CreateCompleteJob("Legacy template members", InitialModel);
+            source.Template.DetectionRoi = new RegionDefinition
+            {
+                Kind = RegionKind.Rectangle2,
+                CenterRow = 215.0,
+                CenterColumn = 325.0,
+                PhiRadians = 0.2,
+                Length1 = 42.0,
+                Length2 = 24.0
+            };
+            source.Template.ShapeParameters.FeatureExtraction.Mode = ShapeFeatureExtractionMode.EdgeContours;
+            JobPackageSerializer.Save(path, source);
+
+            using (FileStream stream = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+            using (ZipArchive archive = new ZipArchive(stream, ZipArchiveMode.Update, false))
+            {
+                ZipArchiveEntry metadataEntry = archive.GetEntry("job.json");
+                True(metadataEntry != null, "job.json is missing before legacy metadata conversion");
+                string json;
+                using (Stream input = metadataEntry.Open())
+                using (StreamReader reader = new StreamReader(input, Encoding.UTF8, true))
+                    json = reader.ReadToEnd();
+
+                string legacyJson = RemoveSerializedObjectMember(json, "<DetectionRoi>k__BackingField");
+                legacyJson = RemoveSerializedObjectMember(legacyJson, "<FeatureExtraction>k__BackingField");
+                True(legacyJson.IndexOf("\"<DetectionRoi>k__BackingField\"", StringComparison.Ordinal) < 0,
+                    "legacy metadata still contains DetectionRoi");
+                True(legacyJson.IndexOf("\"<FeatureExtraction>k__BackingField\"", StringComparison.Ordinal) < 0,
+                    "legacy metadata still contains FeatureExtraction");
+
+                metadataEntry.Delete();
+                ZipArchiveEntry replacement = archive.CreateEntry("job.json", CompressionLevel.Optimal);
+                using (Stream output = replacement.Open())
+                using (StreamWriter writer = new StreamWriter(output, new UTF8Encoding(false)))
+                    writer.Write(legacyJson);
+            }
+
+            CalibrationJob loaded = JobPackageSerializer.Load(path);
+            True(loaded.Template != null, "legacy template was not restored");
+            True(loaded.Template.DetectionRoi == null, "missing legacy detection ROI must remain null");
+            True(loaded.Template.ShapeParameters != null, "legacy shape parameters were not restored");
+            True(loaded.Template.ShapeParameters.FeatureExtraction == null,
+                "missing legacy feature extraction settings must remain null");
+            ShapeFeatureExtractionMode effectiveMode = loaded.Template.ShapeParameters.FeatureExtraction == null
+                ? ShapeFeatureExtractionMode.LegacyImageDomain
+                : loaded.Template.ShapeParameters.FeatureExtraction.Mode;
+            Equal(ShapeFeatureExtractionMode.LegacyImageDomain, effectiveMode,
+                "legacy template feature extraction mode");
+            BytesEqual(InitialModel, loaded.Template.ModelData, "legacy package model bytes");
+        }
+
+        private static string RemoveSerializedObjectMember(string json, string memberName)
+        {
+            string pattern = "\\\"" + Regex.Escape(memberName) + "\\\":\\{[^{}]*\\},?";
+            string updated = Regex.Replace(json, pattern, string.Empty, RegexOptions.CultureInvariant);
+            True(!string.Equals(json, updated, StringComparison.Ordinal),
+                memberName + " was not found in serialized job metadata");
+            return updated;
         }
 
         private static void RepeatedSaveReplacesPackage(string directory)

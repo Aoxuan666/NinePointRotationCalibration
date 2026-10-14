@@ -14,6 +14,9 @@ namespace NinePointRotationCalibration.WinForms.Forms
 {
     public sealed class TemplateEditorForm : Form
     {
+        private const string DefaultMetric = "use_polarity";
+        private const string EdgeContourMetric = "ignore_local_polarity";
+
         private const int HistoryLimit = 30;
 
         private readonly CalibrationCanvas _canvas;
@@ -25,18 +28,33 @@ namespace NinePointRotationCalibration.WinForms.Forms
         private readonly ToolStripButton _selectToolButton;
         private readonly ToolStripButton _templateToolButton;
         private readonly ToolStripButton _searchToolButton;
+        private readonly ToolStripButton _detectionToolButton;
         private readonly ToolStripButton _eraseToolButton;
         private readonly ToolStripButton _restoreToolButton;
         private readonly TabControl _parameterTabs;
+        private readonly CheckBox _teachAdvancedToggle;
+        private readonly CheckBox _matchAdvancedToggle;
+        private readonly List<AdvancedRow> _teachAdvancedRows = new List<AdvancedRow>();
+        private readonly List<AdvancedRow> _matchAdvancedRows = new List<AdvancedRow>();
         private readonly ComboBox _modelTypeCombo;
         private readonly NumericUpDown _levelsInput;
+        private readonly NumericUpDown _matchLevelsInput;
         private readonly NumericUpDown _angleStartInput;
         private readonly NumericUpDown _angleExtentInput;
+        private readonly NumericUpDown _matchAngleStartInput;
+        private readonly NumericUpDown _matchAngleExtentInput;
         private readonly NumericUpDown _angleStepInput;
         private readonly ComboBox _optimizationCombo;
         private readonly ComboBox _metricCombo;
         private readonly NumericUpDown _contrastInput;
         private readonly NumericUpDown _minimumContrastInput;
+        private readonly CheckBox _edgeContourModeCheck;
+        private readonly NumericUpDown _edgeSigmaInput;
+        private readonly NumericUpDown _edgeLowThresholdInput;
+        private readonly NumericUpDown _edgeHighThresholdInput;
+        private readonly NumericUpDown _minimumContourLengthInput;
+        private readonly NumericUpDown _featurePointSpacingInput;
+        private readonly NumericUpDown _maximumFeaturePointCountInput;
         private readonly NumericUpDown _minimumScoreInput;
         private readonly NumericUpDown _greedinessInput;
         private readonly NumericUpDown _maximumOverlapInput;
@@ -57,9 +75,11 @@ namespace NinePointRotationCalibration.WinForms.Forms
         private readonly Button _okButton;
         private readonly Button _cancelButton;
         private readonly TextBox _operationLog;
+        private readonly Label _testResultLabel;
         private readonly Label _modelStateLabel;
         private readonly ToolStripStatusLabel _statusLabel;
         private readonly ToolStripProgressBar _progressBar;
+        private readonly bool _enableDetectionRoi;
 
         private Bitmap _referenceImage;
         private TemplateEditorState _state;
@@ -73,7 +93,8 @@ namespace NinePointRotationCalibration.WinForms.Forms
         public TemplateEditorForm(
             Bitmap referenceImage,
             TemplateEditorState initialState = null,
-            ITemplateEditorService service = null)
+            ITemplateEditorService service = null,
+            bool enableDetectionRoi = false)
         {
             if (referenceImage == null)
             {
@@ -81,12 +102,13 @@ namespace NinePointRotationCalibration.WinForms.Forms
             }
 
             Service = service;
+            _enableDetectionRoi = enableDetectionRoi;
             _referenceImage = new Bitmap(referenceImage);
             _state = initialState == null ? new TemplateEditorState() : initialState.DeepClone();
-            EnsureInitialGeometry(_state, _referenceImage.Size);
+            EnsureInitialGeometry(_state, _referenceImage.Size, _enableDetectionRoi);
             _originalState = _state.DeepClone();
 
-            Text = "模板匹配设置";
+            Text = _enableDetectionRoi ? "定位模板与检测区域" : "模板匹配设置";
             StartPosition = FormStartPosition.CenterParent;
             MinimumSize = new Size(1120, 700);
             Size = new Size(1380, 840);
@@ -103,24 +125,37 @@ namespace NinePointRotationCalibration.WinForms.Forms
             _selectToolButton = CreateToolButton("选择", "选择、移动、缩放或旋转 ROI", (sender, args) => SelectTool(CanvasEditTool.Select), true);
             _templateToolButton = CreateToolButton("模板区", "拖动创建新的模板 ROI", (sender, args) => SelectTool(CanvasEditTool.DrawTemplateRoi), true);
             _searchToolButton = CreateToolButton("搜索区", "拖动创建新的搜索 ROI", (sender, args) => SelectTool(CanvasEditTool.DrawSearchRoi), true);
+            _detectionToolButton = CreateToolButton("检测区", "拖动创建该板的检测 ROI", (sender, args) => SelectTool(CanvasEditTool.DrawDetectionRoi), true);
             _eraseToolButton = CreateToolButton("擦除", "使用画笔从模板有效域中排除区域", (sender, args) => SelectTool(CanvasEditTool.EraseMask), true);
             _restoreToolButton = CreateToolButton("恢复", "使用画笔恢复已擦除的模板区域", (sender, args) => SelectTool(CanvasEditTool.RestoreMask), true);
 
             _modelTypeCombo = CreateCombo(new[] { "Shape", "NCC" });
-            _levelsInput = CreateIntegerInput(0, 12, 0);
-            _angleStartInput = CreateDecimalInput(-180, 180, -30, 1, 2);
-            _angleExtentInput = CreateDecimalInput(0, 360, 60, 1, 2);
+            _teachAdvancedToggle = CreateAdvancedToggle();
+            _matchAdvancedToggle = CreateAdvancedToggle();
+            _levelsInput = CreateIntegerInput(0, 12, 5);
+            _matchLevelsInput = CreateIntegerInput(0, 12, 0);
+            _angleStartInput = CreateDecimalInput(-180, 180, -17.189m, 0.1m, 3);
+            _angleExtentInput = CreateDecimalInput(0, 360, 34.377m, 0.1m, 3);
+            _matchAngleStartInput = CreateDecimalInput(-180, 180, -17.189m, 0.1m, 3);
+            _matchAngleExtentInput = CreateDecimalInput(0.001m, 360, 34.377m, 0.1m, 3);
             _angleStepInput = CreateDecimalInput(0, 30, 0, 0.1m, 3);
             _optimizationCombo = CreateCombo(new[] { "auto", "none", "point_reduction_low", "point_reduction_medium", "point_reduction_high" });
             _metricCombo = CreateCombo(new[] { "use_polarity", "ignore_global_polarity", "ignore_local_polarity", "ignore_color_polarity" });
             _contrastInput = CreateDecimalInput(1, 255, 30, 1, 1);
-            _minimumContrastInput = CreateDecimalInput(0, 255, 10, 1, 1);
-            _minimumScoreInput = CreateDecimalInput(0, 1, 0.6m, 0.01m, 3);
-            _greedinessInput = CreateDecimalInput(0, 1, 0.8m, 0.01m, 3);
-            _maximumOverlapInput = CreateDecimalInput(0, 1, 0.5m, 0.01m, 3);
+            _minimumContrastInput = CreateDecimalInput(0, 255, 20, 1, 1);
+            _edgeContourModeCheck = new CheckBox { Text = "使用外轮廓 XLD 匹配", AutoSize = true };
+            _edgeSigmaInput = CreateDecimalInput(0.2m, 20, 1.2m, 0.1m, 2);
+            _edgeLowThresholdInput = CreateDecimalInput(1, 254, 60, 1, 1);
+            _edgeHighThresholdInput = CreateDecimalInput(2, 255, 100, 1, 1);
+            _minimumContourLengthInput = CreateDecimalInput(2, 10000, 9, 1, 1);
+            _featurePointSpacingInput = CreateDecimalInput(0.5m, 100, 6, 0.5m, 1);
+            _maximumFeaturePointCountInput = CreateIntegerInput(100, 100000, 20000, 100);
+            _minimumScoreInput = CreateDecimalInput(0, 1, 0.5m, 0.01m, 3);
+            _greedinessInput = CreateDecimalInput(0, 1, 0.75m, 0.01m, 3);
+            _maximumOverlapInput = CreateDecimalInput(0, 1, 0.3m, 0.01m, 3);
             _matchCountInput = CreateIntegerInput(0, 100, 1);
             _subPixelCombo = CreateCombo(new[] { "none", "interpolation", "least_squares", "least_squares_high", "least_squares_very_high" });
-            _timeoutInput = CreateIntegerInput(50, 60000, 2000, 50);
+            _timeoutInput = CreateIntegerInput(0, 60000, 0, 50);
             _contourPointSpacingInput = CreateDecimalInput(0.5m, 100, 3, 0.5m, 1);
             _allowPartialCheck = new CheckBox { Text = "允许模板部分超出搜索区域", AutoSize = true };
             _brushRadiusInput = CreateDecimalInput(1, 500, 12, 1, 1);
@@ -143,6 +178,17 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 Dock = DockStyle.Fill,
                 BackColor = Color.White,
                 MinimumSize = new Size(0, 100)
+            };
+            _testResultLabel = new Label
+            {
+                AutoSize = false,
+                Dock = DockStyle.Top,
+                Height = 42,
+                Text = "测试结果：尚未测试",
+                TextAlign = ContentAlignment.MiddleLeft,
+                Padding = new Padding(8, 0, 8, 0),
+                BackColor = Color.FromArgb(232, 236, 240),
+                ForeColor = Color.FromArgb(45, 55, 65)
             };
             _modelStateLabel = new Label
             {
@@ -168,7 +214,9 @@ namespace NinePointRotationCalibration.WinForms.Forms
             SelectTool(CanvasEditTool.Select);
             SetStatus(Service == null
                 ? "尚未注入模板服务；可编辑已有模板，提取/建模/测试暂不可用。"
-                : "请设置模板区域、搜索区域和基准中心。", false);
+                : _enableDetectionRoi
+                    ? "请设置模板区域、搜索区域、检测区域和基准中心。"
+                    : "请设置模板区域、搜索区域和基准中心。", false);
             Shown += HandleFirstShown;
         }
 
@@ -196,7 +244,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
 
             CancelCurrentOperation();
             _state = state.DeepClone();
-            EnsureInitialGeometry(_state, _referenceImage.Size);
+            EnsureInitialGeometry(_state, _referenceImage.Size, _enableDetectionRoi);
             _originalState = _state.DeepClone();
             _undoStack.Clear();
             _redoStack.Clear();
@@ -213,7 +261,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
             Bitmap previous = _referenceImage;
             _referenceImage = new Bitmap(image);
             previous.Dispose();
-            EnsureInitialGeometry(_state, _referenceImage.Size);
+            EnsureInitialGeometry(_state, _referenceImage.Size, _enableDetectionRoi);
             _canvas.SetImage(_referenceImage);
             if (resetView)
             {
@@ -295,6 +343,10 @@ namespace NinePointRotationCalibration.WinForms.Forms
             tools.Items.Add(_selectToolButton);
             tools.Items.Add(_templateToolButton);
             tools.Items.Add(_searchToolButton);
+            if (_enableDetectionRoi)
+            {
+                tools.Items.Add(_detectionToolButton);
+            }
             tools.Items.Add(new ToolStripSeparator());
             tools.Items.Add(_eraseToolButton);
             tools.Items.Add(_restoreToolButton);
@@ -352,35 +404,42 @@ namespace NinePointRotationCalibration.WinForms.Forms
             TabPage teachPage = new TabPage("示教参数");
             TableLayoutPanel teachTable = CreateParameterTable();
             AddParameterRow(teachTable, "模型类型", _modelTypeCombo);
-            AddParameterRow(teachTable, "金字塔层数", _levelsInput);
             AddParameterRow(teachTable, "起始角度 (°)", _angleStartInput);
             AddParameterRow(teachTable, "角度范围 (°)", _angleExtentInput);
-            AddParameterRow(teachTable, "角度步长 (°)", _angleStepInput);
-            AddParameterRow(teachTable, "优化方式", _optimizationCombo);
-            AddParameterRow(teachTable, "极性 / Metric", _metricCombo);
             AddParameterRow(teachTable, "对比度", _contrastInput);
-            AddParameterRow(teachTable, "最小对比度", _minimumContrastInput);
-            AddParameterRow(teachTable, "画笔半径 (px)", _brushRadiusInput);
-            teachTable.Controls.Add(_templateLockedCheck, 0, teachTable.RowCount);
-            teachTable.SetColumnSpan(_templateLockedCheck, 2);
-            teachTable.RowCount++;
-            teachTable.Controls.Add(_searchLockedCheck, 0, teachTable.RowCount);
-            teachTable.SetColumnSpan(_searchLockedCheck, 2);
-            teachTable.RowCount++;
+            AddAdvancedToggleRow(teachTable, _teachAdvancedToggle, _teachAdvancedRows);
+            AddAdvancedParameterRow(teachTable, "金字塔层数", _levelsInput, _teachAdvancedRows);
+            AddAdvancedParameterRow(teachTable, "角度步长 (°)", _angleStepInput, _teachAdvancedRows);
+            AddAdvancedParameterRow(teachTable, "优化方式", _optimizationCombo, _teachAdvancedRows);
+            AddAdvancedParameterRow(teachTable, "极性 / Metric", _metricCombo, _teachAdvancedRows);
+            AddAdvancedParameterRow(teachTable, "最小对比度", _minimumContrastInput, _teachAdvancedRows);
+            AddAdvancedControlRow(teachTable, _edgeContourModeCheck, _teachAdvancedRows);
+            AddAdvancedParameterRow(teachTable, "边缘 Sigma", _edgeSigmaInput, _teachAdvancedRows);
+            AddAdvancedParameterRow(teachTable, "边缘低阈值", _edgeLowThresholdInput, _teachAdvancedRows);
+            AddAdvancedParameterRow(teachTable, "边缘高阈值", _edgeHighThresholdInput, _teachAdvancedRows);
+            AddAdvancedParameterRow(teachTable, "最小轮廓长度 (px)", _minimumContourLengthInput, _teachAdvancedRows);
+            AddAdvancedParameterRow(teachTable, "特征点间距 (px)", _featurePointSpacingInput, _teachAdvancedRows);
+            AddAdvancedParameterRow(teachTable, "最大特征点数", _maximumFeaturePointCountInput, _teachAdvancedRows);
+            AddAdvancedParameterRow(teachTable, "画笔半径 (px)", _brushRadiusInput, _teachAdvancedRows);
+            AddAdvancedControlRow(teachTable, _templateLockedCheck, _teachAdvancedRows);
+            AddAdvancedControlRow(teachTable, _searchLockedCheck, _teachAdvancedRows);
+            UpdateAdvancedRows(_teachAdvancedToggle, _teachAdvancedRows);
             teachPage.Controls.Add(WrapScrollable(teachTable));
 
             TabPage matchPage = new TabPage("运行参数");
             TableLayoutPanel matchTable = CreateParameterTable();
             AddParameterRow(matchTable, "最低分数", _minimumScoreInput);
-            AddParameterRow(matchTable, "Greediness", _greedinessInput);
-            AddParameterRow(matchTable, "最大重叠", _maximumOverlapInput);
-            AddParameterRow(matchTable, "匹配数量 (0=全部)", _matchCountInput);
-            AddParameterRow(matchTable, "亚像素", _subPixelCombo);
-            AddParameterRow(matchTable, "超时 (ms)", _timeoutInput);
-            AddParameterRow(matchTable, "轮廓采点间隔半径 (px)", _contourPointSpacingInput);
-            matchTable.Controls.Add(_allowPartialCheck, 0, matchTable.RowCount);
-            matchTable.SetColumnSpan(_allowPartialCheck, 2);
-            matchTable.RowCount++;
+            AddParameterRow(matchTable, "测试返回上限 (0=全部)", _matchCountInput);
+            AddParameterRow(matchTable, "搜索起始角度 (°)", _matchAngleStartInput);
+            AddParameterRow(matchTable, "搜索角度范围 (°)", _matchAngleExtentInput);
+            AddAdvancedToggleRow(matchTable, _matchAdvancedToggle, _matchAdvancedRows);
+            AddAdvancedParameterRow(matchTable, "搜索金字塔层数 (0=自动)", _matchLevelsInput, _matchAdvancedRows);
+            AddAdvancedParameterRow(matchTable, "Greediness", _greedinessInput, _matchAdvancedRows);
+            AddAdvancedParameterRow(matchTable, "最大重叠", _maximumOverlapInput, _matchAdvancedRows);
+            AddAdvancedParameterRow(matchTable, "亚像素", _subPixelCombo, _matchAdvancedRows);
+            AddAdvancedParameterRow(matchTable, "超时 (ms, 0=不限)", _timeoutInput, _matchAdvancedRows);
+            AddAdvancedParameterRow(matchTable, "轮廓采点间隔半径 (px)", _contourPointSpacingInput, _matchAdvancedRows);
+            UpdateAdvancedRows(_matchAdvancedToggle, _matchAdvancedRows);
             matchPage.Controls.Add(WrapScrollable(matchTable));
 
             TabPage anchorPage = new TabPage("基准中心");
@@ -413,9 +472,10 @@ namespace NinePointRotationCalibration.WinForms.Forms
             {
                 Dock = DockStyle.Fill,
                 ColumnCount = 1,
-                RowCount = 3,
+                RowCount = 4,
                 Padding = new Padding(8)
             };
+            operationLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             operationLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             operationLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             operationLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100.0f));
@@ -437,7 +497,8 @@ namespace NinePointRotationCalibration.WinForms.Forms
             };
             operationLayout.Controls.Add(operationButtons, 0, 0);
             operationLayout.Controls.Add(flowHelp, 0, 1);
-            operationLayout.Controls.Add(_operationLog, 0, 2);
+            operationLayout.Controls.Add(_testResultLabel, 0, 2);
+            operationLayout.Controls.Add(_operationLog, 0, 3);
             operationsPage.Controls.Add(operationLayout);
 
             _parameterTabs.TabPages.Add(teachPage);
@@ -454,7 +515,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
             _canvas.MaskStrokeCreated += CanvasMaskStrokeCreated;
             _canvas.SelectedRoiChanged += (sender, args) => UpdateRoiToolSelection();
 
-            _modelTypeCombo.SelectedIndexChanged += StructuralParameterChanged;
+            _modelTypeCombo.SelectedIndexChanged += ModelTypeChanged;
             _levelsInput.ValueChanged += StructuralParameterChanged;
             _angleStartInput.ValueChanged += StructuralParameterChanged;
             _angleExtentInput.ValueChanged += StructuralParameterChanged;
@@ -463,8 +524,18 @@ namespace NinePointRotationCalibration.WinForms.Forms
             _metricCombo.SelectedIndexChanged += StructuralParameterChanged;
             _contrastInput.ValueChanged += StructuralParameterChanged;
             _minimumContrastInput.ValueChanged += StructuralParameterChanged;
+            _edgeContourModeCheck.CheckedChanged += ShapeFeatureParameterChanged;
+            _edgeSigmaInput.ValueChanged += StructuralParameterChanged;
+            _edgeLowThresholdInput.ValueChanged += StructuralParameterChanged;
+            _edgeHighThresholdInput.ValueChanged += StructuralParameterChanged;
+            _minimumContourLengthInput.ValueChanged += StructuralParameterChanged;
+            _featurePointSpacingInput.ValueChanged += StructuralParameterChanged;
+            _maximumFeaturePointCountInput.ValueChanged += StructuralParameterChanged;
 
             _minimumScoreInput.ValueChanged += RuntimeParameterChanged;
+            _matchLevelsInput.ValueChanged += RuntimeParameterChanged;
+            _matchAngleStartInput.ValueChanged += RuntimeParameterChanged;
+            _matchAngleExtentInput.ValueChanged += RuntimeParameterChanged;
             _greedinessInput.ValueChanged += RuntimeParameterChanged;
             _maximumOverlapInput.ValueChanged += RuntimeParameterChanged;
             _matchCountInput.ValueChanged += RuntimeParameterChanged;
@@ -492,19 +563,31 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 TemplateEditorParameters parameters = _state.Parameters ?? new TemplateEditorParameters();
                 _state.Parameters = parameters;
                 _modelTypeCombo.SelectedIndex = parameters.ModelType == TemplateModelType.Shape ? 0 : 1;
+                UpdateSubPixelOptions(parameters.SubPixel);
                 SetNumeric(_levelsInput, parameters.NumLevels);
+                SetNumeric(_matchLevelsInput, parameters.MatchNumLevels);
                 SetNumeric(_angleStartInput, parameters.AngleStartDegrees);
                 SetNumeric(_angleExtentInput, parameters.AngleExtentDegrees);
+                SetNumeric(_matchAngleStartInput, parameters.MatchAngleStartDegrees);
+                SetNumeric(_matchAngleExtentInput, parameters.MatchAngleExtentDegrees);
                 SetNumeric(_angleStepInput, parameters.AngleStepDegrees);
                 SelectComboValue(_optimizationCombo, parameters.Optimization);
+                NormalizeStoredMetrics(parameters);
+                parameters.Metric = ResolveActiveMetric(parameters);
                 SelectComboValue(_metricCombo, parameters.Metric);
                 SetNumeric(_contrastInput, parameters.Contrast);
                 SetNumeric(_minimumContrastInput, parameters.MinimumContrast);
+                _edgeContourModeCheck.Checked = parameters.FeatureExtractionMode == ShapeFeatureExtractionMode.EdgeContours;
+                SetNumeric(_edgeSigmaInput, parameters.EdgeSigma);
+                SetNumeric(_edgeLowThresholdInput, parameters.EdgeLowThreshold);
+                SetNumeric(_edgeHighThresholdInput, parameters.EdgeHighThreshold);
+                SetNumeric(_minimumContourLengthInput, parameters.MinimumContourLengthPixels);
+                SetNumeric(_featurePointSpacingInput, parameters.FeaturePointSpacingPixels);
+                SetNumeric(_maximumFeaturePointCountInput, parameters.MaximumFeaturePointCount);
                 SetNumeric(_minimumScoreInput, parameters.MinimumScore);
                 SetNumeric(_greedinessInput, parameters.Greediness);
                 SetNumeric(_maximumOverlapInput, parameters.MaximumOverlap);
                 SetNumeric(_matchCountInput, parameters.MatchCount);
-                SelectComboValue(_subPixelCombo, parameters.SubPixel);
                 SetNumeric(_timeoutInput, parameters.TimeoutMilliseconds);
                 SetNumeric(_contourPointSpacingInput, parameters.ContourPointSpacingPixels > 0.0
                     ? parameters.ContourPointSpacingPixels
@@ -522,6 +605,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 }
                 _canvas.TemplateRoi = _state.TemplateRoi;
                 _canvas.SearchRoi = _state.SearchRoi;
+                _canvas.DetectionRoi = _enableDetectionRoi ? _state.DetectionRoi : null;
                 _canvas.ReferenceAnchor = _state.ReferenceAnchor;
                 _canvas.AnchorLocked = _state.AnchorLocked;
                 _canvas.TemplateRoiLocked = _state.TemplateRoiLocked;
@@ -534,6 +618,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 UpdateModelState();
                 UpdateHistoryButtons();
                 UpdateAnchorEnabledState();
+                UpdateShapeFeatureEnabledState();
             }
             finally
             {
@@ -546,6 +631,19 @@ namespace NinePointRotationCalibration.WinForms.Forms
             if (eventArgs.Target == CanvasRoiTarget.Template)
             {
                 _state.TemplateRoi = eventArgs.Roi;
+                // Feature contours belong to the exact image ROI used to
+                // build the model.  Once that ROI moves, keeping the old
+                // contours on screen is misleading (and is especially
+                // visible after rotating a non-symmetric ROI).  Invalidate
+                // the overlay immediately while the user is still dragging;
+                // the final event below marks the model for rebuilding.
+                if ((_state.ModelContours != null && _state.ModelContours.Count > 0) ||
+                    (_state.FeaturePoints != null && _state.FeaturePoints.Count > 0))
+                {
+                    _state.ModelContours = new List<List<ImageCoordinate>>();
+                    _state.FeaturePoints = new List<ImageCoordinate>();
+                    UpdateEditorOverlay();
+                }
                 if (eventArgs.IsFinal)
                 {
                     MarkChanged(true);
@@ -554,6 +652,14 @@ namespace NinePointRotationCalibration.WinForms.Forms
             else if (eventArgs.Target == CanvasRoiTarget.Search)
             {
                 _state.SearchRoi = eventArgs.Roi;
+                if (eventArgs.IsFinal)
+                {
+                    MarkChanged(false);
+                }
+            }
+            else if (eventArgs.Target == CanvasRoiTarget.Detection && _enableDetectionRoi)
+            {
+                _state.DetectionRoi = eventArgs.Roi;
                 if (eventArgs.IsFinal)
                 {
                     MarkChanged(false);
@@ -597,6 +703,45 @@ namespace NinePointRotationCalibration.WinForms.Forms
             PushUndoState();
             ReadParametersFromControls();
             MarkChanged(true);
+        }
+
+        private void ModelTypeChanged(object sender, EventArgs eventArgs)
+        {
+            StructuralParameterChanged(sender, eventArgs);
+            UpdateShapeFeatureEnabledState();
+            UpdateSubPixelOptions(null);
+        }
+
+        private void UpdateSubPixelOptions(string preferredValue)
+        {
+            string selected = string.IsNullOrWhiteSpace(preferredValue)
+                ? Convert.ToString(_subPixelCombo.SelectedItem)
+                : preferredValue;
+            string[] values = _modelTypeCombo.SelectedIndex == 1
+                ? new[] { "none", "interpolation" }
+                : new[] { "none", "interpolation", "least_squares", "least_squares_high", "least_squares_very_high" };
+
+            _subPixelCombo.BeginUpdate();
+            try
+            {
+                _subPixelCombo.Items.Clear();
+                _subPixelCombo.Items.AddRange(values.Cast<object>().ToArray());
+                string normalized = _modelTypeCombo.SelectedIndex == 1 &&
+                    !string.Equals(selected, "none", StringComparison.OrdinalIgnoreCase)
+                    ? "interpolation"
+                    : selected;
+                SelectComboValue(_subPixelCombo, normalized);
+            }
+            finally
+            {
+                _subPixelCombo.EndUpdate();
+            }
+        }
+
+        private void ShapeFeatureParameterChanged(object sender, EventArgs eventArgs)
+        {
+            StructuralParameterChanged(sender, eventArgs);
+            UpdateShapeFeatureEnabledState();
         }
 
         private void RuntimeParameterChanged(object sender, EventArgs eventArgs)
@@ -670,15 +815,38 @@ namespace NinePointRotationCalibration.WinForms.Forms
         private void ReadParametersFromControls()
         {
             TemplateEditorParameters parameters = _state.Parameters ?? new TemplateEditorParameters();
+            NormalizeStoredMetrics(parameters);
+            string selectedMetric = NormalizeMetric(Convert.ToString(_metricCombo.SelectedItem));
+            if (parameters.ModelType == TemplateModelType.Ncc)
+            {
+                parameters.NccMetric = selectedMetric;
+            }
+            else if (parameters.FeatureExtractionMode != ShapeFeatureExtractionMode.EdgeContours)
+            {
+                parameters.ShapeMetric = selectedMetric;
+            }
+
             parameters.ModelType = _modelTypeCombo.SelectedIndex == 1 ? TemplateModelType.Ncc : TemplateModelType.Shape;
             parameters.NumLevels = (int)_levelsInput.Value;
+            parameters.MatchNumLevels = (int)_matchLevelsInput.Value;
             parameters.AngleStartDegrees = (double)_angleStartInput.Value;
             parameters.AngleExtentDegrees = (double)_angleExtentInput.Value;
+            parameters.MatchAngleStartDegrees = (double)_matchAngleStartInput.Value;
+            parameters.MatchAngleExtentDegrees = (double)_matchAngleExtentInput.Value;
             parameters.AngleStepDegrees = (double)_angleStepInput.Value;
             parameters.Optimization = Convert.ToString(_optimizationCombo.SelectedItem);
-            parameters.Metric = Convert.ToString(_metricCombo.SelectedItem);
             parameters.Contrast = (double)_contrastInput.Value;
             parameters.MinimumContrast = (double)_minimumContrastInput.Value;
+            parameters.FeatureExtractionMode = _edgeContourModeCheck.Checked
+                ? ShapeFeatureExtractionMode.EdgeContours
+                : ShapeFeatureExtractionMode.LegacyImageDomain;
+            parameters.Metric = ResolveActiveMetric(parameters);
+            parameters.EdgeSigma = (double)_edgeSigmaInput.Value;
+            parameters.EdgeLowThreshold = (double)_edgeLowThresholdInput.Value;
+            parameters.EdgeHighThreshold = (double)_edgeHighThresholdInput.Value;
+            parameters.MinimumContourLengthPixels = (double)_minimumContourLengthInput.Value;
+            parameters.FeaturePointSpacingPixels = (double)_featurePointSpacingInput.Value;
+            parameters.MaximumFeaturePointCount = (int)_maximumFeaturePointCountInput.Value;
             parameters.MinimumScore = (double)_minimumScoreInput.Value;
             parameters.Greediness = (double)_greedinessInput.Value;
             parameters.MaximumOverlap = (double)_maximumOverlapInput.Value;
@@ -695,6 +863,14 @@ namespace NinePointRotationCalibration.WinForms.Forms
         {
             if (!CanRunServiceOperation("提取特征"))
             {
+                return;
+            }
+
+            ReadParametersFromControls();
+            string validationMessage;
+            if (!ValidateGeometry(out validationMessage))
+            {
+                MessageBox.Show(this, validationMessage, "模板参数", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
 
@@ -742,6 +918,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 return;
             }
 
+            ReadParametersFromControls();
             string validationMessage;
             if (!ValidateGeometry(out validationMessage))
             {
@@ -752,7 +929,6 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 return;
             }
 
-            ReadParametersFromControls();
             TemplateBuildResult result = null;
             await RunBusyOperationAsync("正在创建模板模型...", async token =>
             {
@@ -831,7 +1007,18 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 return;
             }
 
-            AppendOperationLog(result.Success, result.Message);
+            string testSummary = result.Success
+                ? string.Format(
+                    "测试结果：CT {0:0.0} ms   Score {1:0.000}   Row {2:0.###}   Column {3:0.###}   Angle {4:0.###}°",
+                    result.ElapsedMilliseconds,
+                    result.Score,
+                    result.Position.Row,
+                    result.Position.Column,
+                    result.AngleDegrees)
+                : "测试结果：NG   " + (result.Message ?? "测试匹配失败。");
+            _testResultLabel.Text = testSummary;
+            _testResultLabel.ForeColor = result.Success ? Color.DarkGreen : Color.Firebrick;
+            AppendOperationLog(result.Success, testSummary);
             ShowTestOverlay(result);
             SetStatus(
                 result.Success
@@ -896,7 +1083,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
         private void SetBusyState(bool busy)
         {
             _progressBar.Visible = busy;
-            _extractButton.Enabled = !busy && Service != null;
+            _extractButton.Enabled = !busy && Service != null && _modelTypeCombo.SelectedIndex == 0;
             _createButton.Enabled = !busy && Service != null;
             _testButton.Enabled = !busy && Service != null;
             _okButton.Enabled = !busy;
@@ -917,36 +1104,6 @@ namespace NinePointRotationCalibration.WinForms.Forms
             CanvasRuntimeOverlay overlay = new CanvasRuntimeOverlay();
             if (result.Success)
             {
-                // Render the matched model contour as green points only. Do not connect
-                // contour samples with polylines because the sampled order is not a
-                // display topology contract for every HALCON model.
-                double spacing = Math.Max(0.5, _state.Parameters.ContourPointSpacingPixels);
-                double minimumDistanceSquared = spacing * spacing;
-                foreach (List<ImageCoordinate> contour in result.MatchedContours ?? new List<List<ImageCoordinate>>())
-                {
-                    bool hasLastPoint = false;
-                    ImageCoordinate lastPoint = new ImageCoordinate();
-                    foreach (ImageCoordinate point in contour ?? new List<ImageCoordinate>())
-                    {
-                        double deltaRow = point.Row - lastPoint.Row;
-                        double deltaColumn = point.Column - lastPoint.Column;
-                        if (hasLastPoint &&
-                            ((deltaRow * deltaRow) + (deltaColumn * deltaColumn)) < minimumDistanceSquared)
-                        {
-                            continue;
-                        }
-
-                        overlay.Points.Add(new CanvasPointOverlay
-                        {
-                            Position = point,
-                            Color = Color.Lime,
-                            RadiusPixels = 2.0f
-                        });
-                        lastPoint = point;
-                        hasLastPoint = true;
-                    }
-                }
-
                 overlay.Points.Add(new CanvasPointOverlay
                 {
                     Position = result.Position,
@@ -961,28 +1118,90 @@ namespace NinePointRotationCalibration.WinForms.Forms
         private void UpdateEditorOverlay()
         {
             CanvasRuntimeOverlay overlay = new CanvasRuntimeOverlay();
-            foreach (ImageCoordinate point in _state.FeaturePoints ?? new List<ImageCoordinate>())
+            IEnumerable<List<ImageCoordinate>> contours = _state.ModelContours;
+            if (contours == null || !_state.ModelContours.Any(item => item != null && item.Count > 0))
             {
-                overlay.Points.Add(new CanvasPointOverlay
-                {
-                    Position = point,
-                    Color = Color.Cyan,
-                    RadiusPixels = 2.0f
-                });
+                contours = new[] { _state.FeaturePoints ?? new List<ImageCoordinate>() };
             }
 
-            foreach (List<ImageCoordinate> contour in _state.ModelContours ?? new List<List<ImageCoordinate>>())
+            AddFeaturePoints(overlay, contours, Color.Cyan);
+            _canvas.EditorOverlay = overlay;
+        }
+
+        private static void AddFeaturePoints(
+            CanvasRuntimeOverlay overlay,
+            IEnumerable<List<ImageCoordinate>> contours,
+            Color color)
+        {
+            if (overlay == null)
             {
+                throw new ArgumentNullException("overlay");
+            }
+
+            foreach (List<ImageCoordinate> contour in contours ?? Enumerable.Empty<List<ImageCoordinate>>())
+            {
+                if (contour == null) continue;
+                foreach (ImageCoordinate point in contour)
+                {
+                    if (IsFinite(point.Row) && IsFinite(point.Column))
+                        AddPreviewPoint(overlay, point, color);
+                }
+            }
+        }
+
+        private static void AddContourPoints(
+            CanvasRuntimeOverlay overlay,
+            IEnumerable<List<ImageCoordinate>> contours,
+            Color color)
+        {
+            if (overlay == null)
+            {
+                throw new ArgumentNullException("overlay");
+            }
+
+            foreach (List<ImageCoordinate> contour in contours ?? Enumerable.Empty<List<ImageCoordinate>>())
+            {
+                if (contour == null || contour.Count == 0)
+                {
+                    continue;
+                }
+
+                List<ImageCoordinate> finitePoints = contour
+                    .Where(point => IsFinite(point.Row) && IsFinite(point.Column))
+                    .ToList();
+                if (finitePoints.Count < 2)
+                {
+                    foreach (ImageCoordinate point in finitePoints)
+                        AddPreviewPoint(overlay, point, color);
+                    continue;
+                }
+
                 overlay.Polylines.Add(new CanvasPolylineOverlay
                 {
-                    Points = contour,
-                    Color = Color.Orange,
-                    WidthPixels = 1.2f,
-                    Closed = true
+                    Points = finitePoints,
+                    Color = color,
+                    WidthPixels = 1.5f,
+                    Closed = false
                 });
             }
+        }
 
-            _canvas.EditorOverlay = overlay;
+        private static void AddPreviewPoint(
+            CanvasRuntimeOverlay overlay,
+            ImageCoordinate point,
+            Color color)
+        {
+            overlay.Points.Add(new CanvasPointOverlay
+            {
+                Position = point,
+                Color = color,
+                RadiusPixels = 1.5f
+            });
+        }
+
+        private static bool IsFinite(double value)
+        {
+            return !double.IsNaN(value) && !double.IsInfinity(value);
         }
 
         private void SelectTool(CanvasEditTool tool)
@@ -991,6 +1210,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
             _selectToolButton.Checked = tool == CanvasEditTool.Select;
             _templateToolButton.Checked = tool == CanvasEditTool.DrawTemplateRoi;
             _searchToolButton.Checked = tool == CanvasEditTool.DrawSearchRoi;
+            _detectionToolButton.Checked = tool == CanvasEditTool.DrawDetectionRoi;
             _eraseToolButton.Checked = tool == CanvasEditTool.EraseMask;
             _restoreToolButton.Checked = tool == CanvasEditTool.RestoreMask;
             if (tool == CanvasEditTool.DrawTemplateRoi)
@@ -1000,6 +1220,10 @@ namespace NinePointRotationCalibration.WinForms.Forms
             else if (tool == CanvasEditTool.DrawSearchRoi)
             {
                 _canvas.SelectedRoi = CanvasRoiTarget.Search;
+            }
+            else if (tool == CanvasEditTool.DrawDetectionRoi)
+            {
+                _canvas.SelectedRoi = CanvasRoiTarget.Detection;
             }
         }
 
@@ -1012,6 +1236,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
 
             _templateToolButton.Checked = false;
             _searchToolButton.Checked = false;
+            _detectionToolButton.Checked = false;
         }
 
         private void ClearMask(object sender, EventArgs eventArgs)
@@ -1172,7 +1397,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 _modelStateLabel.BackColor = Color.FromArgb(39, 132, 87);
             }
 
-            _extractButton.Enabled = !_busy && Service != null;
+            _extractButton.Enabled = !_busy && Service != null && _modelTypeCombo.SelectedIndex == 0;
             _createButton.Enabled = !_busy && Service != null;
             _testButton.Enabled = !_busy && Service != null && _state.HasModel && !_state.ModelDirty;
         }
@@ -1187,6 +1412,40 @@ namespace NinePointRotationCalibration.WinForms.Forms
         {
             _anchorRowInput.Enabled = !_state.AnchorLocked;
             _anchorColumnInput.Enabled = !_state.AnchorLocked;
+        }
+
+        private void UpdateShapeFeatureEnabledState()
+        {
+            bool isShapeModel = _modelTypeCombo.SelectedIndex == 0;
+            bool edgeContoursEnabled = isShapeModel && _edgeContourModeCheck.Checked;
+            TemplateEditorParameters parameters = _state.Parameters ?? new TemplateEditorParameters();
+            _state.Parameters = parameters;
+            NormalizeStoredMetrics(parameters);
+            parameters.Metric = edgeContoursEnabled
+                ? EdgeContourMetric
+                : isShapeModel ? parameters.ShapeMetric : parameters.NccMetric;
+
+            bool wasLoadingControls = _loadingControls;
+            _loadingControls = true;
+            try
+            {
+                SelectComboValue(_metricCombo, parameters.Metric);
+            }
+            finally
+            {
+                _loadingControls = wasLoadingControls;
+            }
+
+            _edgeContourModeCheck.Enabled = isShapeModel;
+            _metricCombo.Enabled = !edgeContoursEnabled;
+            _contrastInput.Enabled = !edgeContoursEnabled;
+            _edgeSigmaInput.Enabled = edgeContoursEnabled;
+            _edgeLowThresholdInput.Enabled = edgeContoursEnabled;
+            _edgeHighThresholdInput.Enabled = edgeContoursEnabled;
+            _minimumContourLengthInput.Enabled = edgeContoursEnabled;
+            _featurePointSpacingInput.Enabled = edgeContoursEnabled;
+            _maximumFeaturePointCountInput.Enabled = edgeContoursEnabled;
+            _extractButton.Enabled = !_busy && Service != null && isShapeModel;
         }
 
         private void ConfirmEditor(object sender, EventArgs eventArgs)
@@ -1234,6 +1493,15 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 return false;
             }
 
+            if (_enableDetectionRoi &&
+                (_state.DetectionRoi == null ||
+                 _state.DetectionRoi.HalfWidth < 2.0 ||
+                 _state.DetectionRoi.HalfHeight < 2.0))
+            {
+                message = "请设置有效的检测 ROI。";
+                return false;
+            }
+
             if (!_state.SearchRoi.Contains(new ImageCoordinate(_state.TemplateRoi.CenterRow, _state.TemplateRoi.CenterColumn)))
             {
                 message = "搜索 ROI 必须覆盖模板 ROI 的中心。";
@@ -1246,14 +1514,60 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 return false;
             }
 
-            if (_state.Parameters.MinimumContrast > _state.Parameters.Contrast)
+            if (_state.Parameters.ModelType == TemplateModelType.Shape &&
+                _state.Parameters.FeatureExtractionMode == ShapeFeatureExtractionMode.LegacyImageDomain &&
+                _state.Parameters.MinimumContrast > _state.Parameters.Contrast)
             {
                 message = "最小对比度不能大于模板对比度。";
                 return false;
             }
 
+            if (_state.Parameters.ModelType == TemplateModelType.Shape &&
+                _state.Parameters.FeatureExtractionMode == ShapeFeatureExtractionMode.EdgeContours &&
+                _state.Parameters.EdgeHighThreshold <= _state.Parameters.EdgeLowThreshold)
+            {
+                message = "边缘高阈值必须大于边缘低阈值。";
+                return false;
+            }
+
             message = null;
             return true;
+        }
+
+        private static void NormalizeStoredMetrics(TemplateEditorParameters parameters)
+        {
+            string activeMetric = NormalizeMetric(parameters.Metric);
+            if (string.IsNullOrWhiteSpace(parameters.ShapeMetric))
+            {
+                parameters.ShapeMetric = parameters.ModelType == TemplateModelType.Shape &&
+                                         parameters.FeatureExtractionMode != ShapeFeatureExtractionMode.EdgeContours
+                    ? activeMetric
+                    : DefaultMetric;
+            }
+
+            if (string.IsNullOrWhiteSpace(parameters.NccMetric))
+            {
+                parameters.NccMetric = parameters.ModelType == TemplateModelType.Ncc
+                    ? activeMetric
+                    : DefaultMetric;
+            }
+        }
+
+        private static string ResolveActiveMetric(TemplateEditorParameters parameters)
+        {
+            if (parameters.ModelType == TemplateModelType.Ncc)
+            {
+                return NormalizeMetric(parameters.NccMetric);
+            }
+
+            return parameters.FeatureExtractionMode == ShapeFeatureExtractionMode.EdgeContours
+                ? EdgeContourMetric
+                : NormalizeMetric(parameters.ShapeMetric);
+        }
+
+        private static string NormalizeMetric(string metric)
+        {
+            return string.IsNullOrWhiteSpace(metric) ? DefaultMetric : metric;
         }
 
         private bool CanRunServiceOperation(string operationName)
@@ -1302,7 +1616,10 @@ namespace NinePointRotationCalibration.WinForms.Forms
             _operationLog.AppendText(line + Environment.NewLine);
         }
 
-        private static void EnsureInitialGeometry(TemplateEditorState state, Size imageSize)
+        private static void EnsureInitialGeometry(
+            TemplateEditorState state,
+            Size imageSize,
+            bool enableDetectionRoi)
         {
             if (state.TemplateRoi == null)
             {
@@ -1322,6 +1639,11 @@ namespace NinePointRotationCalibration.WinForms.Forms
                     Math.Max(20.0, imageSize.Width * 0.42),
                     Math.Max(20.0, imageSize.Height * 0.42),
                     0.0);
+            }
+
+            if (enableDetectionRoi && state.DetectionRoi == null)
+            {
+                state.DetectionRoi = state.TemplateRoi.DeepClone();
             }
 
             if (state.ReferenceAnchor.Row == 0.0 && state.ReferenceAnchor.Column == 0.0)
@@ -1354,6 +1676,26 @@ namespace NinePointRotationCalibration.WinForms.Forms
             return button;
         }
 
+        private static CheckBox CreateAdvancedToggle()
+        {
+            CheckBox toggle = new CheckBox
+            {
+                Appearance = Appearance.Button,
+                AutoSize = false,
+                Checked = false,
+                Cursor = Cursors.Hand,
+                Dock = DockStyle.Fill,
+                FlatStyle = FlatStyle.Flat,
+                Height = 32,
+                Margin = new Padding(3, 8, 3, 6),
+                Text = "高级选项 ▶",
+                TextAlign = ContentAlignment.MiddleCenter,
+                UseVisualStyleBackColor = true
+            };
+            toggle.FlatAppearance.BorderColor = Color.FromArgb(188, 194, 201);
+            return toggle;
+        }
+
         private static ComboBox CreateCombo(IEnumerable<string> items)
         {
             ComboBox combo = new ComboBox
@@ -1378,7 +1720,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
             decimal increment,
             int decimals)
         {
-            return new NumericUpDown
+            NumericUpDown input = new NumericUpDown
             {
                 Minimum = minimum,
                 Maximum = maximum,
@@ -1388,6 +1730,31 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 Dock = DockStyle.Fill,
                 ThousandsSeparator = true
             };
+            input.MouseWheel += NumericInput_MouseWheel;
+            return input;
+        }
+
+        private static void NumericInput_MouseWheel(object sender, MouseEventArgs eventArgs)
+        {
+            HandledMouseEventArgs handled = eventArgs as HandledMouseEventArgs;
+            if (handled != null) handled.Handled = true;
+
+            NumericUpDown input = sender as NumericUpDown;
+            if (input == null || !input.Focused || eventArgs.Delta == 0) return;
+
+            decimal value;
+            if (eventArgs.Delta > 0)
+            {
+                decimal remaining = input.Maximum - input.Value;
+                value = remaining <= input.Increment ? input.Maximum : input.Value + input.Increment;
+            }
+            else
+            {
+                decimal remaining = input.Value - input.Minimum;
+                value = remaining <= input.Increment ? input.Minimum : input.Value - input.Increment;
+            }
+
+            if (value != input.Value) input.Value = value;
         }
 
         private static NumericUpDown CreateIntegerInput(int minimum, int maximum, int value, int increment = 1)
@@ -1426,6 +1793,70 @@ namespace NinePointRotationCalibration.WinForms.Forms
             table.Controls.Add(control, 1, row);
         }
 
+        private static void AddAdvancedToggleRow(
+            TableLayoutPanel table,
+            CheckBox toggle,
+            IList<AdvancedRow> advancedRows)
+        {
+            int row = table.RowCount++;
+            table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            table.Controls.Add(toggle, 0, row);
+            table.SetColumnSpan(toggle, 2);
+            toggle.CheckedChanged += (sender, args) => UpdateAdvancedRows(toggle, advancedRows);
+        }
+
+        private static void AddAdvancedParameterRow(
+            TableLayoutPanel table,
+            string labelText,
+            Control control,
+            ICollection<AdvancedRow> advancedRows)
+        {
+            int row = table.RowCount++;
+            RowStyle rowStyle = new RowStyle(SizeType.AutoSize);
+            table.RowStyles.Add(rowStyle);
+            Label label = new Label
+            {
+                Text = labelText,
+                AutoSize = true,
+                Anchor = AnchorStyles.Left,
+                Margin = new Padding(3, 8, 6, 8)
+            };
+            control.Margin = new Padding(3, 4, 3, 4);
+            table.Controls.Add(label, 0, row);
+            table.Controls.Add(control, 1, row);
+            advancedRows.Add(new AdvancedRow(rowStyle, label, control));
+        }
+
+        private static void AddAdvancedControlRow(
+            TableLayoutPanel table,
+            Control control,
+            ICollection<AdvancedRow> advancedRows)
+        {
+            int row = table.RowCount++;
+            RowStyle rowStyle = new RowStyle(SizeType.AutoSize);
+            table.RowStyles.Add(rowStyle);
+            control.Margin = new Padding(3, 7, 3, 7);
+            table.Controls.Add(control, 0, row);
+            table.SetColumnSpan(control, 2);
+            advancedRows.Add(new AdvancedRow(rowStyle, control));
+        }
+
+        private static void UpdateAdvancedRows(CheckBox toggle, IEnumerable<AdvancedRow> advancedRows)
+        {
+            bool expanded = toggle.Checked;
+            toggle.Text = expanded ? "高级选项 ▼" : "高级选项 ▶";
+            foreach (AdvancedRow row in advancedRows)
+            {
+                row.SetVisible(expanded);
+            }
+
+            TableLayoutPanel table = toggle.Parent as TableLayoutPanel;
+            if (table != null)
+            {
+                table.PerformLayout();
+            }
+        }
+
         private static Control WrapScrollable(Control child)
         {
             Panel panel = new Panel { Dock = DockStyle.Fill, AutoScroll = true };
@@ -1451,6 +1882,31 @@ namespace NinePointRotationCalibration.WinForms.Forms
         {
             int index = combo.FindStringExact(value ?? string.Empty);
             combo.SelectedIndex = index >= 0 ? index : 0;
+        }
+
+        private sealed class AdvancedRow
+        {
+            private readonly Control[] _controls;
+            private readonly RowStyle _rowStyle;
+
+            public AdvancedRow(RowStyle rowStyle, params Control[] controls)
+            {
+                _rowStyle = rowStyle ?? throw new ArgumentNullException(nameof(rowStyle));
+                _controls = controls ?? new Control[0];
+            }
+
+            public void SetVisible(bool visible)
+            {
+                _rowStyle.SizeType = visible ? SizeType.AutoSize : SizeType.Absolute;
+                _rowStyle.Height = 0.0f;
+                foreach (Control control in _controls)
+                {
+                    if (control != null)
+                    {
+                        control.Visible = visible;
+                    }
+                }
+            }
         }
     }
 
