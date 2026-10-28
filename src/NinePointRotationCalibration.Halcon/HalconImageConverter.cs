@@ -17,50 +17,98 @@ namespace NinePointRotationCalibration.Halcon
             if (source.Width <= 0 || source.Height <= 0)
                 throw new ArgumentException("The input image has no pixels.", nameof(source));
 
-            Bitmap bitmap = source;
-            bool ownsBitmap = false;
-            PixelFormat lockFormat;
-            string colorFormat;
-            BitmapData data = null;
+            // Fast paths read the bitmap buffer directly. Only unusual formats
+            // (and indexed bitmaps with a non-gray palette) pay for a GDI+ redraw.
+            HImage converted;
+            if (source.PixelFormat == PixelFormat.Format8bppIndexed && HasGrayPalette(source))
+            {
+                converted = FromGray8(source);
+                if (converted != null) return converted;
+            }
+            else if (source.PixelFormat == PixelFormat.Format24bppRgb)
+            {
+                converted = FromInterleaved(source, PixelFormat.Format24bppRgb, "bgr", 3);
+                if (converted != null) return converted;
+            }
+            else if (source.PixelFormat == PixelFormat.Format32bppRgb ||
+                     source.PixelFormat == PixelFormat.Format32bppArgb ||
+                     source.PixelFormat == PixelFormat.Format32bppPArgb)
+            {
+                converted = FromInterleaved(source, source.PixelFormat, "bgrx", 4);
+                if (converted != null) return converted;
+            }
+
+            using (Bitmap redrawn = new Bitmap(source.Width, source.Height, PixelFormat.Format32bppRgb))
+            {
+                using (Graphics graphics = Graphics.FromImage(redrawn))
+                    graphics.DrawImageUnscaled(source, 0, 0);
+                converted = FromInterleaved(redrawn, PixelFormat.Format32bppRgb, "bgrx", 4);
+                if (converted == null)
+                    throw new InvalidOperationException("The bitmap buffer layout is not supported.");
+                return converted;
+            }
+        }
+
+        private static HImage FromGray8(Bitmap bitmap)
+        {
+            int width = bitmap.Width;
+            int height = bitmap.Height;
+            BitmapData data = bitmap.LockBits(
+                new Rectangle(0, 0, width, height),
+                ImageLockMode.ReadOnly,
+                PixelFormat.Format8bppIndexed);
+            try
+            {
+                if (data.Stride <= 0) return null;
+                HImage image = new HImage();
+                try
+                {
+                    // gen_image1 copies the buffer, so the bitmap can be unlocked afterwards.
+                    image.GenImage1("byte", data.Stride, height, data.Scan0);
+                    if (data.Stride == width) return image;
+                    HImage cropped = image.CropPart(0, 0, width, height);
+                    image.Dispose();
+                    return cropped;
+                }
+                catch
+                {
+                    image.Dispose();
+                    throw;
+                }
+            }
+            finally
+            {
+                bitmap.UnlockBits(data);
+            }
+        }
+
+        private static HImage FromInterleaved(Bitmap bitmap, PixelFormat lockFormat, string colorFormat, int bytesPerPixel)
+        {
+            int width = bitmap.Width;
+            int height = bitmap.Height;
+            BitmapData data = bitmap.LockBits(
+                new Rectangle(0, 0, width, height),
+                ImageLockMode.ReadOnly,
+                lockFormat);
             HImage interleaved = null;
             try
             {
-                bool tightlyPacked24 = source.PixelFormat == PixelFormat.Format24bppRgb &&
-                    ((source.Width * 3) & 3) == 0;
-                if (tightlyPacked24)
-                {
-                    lockFormat = PixelFormat.Format24bppRgb;
-                    colorFormat = "bgr";
-                }
-                else if (source.PixelFormat == PixelFormat.Format32bppRgb)
-                {
-                    lockFormat = PixelFormat.Format32bppRgb;
-                    colorFormat = "bgrx";
-                }
-                else
-                {
-                    bitmap = new Bitmap(source.Width, source.Height, PixelFormat.Format32bppRgb);
-                    ownsBitmap = true;
-                    using (Graphics graphics = Graphics.FromImage(bitmap))
-                        graphics.DrawImageUnscaled(source, 0, 0);
-                    lockFormat = PixelFormat.Format32bppRgb;
-                    colorFormat = "bgrx";
-                }
+                int packed = width * bytesPerPixel;
+                int alignment;
+                if (data.Stride == packed) alignment = -1;
+                else if (data.Stride == ((packed + 3) / 4) * 4) alignment = 4;
+                else return null;
 
-                data = bitmap.LockBits(
-                    new Rectangle(0, 0, bitmap.Width, bitmap.Height),
-                    ImageLockMode.ReadOnly,
-                    lockFormat);
                 interleaved = new HImage();
                 interleaved.GenImageInterleaved(
                     data.Scan0,
                     colorFormat,
-                    bitmap.Width,
-                    bitmap.Height,
-                    -1,
+                    width,
+                    height,
+                    alignment,
                     "byte",
-                    bitmap.Width,
-                    bitmap.Height,
+                    width,
+                    height,
                     0,
                     0,
                     -1,
@@ -73,9 +121,20 @@ namespace NinePointRotationCalibration.Halcon
             finally
             {
                 if (interleaved != null) interleaved.Dispose();
-                if (data != null) bitmap.UnlockBits(data);
-                if (ownsBitmap) bitmap.Dispose();
+                bitmap.UnlockBits(data);
             }
+        }
+
+        private static bool HasGrayPalette(Bitmap bitmap)
+        {
+            Color[] entries = bitmap.Palette.Entries;
+            if (entries.Length < 256) return false;
+            for (int index = 0; index < 256; index++)
+            {
+                Color color = entries[index];
+                if (color.R != index || color.G != index || color.B != index) return false;
+            }
+            return true;
         }
 
         public static Bitmap ToGrayBitmap(HImage image)

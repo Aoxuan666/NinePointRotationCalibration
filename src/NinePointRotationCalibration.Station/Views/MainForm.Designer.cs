@@ -681,8 +681,17 @@ namespace NinePointRotationCalibration.Station.Views
             chkCalibrationEnabled.Text = "启用标定与坐标换算";
             chkCalibrationEnabled.UseVisualStyleBackColor = true;
 
+            CheckBox archiveImages = new CheckBox();
+            archiveImages.AutoSize = true;
+            archiveImages.Checked = false;
+            archiveImages.Margin = new Padding(0, 4, 0, 0);
+            archiveImages.Name = "chkArchiveImages";
+            archiveImages.Text = "保存生产原图（默认关闭）";
+            archiveImages.UseVisualStyleBackColor = true;
+
             modeOptions.Controls.Add(chkCameraEnabled);
             modeOptions.Controls.Add(chkCalibrationEnabled);
+            modeOptions.Controls.Add(archiveImages);
             mode.Controls.Add(modeOptions);
 
             GroupBox connection = CreateGroupBox("相机连接");

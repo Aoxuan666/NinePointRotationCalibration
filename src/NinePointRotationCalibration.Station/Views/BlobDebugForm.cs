@@ -256,8 +256,7 @@ namespace NinePointRotationCalibration.Station.Views
             try
             {
                 payload = await Task.Run(
-                    () => AnalyzePreview(profile, cancellation.Token),
-                    cancellation.Token).ConfigureAwait(false);
+                    () => AnalyzePreview(profile, cancellation.Token)).ConfigureAwait(false);
                 cancelled = cancellation.IsCancellationRequested;
             }
             catch (OperationCanceledException)
@@ -292,9 +291,13 @@ namespace NinePointRotationCalibration.Station.Views
             DetectionProfile profile,
             CancellationToken cancellationToken)
         {
-            _analysisGate.Wait(cancellationToken);
+            while (!_analysisGate.Wait(50))
+            {
+                if (cancellationToken.IsCancellationRequested) return null;
+            }
             try
             {
+                if (cancellationToken.IsCancellationRequested) return null;
                 Stopwatch totalWatch = Stopwatch.StartNew();
                 List<BlobAnalysisResult> analyses = new List<BlobAnalysisResult>();
                 List<TemplateMatchResult> matches = new List<TemplateMatchResult>();
@@ -303,6 +306,7 @@ namespace NinePointRotationCalibration.Station.Views
                     if (profile.TemplateMatchingEnabled)
                     {
                         TemplateMatchCollectionResult located = EnsureTemplateMatches(cancellationToken);
+                        if (located == null) return null;
                         if (located.Matches != null)
                         {
                             matches.AddRange(located.Matches.Where(match => match != null && match.Success));
@@ -323,7 +327,7 @@ namespace NinePointRotationCalibration.Station.Views
                                 _positioningJob.Template,
                                 match,
                                 profile)).ToList();
-                        analyses.AddRange(_blobAnalyzer.AnalyzeRoisDetailed(
+                        analyses.AddRange(_blobAnalyzer.AnalyzeRoisDetailedNoThrow(
                             _sourceImage,
                             rois,
                             profile,
@@ -335,7 +339,7 @@ namespace NinePointRotationCalibration.Station.Views
                         TemplateDefinition template = _positioningJob == null
                             ? null
                             : _positioningJob.Template;
-                        analyses.Add(_blobAnalyzer.AnalyzeDirectDetailed(
+                        analyses.Add(_blobAnalyzer.AnalyzeDirectDetailedNoThrow(
                             _sourceImage,
                             template,
                             profile,
@@ -343,7 +347,7 @@ namespace NinePointRotationCalibration.Station.Views
                             cancellationToken));
                     }
 
-                    cancellationToken.ThrowIfCancellationRequested();
+                    if (cancellationToken.IsCancellationRequested) return null;
                     totalWatch.Stop();
                     return BuildPreviewPayload(
                         analyses,
@@ -368,7 +372,7 @@ namespace NinePointRotationCalibration.Station.Views
 
         private TemplateMatchCollectionResult EnsureTemplateMatches(CancellationToken cancellationToken)
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            if (cancellationToken.IsCancellationRequested) return null;
             if (_cachedMatches != null) return _cachedMatches;
             if (_positioningJob == null || _positioningJob.Template == null)
                 throw new InvalidOperationException("未加载定位模板，无法启用模板匹配。");
@@ -390,7 +394,7 @@ namespace NinePointRotationCalibration.Station.Views
             // this preview became stale while LocateAll was running, so the next preview only
             // needs to rerun thresholding and Blob analysis.
             _cachedMatches = result;
-            cancellationToken.ThrowIfCancellationRequested();
+            if (cancellationToken.IsCancellationRequested) return null;
             return _cachedMatches;
         }
 
@@ -598,7 +602,15 @@ namespace NinePointRotationCalibration.Station.Views
                         return;
                     }
 
-                    ApplyPreviewPayload(payload);
+                    try
+                    {
+                        ApplyPreviewPayload(payload);
+                    }
+                    catch (Exception exception)
+                    {
+                        if (payload != null) payload.Dispose();
+                        if (!_closing && !IsDisposed) ApplyPreviewError(exception.Message);
+                    }
                 }));
             }
             catch (ObjectDisposedException)

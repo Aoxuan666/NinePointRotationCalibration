@@ -18,6 +18,14 @@ namespace NinePointRotationCalibration.Station.Services.Camera
         private int _previewIntervalMilliseconds;
         private bool _disposed;
 
+        // Production/workflow captures take priority over preview: while one is
+        // waiting, and for a quiet period after the last one, the preview loop
+        // does not trigger the camera, so a host trigger never queues behind a
+        // preview exposure during continuous production.
+        private const int PreviewQuietPeriodMilliseconds = 1000;
+        private int _priorityCapturesPending;
+        private long _lastPriorityCaptureTicks;
+
         public CameraAcquisitionService(ICameraDevice device, int previewIntervalMilliseconds)
         {
             _device = device ?? throw new ArgumentNullException(nameof(device));
@@ -117,6 +125,29 @@ namespace NinePointRotationCalibration.Station.Services.Camera
         public async Task<CameraFrame> CaptureAsync(CancellationToken cancellationToken)
         {
             ThrowIfDisposed();
+            Interlocked.Increment(ref _priorityCapturesPending);
+            try
+            {
+                return await CaptureCoreAsync(cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _lastPriorityCaptureTicks, DateTime.UtcNow.Ticks);
+                Interlocked.Decrement(ref _priorityCapturesPending);
+            }
+        }
+
+        private bool PreviewShouldYield()
+        {
+            if (Volatile.Read(ref _priorityCapturesPending) > 0) return true;
+            long last = Interlocked.Read(ref _lastPriorityCaptureTicks);
+            return last != 0 &&
+                   (DateTime.UtcNow.Ticks - last) < TimeSpan.TicksPerMillisecond * PreviewQuietPeriodMilliseconds;
+        }
+
+        private async Task<CameraFrame> CaptureCoreAsync(CancellationToken cancellationToken)
+        {
+            ThrowIfDisposed();
             await _deviceGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
@@ -180,7 +211,13 @@ namespace NinePointRotationCalibration.Station.Services.Camera
             {
                 try
                 {
-                    using (CameraFrame frame = await CaptureAsync(cancellationToken).ConfigureAwait(false))
+                    if (PreviewShouldYield())
+                    {
+                        await Task.Delay(_previewIntervalMilliseconds, cancellationToken).ConfigureAwait(false);
+                        continue;
+                    }
+
+                    using (CameraFrame frame = await CaptureCoreAsync(cancellationToken).ConfigureAwait(false))
                         PublishPreviewFrame(frame.Image);
 
                     consecutiveFailures = 0;

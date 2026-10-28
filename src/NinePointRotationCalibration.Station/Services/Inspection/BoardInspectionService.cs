@@ -76,6 +76,7 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
                 CurrentR = currentR
             };
 
+            HalconGrayImage gray = null;
             try
             {
                 if (image == null) return Failure(result, "IMAGE_MISSING", "No image was captured.");
@@ -151,14 +152,19 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
                 }
                 else
                 {
-                    CalibrationJob locateJob = positioningJob.DeepClone();
+                    // Only the template is needed; the private snapshot lets NumMatches
+                    // change without touching the caller's job.
+                    TemplateDefinition locateTemplate = positioningJob.Template.DeepClone();
                     // Keep one extra candidate so an over-count still reports NG while
                     // avoiding an unbounded HALCON result set.
-                    locateJob.Template.MatchParameters.NumMatches = expectedCount == int.MaxValue
+                    locateTemplate.MatchParameters.NumMatches = expectedCount == int.MaxValue
                         ? expectedCount
                         : expectedCount + 1;
+                    // Convert the frame once and share it between matching and blob analysis.
+                    gray = HalconGrayImage.FromBitmap(image);
+                    result.ImageConversionElapsedMilliseconds += gray.ConversionElapsedMilliseconds;
                     Stopwatch matchWatch = Stopwatch.StartNew();
-                    TemplateMatchCollectionResult matches = _sdk.LocateAll(image, locateJob, true);
+                    TemplateMatchCollectionResult matches = _sdk.LocateAll(image, gray, locateTemplate, true);
                     matchWatch.Stop();
                     result.MatchElapsedMilliseconds = matchWatch.Elapsed.TotalMilliseconds;
                     if (matches == null || !matches.Success)
@@ -169,7 +175,7 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
 
                     List<TemplateMatchResult> orderedMatches = OrderMatches(
                         matches.Matches,
-                        locateJob.Template,
+                        locateTemplate,
                         profile);
                     if (matches.Matches != null && orderedMatches.Count != matches.Matches.Count)
                     {
@@ -179,12 +185,12 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
                     result.ActualCount = orderedMatches.Count;
                     List<DetectionRoi> detectionRois = orderedMatches
                         .Select(match => _blobAnalyzer.ResolveDetectionRoi(
-                            locateJob.Template,
+                            locateTemplate,
                             match,
                             profile))
                         .ToList();
                     List<BlobAnalysisResult> analyses = _blobAnalyzer.AnalyzeRoisDetailed(
-                        image,
+                        gray,
                         detectionRois,
                         profile,
                         false,
@@ -243,6 +249,7 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
             }
             finally
             {
+                if (gray != null) gray.Dispose();
                 watch.Stop();
                 result.ElapsedMilliseconds = watch.Elapsed.TotalMilliseconds;
             }

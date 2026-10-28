@@ -16,7 +16,7 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
             using (BlobAnalysisResult result = AnalyzeDetailed(source, template, match,
                 profile, false, CancellationToken.None))
                 return result.Findings;
-        }
+        } 
 
         public BlobAnalysisResult AnalyzeDetailed(Bitmap source, TemplateDefinition template,
             TemplateMatchResult match, DetectionProfile profile, bool includeBinary,
@@ -35,6 +35,16 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
                 includeBinary, cancellationToken);
         }
 
+        public BlobAnalysisResult AnalyzeDirectDetailedNoThrow(Bitmap source,
+            TemplateDefinition template, DetectionProfile profile, bool includeBinary,
+            CancellationToken cancellationToken)
+        {
+            DetectionRoi roi = CreateFullImageRoi(source);
+            List<BlobAnalysisResult> results = AnalyzeRoisDetailedNoThrow(
+                source, new[] { roi }, profile, includeBinary, cancellationToken);
+            return results.Count == 0 ? new BlobAnalysisResult { Roi = roi } : results[0];
+        }
+
         public BlobAnalysisResult AnalyzeRoiDetailed(Bitmap source, DetectionRoi roi,
             DetectionProfile profile, bool includeBinary, CancellationToken cancellationToken)
         {
@@ -47,9 +57,42 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
             IList<DetectionRoi> rois, DetectionProfile profile, bool includeBinary,
             CancellationToken cancellationToken)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (source == null || profile == null || rois == null || rois.Count == 0)
+            return AnalyzeRoisDetailedCore(source, null, rois, profile, includeBinary,
+                cancellationToken, true);
+        }
+
+        public List<BlobAnalysisResult> AnalyzeRoisDetailedNoThrow(Bitmap source,
+            IList<DetectionRoi> rois, DetectionProfile profile, bool includeBinary,
+            CancellationToken cancellationToken)
+        {
+            return AnalyzeRoisDetailedCore(source, null, rois, profile, includeBinary,
+                cancellationToken, false);
+        }
+
+        /// <summary>
+        /// Production path: analyzes ROIs on the gray image already converted for
+        /// template matching, so the frame is converted only once per trigger.
+        /// </summary>
+        public List<BlobAnalysisResult> AnalyzeRoisDetailed(HalconGrayImage gray,
+            IList<DetectionRoi> rois, DetectionProfile profile, bool includeBinary,
+            CancellationToken cancellationToken)
+        {
+            return AnalyzeRoisDetailedCore(null, gray, rois, profile, includeBinary,
+                cancellationToken, true);
+        }
+
+        private List<BlobAnalysisResult> AnalyzeRoisDetailedCore(Bitmap source,
+            HalconGrayImage gray, IList<DetectionRoi> rois, DetectionProfile profile,
+            bool includeBinary, CancellationToken cancellationToken, bool throwOnCancellation)
+        {
+            if (cancellationToken.IsCancellationRequested)
+            {
+                if (throwOnCancellation) cancellationToken.ThrowIfCancellationRequested();
                 return new List<BlobAnalysisResult>();
+            }
+            if ((source == null && gray == null) || profile == null || rois == null || rois.Count == 0)
+                return new List<BlobAnalysisResult>();
+            Size imageSize = gray != null ? gray.Size : source.Size;
 
             List<int> validIndexes = Enumerable.Range(0, rois.Count)
                 .Where(index => IsValid(rois[index])).ToList();
@@ -65,7 +108,7 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
                 PhiDegrees = roi.PhiDegrees,
                 HalfWidth = roi.HalfWidth,
                 HalfHeight = roi.HalfHeight,
-                ImageBounds = GetBounds(source.Size, roi)
+                ImageBounds = GetBounds(imageSize, roi)
             }).ToList();
             HalconBlobParameters parameters = new HalconBlobParameters
             {
@@ -83,8 +126,14 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
             List<HalconBlobResult> halconResults = null;
             try
             {
-                halconResults = HalconBlobEngine.Analyze(source, regions, parameters,
-                    includeBinary, cancellationToken);
+                halconResults = gray != null
+                    ? HalconBlobEngine.Analyze(gray, regions, parameters,
+                        includeBinary, cancellationToken, throwOnCancellation)
+                    : HalconBlobEngine.Analyze(source, regions, parameters,
+                        includeBinary, cancellationToken, throwOnCancellation);
+                if (!throwOnCancellation &&
+                    (halconResults == null || halconResults.Count != regions.Count))
+                    return output;
                 for (int index = 0; index < halconResults.Count; index++)
                 {
                     int destinationIndex = validIndexes[index];

@@ -60,8 +60,7 @@
     </ProjectReference>
   </ItemGroup>
   <ItemGroup>
-    <Compile Include="**\*.cs" Exclude="bin\**\*;obj\**\*;HalconCalibrationSolverBridge.cs" />
-    <Compile Include="HalconCalibrationSolverBridge.cs" />
+    <Compile Include="**\*.cs" Exclude="bin\**\*;obj\**\*" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 </Project>

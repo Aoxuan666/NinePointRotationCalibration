@@ -189,8 +189,10 @@ namespace NinePointRotationCalibration
     {
         public MatchParameters()
         {
-            AngleStartRad = -10.0 * Math.PI / 180.0;
-            AngleExtentRad = 20.0 * Math.PI / 180.0;
+            // Keep the runtime search window narrow so normal board rotation does
+            // not turn template matching into an unnecessarily expensive scan.
+            AngleStartRad = -5.0 * Math.PI / 180.0;
+            AngleExtentRad = 10.0 * Math.PI / 180.0;
             MinScore = 0.5;
             NumMatches = 1;
             MaxOverlap = 0.3;

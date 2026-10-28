@@ -24,6 +24,8 @@ namespace NinePointRotationCalibration.Station.Services
         private const int SeenMessageLimit = 4096;
         private readonly object _stateSync = new object();
         private readonly object _jobSaveSync = new object();
+        private readonly object _postProcessingSync = new object();
+        private Task _postProcessingTail = Task.CompletedTask;
         private readonly string _optionsPath;
         private readonly AtomicJsonStore _jsonStore;
         private readonly NinePointRotationCalibrationSdk _sdk;
@@ -35,6 +37,7 @@ namespace NinePointRotationCalibration.Station.Services
         private readonly SemaphoreSlim _inspectionGate;
         private readonly SemaphoreSlim _workflowGate;
         private readonly ConcurrentDictionary<string, byte> _seenMessages;
+        private readonly ConcurrentQueue<string> _seenMessageOrder = new ConcurrentQueue<string>();
         private readonly ConcurrentDictionary<string, string> _calibrationRequestConnections;
         private StationOptions _options;
         private CalibrationJob _calibrationJob;
@@ -247,7 +250,6 @@ namespace NinePointRotationCalibration.Station.Services
             StationOptions options = GetOptionsSnapshot();
             await _camera.StopPreviewAsync().ConfigureAwait(false);
             await _camera.ConnectAsync(deviceId, options.CameraExposureMicroseconds, cancellationToken).ConfigureAwait(false);
-            _camera.StartPreview();
             OnStateChanged("camera", true, _camera.ProviderName + " / " + _camera.ConnectedDeviceId);
         }
 
@@ -653,9 +655,33 @@ namespace NinePointRotationCalibration.Station.Services
             _teaching.TeachingChanged += OnTeachingChanged;
         }
 
+        /// <summary>
+        /// Records a messageId for duplicate detection. The window is a bounded FIFO:
+        /// only the oldest ids are evicted, so duplicate detection never lapses all at once.
+        /// </summary>
+        private bool RememberMessage(string messageId)
+        {
+            if (!_seenMessages.TryAdd(messageId, 0)) return false;
+            _seenMessageOrder.Enqueue(messageId);
+            string evicted;
+            while (_seenMessageOrder.Count > SeenMessageLimit && _seenMessageOrder.TryDequeue(out evicted))
+            {
+                byte ignored;
+                _seenMessages.TryRemove(evicted, out ignored);
+            }
+            return true;
+        }
+
+        private void ForgetSeenMessages()
+        {
+            string ignored;
+            while (_seenMessageOrder.TryDequeue(out ignored)) { }
+            _seenMessages.Clear();
+        }
+
         private void OnTcpConnected(object sender, TcpConnectionEventArgs e)
         {
-            _seenMessages.Clear();
+            ForgetSeenMessages();
             OnStateChanged("host", true, e.RemoteEndPoint);
             OnLog("INFO", "Upper machine connected: " + e.RemoteEndPoint);
         }
@@ -672,7 +698,7 @@ namespace NinePointRotationCalibration.Station.Services
                 return;
             }
 
-            _seenMessages.Clear();
+            ForgetSeenMessages();
             OnStateChanged("host", false, e.Reason);
             OnLog("WARN", "Upper machine disconnected: " + e.Reason);
         }
@@ -682,7 +708,7 @@ namespace NinePointRotationCalibration.Station.Services
             try
             {
                 ProtocolEnvelope envelope = e.Message;
-                if (!_seenMessages.TryAdd(envelope.MessageId, 0))
+                if (!RememberMessage(envelope.MessageId))
                 {
                     await SendErrorAsync(
                         e.ConnectionId,
@@ -693,7 +719,6 @@ namespace NinePointRotationCalibration.Station.Services
                         .ConfigureAwait(false);
                     return;
                 }
-                if (_seenMessages.Count > SeenMessageLimit) _seenMessages.Clear();
 
                 if (HandleCalibrationProtocolMessage(envelope, e.ConnectionId)) return;
                 if (string.Equals(envelope.Type, ProtocolMessageTypes.Heartbeat, StringComparison.OrdinalIgnoreCase) ||
@@ -793,16 +818,21 @@ namespace NinePointRotationCalibration.Station.Services
                         false).ConfigureAwait(false);
                     return;
                 }
-                InspectionResult result = await ExecuteInspectionAsync(
+                // The response is sent as soon as the vision result exists; frame
+                // display, archiving and UI result events run afterwards in the
+                // background so they never add to the host's cycle time.
+                await ExecuteInspectionAsync(
                     expected,
                     currentR,
                     request,
-                    CancellationToken.None).ConfigureAwait(false);
-
-                ProtocolEnvelope response = ProtocolEnvelope.Create(ProtocolMessageTypes.InspectionResult);
-                response.CorrelationId = request.MessageId;
-                FillInspectionResponse(response.Data, result);
-                await _tcpServer.SendAsync(connectionId, response).ConfigureAwait(false);
+                    CancellationToken.None,
+                    async result =>
+                    {
+                        ProtocolEnvelope response = ProtocolEnvelope.Create(ProtocolMessageTypes.InspectionResult);
+                        response.CorrelationId = request.MessageId;
+                        FillInspectionResponse(response.Data, result);
+                        await _tcpServer.SendAsync(connectionId, response).ConfigureAwait(false);
+                    }).ConfigureAwait(false);
             }
             finally
             {
@@ -814,7 +844,8 @@ namespace NinePointRotationCalibration.Station.Services
             int expectedCount,
             double currentR,
             ProtocolEnvelope archiveRequest,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            Func<InspectionResult, Task> sendResponse = null)
         {
             await _inspectionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
@@ -835,8 +866,6 @@ namespace NinePointRotationCalibration.Station.Services
 
                 using (CameraFrame frame = await _camera.CaptureAsync(cancellationToken).ConfigureAwait(false))
                 {
-                    PublishFrame(frame.Image, "inspection");
-                    if (archiveRequest != null) ArchiveFrameIfRequested(frame.Image, archiveRequest);
                     InspectionResult result = await Task.Run(() => _inspection.Inspect(
                         frame.Image,
                         positioning,
@@ -845,7 +874,19 @@ namespace NinePointRotationCalibration.Station.Services
                         profile,
                         expectedCount,
                         currentR), cancellationToken).ConfigureAwait(false);
-                    OnInspectionCompleted(result);
+
+                    if (sendResponse == null)
+                    {
+                        PublishFrame(frame.Image, "inspection");
+                        OnInspectionCompleted(result);
+                        return result;
+                    }
+
+                    await sendResponse(result).ConfigureAwait(false);
+                    bool archive = archiveRequest != null && IsArchiveRequested(archiveRequest);
+                    Bitmap postImage = (Bitmap)frame.Image.Clone();
+                    DateTime capturedAtUtc = frame.CapturedAtUtc;
+                    QueuePostProcessing(() => PublishInspectionFrame(postImage, capturedAtUtc, archive, result));
                     return result;
                 }
             }
@@ -1072,21 +1113,83 @@ namespace NinePointRotationCalibration.Station.Services
                 "Unsupported calibration protocol message type: " + message.Type + ".");
         }
 
-        private void ArchiveFrameIfRequested(Bitmap image, ProtocolEnvelope request)
+        private bool IsArchiveRequested(ProtocolEnvelope request)
         {
-            bool archive = _options.ArchiveImages;
+            bool archive;
+            lock (_stateSync) archive = _options.ArchiveImages;
             object value;
             if (request.Data != null && request.Data.TryGetValue("archiveImage", out value) && value != null)
             {
                 bool requested;
                 if (bool.TryParse(Convert.ToString(value, CultureInfo.InvariantCulture), out requested)) archive = requested;
             }
-            if (!archive) return;
+            return archive;
+        }
 
-            Directory.CreateDirectory(_options.ImageArchiveDirectory);
-            string path = Path.Combine(
-                _options.ImageArchiveDirectory,
-                DateTime.Now.ToString("yyyyMMdd_HHmmss_fff", CultureInfo.InvariantCulture) + ".png");
+        /// <summary>
+        /// Runs post-response work strictly in order on a background thread, so
+        /// frames and results reach the UI in trigger order without blocking TCP.
+        /// </summary>
+        private void QueuePostProcessing(Action action)
+        {
+            lock (_postProcessingSync)
+            {
+                _postProcessingTail = _postProcessingTail.ContinueWith(
+                    previous =>
+                    {
+                        try
+                        {
+                            action();
+                        }
+                        catch (Exception exception)
+                        {
+                            OnLog("ERROR", "Inspection post-processing failed: " + exception.Message);
+                        }
+                    },
+                    CancellationToken.None,
+                    TaskContinuationOptions.None,
+                    TaskScheduler.Default);
+            }
+        }
+
+        private void PublishInspectionFrame(
+            Bitmap ownedImage,
+            DateTime capturedAtUtc,
+            bool archive,
+            InspectionResult result)
+        {
+            try
+            {
+                EventHandler<FrameEventArgs> handler = FrameReady;
+                // Handlers copy what they keep, so the image stays ours for archiving.
+                if (handler != null) handler(this, new FrameEventArgs(ownedImage, "inspection"));
+                OnInspectionCompleted(result);
+                if (archive) ArchiveFrame(ownedImage, capturedAtUtc);
+            }
+            finally
+            {
+                ownedImage.Dispose();
+            }
+        }
+
+        private void ArchiveFrame(Bitmap image, DateTime capturedAtUtc)
+        {
+            string directory;
+            lock (_stateSync) directory = _options.ImageArchiveDirectory;
+            Directory.CreateDirectory(directory);
+            string timestamp = (capturedAtUtc == default(DateTime)
+                ? DateTime.UtcNow
+                : capturedAtUtc).ToLocalTime().ToString(
+                    "yyyyMMdd_HHmmss_fff", CultureInfo.InvariantCulture);
+            string path = Path.Combine(directory, timestamp + ".png");
+            int suffix = 1;
+            while (File.Exists(path))
+            {
+                path = Path.Combine(
+                    directory,
+                    timestamp + "_" + suffix.ToString("00", CultureInfo.InvariantCulture) + ".png");
+                suffix++;
+            }
             image.Save(path, System.Drawing.Imaging.ImageFormat.Png);
         }
 
@@ -1343,6 +1446,9 @@ namespace NinePointRotationCalibration.Station.Services
             try { StopAsync().GetAwaiter().GetResult(); } catch { }
             _workflowGate.Wait();
             _workflowGate.Release();
+            Task postProcessing;
+            lock (_postProcessingSync) postProcessing = _postProcessingTail;
+            try { postProcessing.Wait(TimeSpan.FromSeconds(5)); } catch { }
             _disposed = true;
             _inspectionGate.Dispose();
             _workflowGate.Dispose();

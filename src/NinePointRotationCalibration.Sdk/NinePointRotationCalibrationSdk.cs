@@ -121,6 +121,43 @@ namespace NinePointRotationCalibration
             }
         }
 
+        /// <summary>
+        /// 生产检测用的多目标定位：复用调用方已转换的灰度图，并直接使用调用方私有的模板快照
+        /// （不再克隆）。引擎不支持灰度输入时退回 Bitmap 路径。
+        /// </summary>
+        /// <param name="image">原始图像，引擎不支持灰度输入时使用。</param>
+        /// <param name="gray">已转换的灰度图，可为 null。</param>
+        /// <param name="ownedTemplate">调用方独占的模板快照，方法只读取。</param>
+        /// <param name="returnOverlay">是否返回匹配轮廓。</param>
+        public Halcon.TemplateMatchCollectionResult LocateAll(
+            Bitmap image,
+            Halcon.HalconGrayImage gray,
+            TemplateDefinition ownedTemplate,
+            bool returnOverlay)
+        {
+            ThrowIfDisposed();
+            if (image == null && gray == null)
+                return Halcon.TemplateMatchCollectionResult.Failure(CalibrationErrorCode.ParameterInvalid, "Input image is null.");
+            if (ownedTemplate == null)
+                return Halcon.TemplateMatchCollectionResult.Failure(CalibrationErrorCode.TemplateMissing, "Template is missing.");
+            try
+            {
+                Halcon.IGrayImageTemplateMatchingEngine grayEngine = _templateEngine as Halcon.IGrayImageTemplateMatchingEngine;
+                Halcon.TemplateMatchCollectionResult result = gray != null && grayEngine != null
+                    ? grayEngine.LocateAll(gray, ownedTemplate, returnOverlay)
+                    : _templateEngine.LocateAll(image, ownedTemplate, returnOverlay);
+                return result ?? Halcon.TemplateMatchCollectionResult.Failure(
+                    CalibrationErrorCode.InternalError,
+                    "Template engine returned no collection result.");
+            }
+            catch (Exception exception)
+            {
+                return Halcon.TemplateMatchCollectionResult.Failure(
+                    MapEngineException(exception),
+                    "Template locate-all failed: " + exception.Message);
+            }
+        }
+
         /// <summary>定位图像并向 Job 追加一个标定样本。</summary>
         /// <param name="job">当前 Job；方法不会修改该对象。</param>
         /// <param name="image">当前位置拍摄的图像。</param>

@@ -10,12 +10,13 @@ namespace NinePointRotationCalibration.Halcon
     /// Owns the HALCON model lifecycle. Calls on one instance are serialized because
     /// HALCON model handles are mutable native resources.
     /// </summary>
-    public sealed class HalconTemplateEngine : ITemplateMatchingEngine
+    public sealed class HalconTemplateEngine : ITemplateMatchingEngine, IGrayImageTemplateMatchingEngine
     {
         private readonly object _syncRoot = new object();
         private HShapeModel _shapeModel;
         private HNCCModel _nccModel;
         private string _cachedModelKey;
+        private int _cachedModelLength = -1;
         private List<List<ImagePoint>> _cachedRelativeContours = new List<List<ImagePoint>>();
         private bool _disposed;
 
@@ -146,6 +147,29 @@ namespace NinePointRotationCalibration.Halcon
 
         public TemplateMatchCollectionResult LocateAll(Bitmap image, TemplateDefinition definition, bool includeContour = true)
         {
+            if (image == null)
+            {
+                return TemplateMatchCollectionResult.Failure(CalibrationErrorCode.ParameterInvalid, "Input image is null.");
+            }
+
+            HalconGrayImage gray;
+            try
+            {
+                gray = HalconGrayImage.FromBitmap(image);
+            }
+            catch (Exception exception)
+            {
+                return TemplateMatchCollectionResult.Failure(MapErrorCode(exception), FormatException(exception));
+            }
+
+            using (gray)
+            {
+                return LocateAll(gray, definition, includeContour);
+            }
+        }
+
+        public TemplateMatchCollectionResult LocateAll(HalconGrayImage image, TemplateDefinition definition, bool includeContour = true)
+        {
             Stopwatch stopwatch = Stopwatch.StartNew();
             if (image == null)
             {
@@ -157,7 +181,8 @@ namespace NinePointRotationCalibration.Halcon
                 return Complete(TemplateMatchCollectionResult.Failure(CalibrationErrorCode.ParameterInvalid, "Template definition is null."), stopwatch);
             }
 
-            TemplateDefinition snapshot = definition.DeepClone();
+            // Callers pass their own snapshot; the definition is only read here.
+            TemplateDefinition snapshot = definition;
             lock (_syncRoot)
             {
                 ThrowIfDisposed();
@@ -171,9 +196,8 @@ namespace NinePointRotationCalibration.Halcon
                     ValidateLocateParameters(snapshot);
                     EnsureModelLoaded(snapshot);
 
-                    using (HImage gray = HalconImageConverter.ToGrayHImage(image))
                     using (HRegion searchRegion = HalconRegionBuilder.BuildSearchRegion(snapshot.SearchRegion, image.Width, image.Height))
-                    using (HImage searchImage = gray.ReduceDomain(searchRegion))
+                    using (HImage searchImage = image.Image.ReduceDomain(searchRegion))
                     {
                         MatchParameters parameters = snapshot.MatchParameters;
                         TrySetNativeTimeout(snapshot.ModelType, parameters.TimeoutMilliseconds);
@@ -346,6 +370,22 @@ namespace NinePointRotationCalibration.Halcon
 
         private void EnsureModelLoaded(TemplateDefinition definition)
         {
+            // Production triggers hit the cache: the declared hash was verified
+            // when this model was loaded, so skip re-hashing the model bytes.
+            int modelLength = definition.ModelData == null ? 0 : definition.ModelData.Length;
+            if (!string.IsNullOrWhiteSpace(definition.ModelHash) && modelLength == _cachedModelLength)
+            {
+                string declaredKey = ModelKey(definition.ModelType, definition.ModelHash);
+                if (string.Equals(declaredKey, _cachedModelKey, StringComparison.Ordinal)
+                    && ((definition.ModelType == TemplateModelType.Shape && _shapeModel != null)
+                        || (definition.ModelType == TemplateModelType.Ncc && _nccModel != null)))
+                {
+                    if (definition.ModelType == TemplateModelType.Ncc)
+                        _cachedRelativeContours = GetRelativeContours(definition, null);
+                    return;
+                }
+            }
+
             string actualHash = TemplateDefinition.ComputeModelHash(definition.ModelData);
             if (!string.IsNullOrWhiteSpace(definition.ModelHash)
                 && !string.Equals(definition.ModelHash, actualHash, StringComparison.OrdinalIgnoreCase))
@@ -353,7 +393,7 @@ namespace NinePointRotationCalibration.Halcon
                 throw new InvalidOperationException("The template model hash does not match ModelData.");
             }
 
-            string key = ((int)definition.ModelType) + ":" + actualHash;
+            string key = ModelKey(definition.ModelType, actualHash);
             if (string.Equals(key, _cachedModelKey, StringComparison.Ordinal)
                 && ((definition.ModelType == TemplateModelType.Shape && _shapeModel != null)
                     || (definition.ModelType == TemplateModelType.Ncc && _nccModel != null)))
@@ -414,6 +454,7 @@ namespace NinePointRotationCalibration.Halcon
                 _shapeModel = loadedShape;
                 _nccModel = loadedNcc;
                 _cachedModelKey = key;
+                _cachedModelLength = modelLength;
                 _cachedRelativeContours = relativeContours;
                 loadedShape = null;
                 loadedNcc = null;
@@ -434,7 +475,10 @@ namespace NinePointRotationCalibration.Halcon
             ClearCacheCore();
             _shapeModel = shapeModel;
             _nccModel = nccModel;
-            _cachedModelKey = ((int)definition.ModelType) + ":" + definition.ModelHash;
+            _cachedModelKey = string.IsNullOrWhiteSpace(definition.ModelHash)
+                ? null
+                : ModelKey(definition.ModelType, definition.ModelHash);
+            _cachedModelLength = definition.ModelData == null ? 0 : definition.ModelData.Length;
             _cachedRelativeContours = relativeContours ?? new List<List<ImagePoint>>();
         }
 
@@ -636,8 +680,14 @@ namespace NinePointRotationCalibration.Halcon
             }
         }
 
+        private static string ModelKey(TemplateModelType modelType, string hash)
+        {
+            return ((int)modelType) + ":" + hash.Trim().ToUpperInvariant();
+        }
+
         private void ClearCacheCore()
         {
+            _cachedModelLength = -1;
             if (_shapeModel != null)
             {
                 _shapeModel.Dispose();

@@ -67,13 +67,15 @@ Pending -> Moving -> Capturing -> Locating -> Completed
 - 检测调试窗口可在锁定的离线图像上显示 ROI 裁剪后的完整阈值分割，支持黑底白目标和白底黑目标两种极性，并对阈值/面积/矩形度变化做防抖、取消和 latest-wins 更新；调试结束只回写检测参数，不替换生产帧。
 - `TemplateMatchingEnabled=false` 是离线调试旁路：跳过定位模板，对整幅图执行一次 Blob 分析，结果不生成机械目标；生产 `inspection.trigger` 默认保持 `true`。
 
-左/右示教各保存一组模板图像姿态和机械姿态。每块板的左/右目标 XY 使用完整 `PixelToStage` 仿射矩阵映射：
+左/右示教各保存一组模板图像姿态和机械姿态。每块板的左/右目标 XY 使用完整 `PixelToStage` 仿射矩阵映射，并随板旋转：
 
 ```text
-targetXY = teachMachineXY
-         + PixelToStage(boardAnchor)
-         - PixelToStage(teachImageAnchor)
+arm      = teachMachineXY - PixelToStage(teachImageAnchor)
+dTheta   = stageAngle(boardPose) - stageAngle(teachPose)
+targetXY = PixelToStage(boardAnchor) + Rot(dTheta) * arm
 ```
+
+示教目标点与板刚性相连：以板定位锚点为原点，示教时的机械点作为力臂；板相对示教姿态转过多少，力臂就跟着转多少。`stageAngle` 把模板方向（HALCON 角度，行向下）经 `PixelToStage` 映射到机械坐标系后取角度，因此镜像坐标系和图像 Y 轴向下都无需手工判断符号。板角度不变时公式退化为纯平移。
 
 R 轴使用标定出的方向系数修正图像角度差，同时返回 `rOffset` 和 `targetR`，避免上位机再猜测符号。
 

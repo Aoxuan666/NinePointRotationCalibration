@@ -49,11 +49,10 @@
     </ProjectReference>
   </ItemGroup>
   <ItemGroup>
-    <Compile Include="**\*.cs" Exclude="bin\**\*;obj\**\*;XldTemplateMatchingEngine.cs;HalconBlobEngine.cs;HalconGeometry.cs;HalconCalibrationSolver.cs" />
+    <Compile Include="**\*.cs" Exclude="bin\**\*;obj\**\*;XldTemplateMatchingEngine.cs;HalconBlobEngine.cs;HalconGeometry.cs" />
     <Compile Include="XldTemplateMatchingEngine.cs" />
     <Compile Include="HalconBlobEngine.cs" />
     <Compile Include="HalconGeometry.cs" />
-    <Compile Include="HalconCalibrationSolver.cs" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 </Project>

@@ -136,8 +136,8 @@ namespace NinePointRotationCalibration.WinForms.Forms
             _matchLevelsInput = CreateIntegerInput(0, 12, 0);
             _angleStartInput = CreateDecimalInput(-180, 180, -17.189m, 0.1m, 3);
             _angleExtentInput = CreateDecimalInput(0, 360, 34.377m, 0.1m, 3);
-            _matchAngleStartInput = CreateDecimalInput(-180, 180, -17.189m, 0.1m, 3);
-            _matchAngleExtentInput = CreateDecimalInput(0.001m, 360, 34.377m, 0.1m, 3);
+            _matchAngleStartInput = CreateDecimalInput(-180, 180, -5m, 0.1m, 3);
+            _matchAngleExtentInput = CreateDecimalInput(0.001m, 360, 10m, 0.1m, 3);
             _angleStepInput = CreateDecimalInput(0, 30, 0, 0.1m, 3);
             _optimizationCombo = CreateCombo(new[] { "auto", "none", "point_reduction_low", "point_reduction_medium", "point_reduction_high" });
             _metricCombo = CreateCombo(new[] { "use_polarity", "ignore_global_polarity", "ignore_local_polarity", "ignore_color_polarity" });

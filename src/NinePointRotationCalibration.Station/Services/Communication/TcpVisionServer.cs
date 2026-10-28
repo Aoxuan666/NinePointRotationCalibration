@@ -341,8 +341,12 @@ namespace NinePointRotationCalibration.Station.Services.Communication
                     connection = active;
                 }
 
-                await connection.Stream.WriteAsync(header, 0, header.Length, cancellationToken).ConfigureAwait(false);
-                await connection.Stream.WriteAsync(payload, 0, payload.Length, cancellationToken).ConfigureAwait(false);
+                // One write per frame: with NoDelay a separate header write would go
+                // out as its own TCP segment ahead of the payload.
+                byte[] frame = new byte[header.Length + payload.Length];
+                Buffer.BlockCopy(header, 0, frame, 0, header.Length);
+                Buffer.BlockCopy(payload, 0, frame, header.Length, payload.Length);
+                await connection.Stream.WriteAsync(frame, 0, frame.Length, cancellationToken).ConfigureAwait(false);
                 await connection.Stream.FlushAsync(cancellationToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException)

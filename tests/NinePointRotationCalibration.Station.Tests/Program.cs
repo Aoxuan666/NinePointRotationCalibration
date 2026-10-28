@@ -469,9 +469,12 @@ namespace NinePointRotationCalibration.Station.Tests
             TemplateMatchResult match = SuccessfulMatch(25.0, 17.0, 25.0);
 
             TargetPoseMapper mapper = new TargetPoseMapper();
+            MappedTargetPose translated = mapper.Map(
+                calibration, teaching, SuccessfulMatch(25.0, 17.0, 10.0), 40.0).Single();
+            Near(116.5, translated.X, 1e-10, "an unrotated board maps X through the full affine matrix");
+            Near(213.25, translated.Y, 1e-10, "an unrotated board maps Y through the full affine matrix");
+
             MappedTargetPose same = mapper.Map(calibration, teaching, match, 40.0).Single();
-            Near(116.5, same.X, 1e-10, "mapped X uses the full affine matrix");
-            Near(213.25, same.Y, 1e-10, "mapped Y uses the full affine matrix");
             Near(5.0, same.ROffset, 1e-10, "same-direction R offset");
             Near(45.0, same.TargetR, 1e-10, "same-direction target R");
 
@@ -483,6 +486,51 @@ namespace NinePointRotationCalibration.Station.Tests
             calibration.Rotation.IsAvailable = false;
             True(mapper.Map(calibration, teaching, match, 10.0).Count == 0,
                 "an unavailable rotation calibration must not produce a guessed R target");
+
+            TestTargetPoseFollowsBoardRotation();
+        }
+
+        private static void TestTargetPoseFollowsBoardRotation()
+        {
+            // Stage X = column, stage Y = row. The taught target sits 10 mm to the
+            // right of the board anchor. Turning the board 90 degrees counter-clockwise
+            // on screen (rows point down) must move the target to 10 mm above the anchor.
+            CalibrationResult calibration = new CalibrationResult
+            {
+                TranslationSuccess = true,
+                PixelToStageMatrix = new AffineMatrix2D(1.0, 0.0, 0.0, 0.0, 1.0, 0.0),
+                Rotation = new RotationCalibrationResult
+                {
+                    IsAvailable = true,
+                    Success = true,
+                    Direction = RotationDirection.Same
+                }
+            };
+            TeachingData teaching = new TeachingData
+            {
+                Left = ValidTeaching(TeachingSide.Left, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0),
+                Right = new TeachingPose { Side = TeachingSide.Right, IsValid = false }
+            };
+            TargetPoseMapper mapper = new TargetPoseMapper();
+
+            MappedTargetPose quarterTurn = mapper.Map(
+                calibration, teaching, SuccessfulMatch(0.0, 0.0, 90.0), 0.0).Single();
+            Near(0.0, quarterTurn.X, 1e-9, "the lever arm rotates with the board (X)");
+            Near(-10.0, quarterTurn.Y, 1e-9, "the lever arm rotates with the board (Y)");
+
+            MappedTargetPose movedAndTurned = mapper.Map(
+                calibration, teaching, SuccessfulMatch(50.0, 30.0, 30.0), 0.0).Single();
+            Near(30.0 + (10.0 * Math.Cos(Math.PI / 6.0)), movedAndTurned.X, 1e-9,
+                "translation and rotation combine about the detected anchor (X)");
+            Near(50.0 - (10.0 * Math.Sin(Math.PI / 6.0)), movedAndTurned.Y, 1e-9,
+                "translation and rotation combine about the detected anchor (Y)");
+
+            // A mirrored stage (Y = -row) sees the same physical turn with the opposite sign.
+            calibration.PixelToStageMatrix = new AffineMatrix2D(1.0, 0.0, 0.0, 0.0, -1.0, 0.0);
+            MappedTargetPose mirrored = mapper.Map(
+                calibration, teaching, SuccessfulMatch(0.0, 0.0, 90.0), 0.0).Single();
+            Near(0.0, mirrored.X, 1e-9, "mirrored stage keeps the arm length (X)");
+            Near(10.0, mirrored.Y, 1e-9, "mirrored stage rotates the arm the physical way (Y)");
         }
 
         private static void TestBlobAnalysis()
@@ -1037,8 +1085,8 @@ namespace NinePointRotationCalibration.Station.Tests
             True(shape.FeatureExtraction.MaximumPointCount == 20000,
                 "feature point limit must match the reference default");
 
-            Near(-10.0 * Math.PI / 180.0, match.AngleStartRad, 0.0, "match angle start default");
-            Near(20.0 * Math.PI / 180.0, match.AngleExtentRad, 0.0, "match angle extent default");
+            Near(-5.0 * Math.PI / 180.0, match.AngleStartRad, 0.0, "match angle start default");
+            Near(10.0 * Math.PI / 180.0, match.AngleExtentRad, 0.0, "match angle extent default");
             Near(0.5, match.MinScore, 0.0, "minimum score default");
             Near(0.3, match.MaxOverlap, 0.0, "maximum overlap default");
             True(match.NumLevels == 0, "match pyramid levels default to HALCON automatic");
@@ -1051,9 +1099,9 @@ namespace NinePointRotationCalibration.Station.Tests
                 "editor angle start default");
             Near(0.6 * 180.0 / Math.PI, editor.Parameters.AngleExtentDegrees, 1e-12,
                 "editor angle extent default");
-            Near(-10.0, editor.Parameters.MatchAngleStartDegrees, 1e-12,
+            Near(-5.0, editor.Parameters.MatchAngleStartDegrees, 1e-12,
                 "editor search angle start default");
-            Near(20.0, editor.Parameters.MatchAngleExtentDegrees, 1e-12,
+            Near(10.0, editor.Parameters.MatchAngleExtentDegrees, 1e-12,
                 "editor search angle extent default");
             Near(20.0, editor.Parameters.MinimumContrast, 0.0,
                 "editor minimum contrast default");
@@ -2624,7 +2672,12 @@ namespace NinePointRotationCalibration.Station.Tests
 
         private static void RunAsync(string name, Func<Task> test)
         {
-            Run(name, () => test().GetAwaiter().GetResult());
+            // Main is [STAThread] and earlier tests create WinForms controls, which
+            // installs a WindowsFormsSynchronizationContext on this thread. Blocking
+            // here while a test awaits without ConfigureAwait(false) would post the
+            // continuation back to this blocked thread and deadlock, so async tests
+            // start on the thread pool, where no synchronization context exists.
+            Run(name, () => Task.Run(test).GetAwaiter().GetResult());
         }
 
         private static void Near(double expected, double actual, double tolerance, string message)

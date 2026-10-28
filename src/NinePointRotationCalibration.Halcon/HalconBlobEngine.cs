@@ -74,30 +74,71 @@ namespace NinePointRotationCalibration.Halcon
             bool includeBinary,
             CancellationToken cancellationToken)
         {
+            return Analyze(source, regions, parameters, includeBinary, cancellationToken, true);
+        }
+
+        // Preview callers can cancel stale work without turning an expected refresh into
+        // an exception that a debugger reports as an unhandled HALCON failure.
+        public static List<HalconBlobResult> Analyze(
+            Bitmap source,
+            IList<HalconBlobRegion> regions,
+            HalconBlobParameters parameters,
+            bool includeBinary,
+            CancellationToken cancellationToken,
+            bool throwOnCancellation)
+        {
             if (source == null) throw new ArgumentNullException(nameof(source));
             if (regions == null) throw new ArgumentNullException(nameof(regions));
             if (parameters == null) throw new ArgumentNullException(nameof(parameters));
 
+            using (HalconGrayImage gray = HalconGrayImage.FromBitmap(source))
+            {
+                List<HalconBlobResult> results = Analyze(
+                    gray,
+                    regions,
+                    parameters,
+                    includeBinary,
+                    cancellationToken,
+                    throwOnCancellation);
+                if (results.Count > 0)
+                    results[0].ImageConversionElapsedMilliseconds = gray.ConversionElapsedMilliseconds;
+                return results;
+            }
+        }
+
+        /// <summary>
+        /// Analyzes regions on an image the caller already converted (for example
+        /// the frame used for template matching). No conversion time is reported.
+        /// </summary>
+        public static List<HalconBlobResult> Analyze(
+            HalconGrayImage gray,
+            IList<HalconBlobRegion> regions,
+            HalconBlobParameters parameters,
+            bool includeBinary,
+            CancellationToken cancellationToken,
+            bool throwOnCancellation)
+        {
+            if (gray == null) throw new ArgumentNullException(nameof(gray));
+            if (regions == null) throw new ArgumentNullException(nameof(regions));
+            if (parameters == null) throw new ArgumentNullException(nameof(parameters));
+
             List<HalconBlobResult> results = new List<HalconBlobResult>(regions.Count);
-            Stopwatch conversionWatch = Stopwatch.StartNew();
             try
             {
-                using (HImage gray = HalconImageConverter.ToGrayHImage(source))
+                for (int index = 0; index < regions.Count; index++)
                 {
-                    conversionWatch.Stop();
-                    for (int index = 0; index < regions.Count; index++)
-                    {
-                        cancellationToken.ThrowIfCancellationRequested();
-                        HalconBlobResult result = AnalyzeRegion(
-                            gray,
-                            regions[index],
-                            parameters,
-                            includeBinary,
-                            cancellationToken);
-                        if (index == 0)
-                            result.ImageConversionElapsedMilliseconds = conversionWatch.Elapsed.TotalMilliseconds;
-                        results.Add(result);
-                    }
+                    if (CancellationRequested(cancellationToken, throwOnCancellation))
+                        break;
+                    HalconBlobResult result = AnalyzeRegion(
+                        gray.Image,
+                        regions[index],
+                        parameters,
+                        includeBinary,
+                        cancellationToken,
+                        throwOnCancellation);
+                    if (result == null)
+                        break;
+                    results.Add(result);
                 }
                 return results;
             }
@@ -113,7 +154,8 @@ namespace NinePointRotationCalibration.Halcon
             HalconBlobRegion input,
             HalconBlobParameters parameters,
             bool includeBinary,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            bool throwOnCancellation)
         {
             Stopwatch totalWatch = Stopwatch.StartNew();
             HalconBlobResult result = new HalconBlobResult
@@ -163,7 +205,8 @@ namespace NinePointRotationCalibration.Halcon
                     }
                 }
 
-                cancellationToken.ThrowIfCancellationRequested();
+                if (CancellationRequested(cancellationToken, throwOnCancellation))
+                    return null;
                 Stopwatch morphologyWatch = Stopwatch.StartNew();
                 int radius = Math.Max(0, Math.Min(100, parameters.MorphologyRadius));
                 morphed = radius > 0
@@ -172,13 +215,15 @@ namespace NinePointRotationCalibration.Halcon
                 morphologyWatch.Stop();
                 result.MorphologyElapsedMilliseconds = morphologyWatch.Elapsed.TotalMilliseconds;
 
-                cancellationToken.ThrowIfCancellationRequested();
+                if (CancellationRequested(cancellationToken, throwOnCancellation))
+                    return null;
                 Stopwatch fillWatch = Stopwatch.StartNew();
                 filled = parameters.FillHoles ? morphed.FillUp() : new HRegion(morphed);
                 fillWatch.Stop();
                 result.HoleFillElapsedMilliseconds = fillWatch.Elapsed.TotalMilliseconds;
 
-                cancellationToken.ThrowIfCancellationRequested();
+                if (CancellationRequested(cancellationToken, throwOnCancellation))
+                    return null;
                 Stopwatch componentWatch = Stopwatch.StartNew();
                 connected = filled.Connection();
                 selected = connected.CountObj() > 0
@@ -226,7 +271,8 @@ namespace NinePointRotationCalibration.Halcon
 
                 if (includeBinary)
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
+                    if (CancellationRequested(cancellationToken, throwOnCancellation))
+                        return null;
                     Stopwatch binaryWatch = Stopwatch.StartNew();
                     result.BinaryImage = RenderBinary(
                         filled,
@@ -285,6 +331,15 @@ namespace NinePointRotationCalibration.Halcon
                     if (background != null) background.Dispose();
                 }
             }
+        }
+
+        private static bool CancellationRequested(
+            CancellationToken cancellationToken,
+            bool throwOnCancellation)
+        {
+            if (!cancellationToken.IsCancellationRequested) return false;
+            if (throwOnCancellation) cancellationToken.ThrowIfCancellationRequested();
+            return true;
         }
     }
 }

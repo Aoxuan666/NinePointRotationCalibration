@@ -16,8 +16,8 @@ namespace NinePointRotationCalibration.WinForms.Models
             MatchNumLevels = 0;
             AngleStartDegrees = -0.3 * 180.0 / Math.PI;
             AngleExtentDegrees = 0.6 * 180.0 / Math.PI;
-            MatchAngleStartDegrees = -10.0;
-            MatchAngleExtentDegrees = 20.0;
+            MatchAngleStartDegrees = -5.0;
+            MatchAngleExtentDegrees = 10.0;
             _hasSeparateMatchParameters = true;
             AngleStepDegrees = 0.0;
             Optimization = "auto";

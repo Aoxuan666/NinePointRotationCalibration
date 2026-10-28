@@ -11,7 +11,7 @@ namespace NinePointRotationCalibration.Halcon
     /// Uses ordered, filtered XLD edge contours for newly-created shape templates.
     /// Existing image-domain shape templates and NCC templates retain the legacy engine behavior.
     /// </summary>
-    public sealed class XldTemplateMatchingEngine : ITemplateMatchingEngine
+    public sealed class XldTemplateMatchingEngine : ITemplateMatchingEngine, IGrayImageTemplateMatchingEngine
     {
         private const string XldMetric = "ignore_local_polarity";
         private readonly HalconTemplateEngine _legacyEngine = new HalconTemplateEngine();
@@ -50,6 +50,12 @@ namespace NinePointRotationCalibration.Halcon
         }
 
         public TemplateMatchCollectionResult LocateAll(Bitmap image, TemplateDefinition definition, bool includeContour = true)
+        {
+            ThrowIfDisposed();
+            return _legacyEngine.LocateAll(image, definition, includeContour);
+        }
+
+        public TemplateMatchCollectionResult LocateAll(HalconGrayImage image, TemplateDefinition definition, bool includeContour = true)
         {
             ThrowIfDisposed();
             return _legacyEngine.LocateAll(image, definition, includeContour);
