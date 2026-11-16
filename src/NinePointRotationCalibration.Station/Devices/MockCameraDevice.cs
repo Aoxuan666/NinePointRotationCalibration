@@ -9,11 +9,12 @@ using NinePointRotationCalibration.Station.Models;
 
 namespace NinePointRotationCalibration.Station.Devices
 {
-    public sealed class MockCameraDevice : ICameraDevice
+    public sealed class MockCameraDevice : ICameraDevice, ICameraParameterDevice
     {
         public const string DefaultDeviceId = "MOCK-PCB-01";
 
         private readonly SemaphoreSlim _operationGate = new SemaphoreSlim(1, 1);
+        private readonly object _parametersSync = new object();
         private readonly object _stateSync = new object();
         private readonly bool _simulateIntermittentFaults;
         private bool _disposeRequested;
@@ -21,6 +22,7 @@ namespace NinePointRotationCalibration.Station.Devices
         private bool _isConnected;
         private string _connectedDeviceId;
         private double _exposureMicroseconds = 10000.0;
+        private CameraParameterSet _parameters = new CameraParameterSet();
         private long _sequence;
 
         public MockCameraDevice()
@@ -142,11 +144,63 @@ namespace NinePointRotationCalibration.Station.Devices
                 EnsureConnected();
                 cancellationToken.ThrowIfCancellationRequested();
                 _exposureMicroseconds = exposureMicroseconds;
+                _parameters.ExposureMicroseconds = exposureMicroseconds;
             }
             finally
             {
                 _operationGate.Release();
             }
+        }
+
+        public async Task<CameraParameterSet> GetParametersAsync(CancellationToken cancellationToken)
+        {
+            ThrowIfDisposed();
+            cancellationToken.ThrowIfCancellationRequested();
+            lock (_parametersSync) return CloneParameters(_parameters);
+        }
+
+        public async Task SetParametersAsync(CameraParameterSet parameters, CancellationToken cancellationToken)
+        {
+            if (parameters == null) throw new ArgumentNullException(nameof(parameters));
+            if (parameters.ExposureMicroseconds <= 0.0)
+                throw new ArgumentOutOfRangeException(nameof(parameters.ExposureMicroseconds));
+            ThrowIfDisposed();
+            await _operationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                ThrowIfDisposed();
+                cancellationToken.ThrowIfCancellationRequested();
+                lock (_parametersSync)
+                {
+                    _parameters = CloneParameters(parameters);
+                    _exposureMicroseconds = _parameters.ExposureMicroseconds;
+                }
+            }
+            finally
+            {
+                _operationGate.Release();
+            }
+        }
+
+        private static CameraParameterSet CloneParameters(CameraParameterSet source)
+        {
+            CameraParameterSet clone = new CameraParameterSet
+            {
+                ExposureMicroseconds = source.ExposureMicroseconds,
+                Gain = source.Gain,
+                Gamma = source.Gamma,
+                Saturation = source.Saturation,
+                Width = source.Width,
+                Height = source.Height,
+                PixelFormat = source.PixelFormat,
+                TriggerMode = source.TriggerMode,
+                ReverseX = source.ReverseX,
+                ReverseY = source.ReverseY
+            };
+            if (source.Features != null)
+                foreach (CameraFeatureValue feature in source.Features)
+                    if (feature != null) clone.Features.Add(feature.Clone());
+            return clone;
         }
 
         public async Task<CameraFrame> CaptureAsync(CancellationToken cancellationToken)

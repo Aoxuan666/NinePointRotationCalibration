@@ -22,6 +22,7 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
             _poseMapper = new TargetPoseMapper();
         }
 
+        /// <summary>定位板件、分析配置的 Blob，并将示教目标映射为机械坐标。</summary>
         public InspectionResult Inspect(
             Bitmap image,
             CalibrationJob positioningJob,
@@ -42,6 +43,7 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
                 true);
         }
 
+        /// <summary>执行视觉和 Blob 分析，不要求已有标定结果或目标映射数据。</summary>
         public InspectionResult InspectWithoutMapping(
             Bitmap image,
             CalibrationJob positioningJob,
@@ -195,6 +197,11 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
                         profile,
                         false,
                         CancellationToken.None);
+                    if (analyses == null || analyses.Count != orderedMatches.Count)
+                    {
+                        return Failure(result, "BLOB_ANALYSIS_FAILED",
+                            "Blob 分析没有为每个定位到的板件返回结果。");
+                    }
                     for (int index = 0; index < orderedMatches.Count; index++)
                     {
                         TemplateMatchResult match = orderedMatches[index];

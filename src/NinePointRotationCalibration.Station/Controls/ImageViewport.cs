@@ -69,6 +69,7 @@ namespace NinePointRotationCalibration.Station.Controls
         public bool IsInsideImage { get; private set; }
     }
 
+    /// <summary>支持双缓冲、帧合并显示和图像叠加层的图像视口控件。</summary>
     [DesignerCategory("Code")]
     public sealed class ImageViewport : Control
     {
@@ -143,8 +144,8 @@ namespace NinePointRotationCalibration.Station.Controls
         }
 
         /// <summary>
-        /// Displays a defensive copy of the supplied bitmap. The caller keeps ownership.
-        /// Pending frames are coalesced so a slow UI never builds an unbounded frame queue.
+        /// 显示输入 Bitmap 的副本，输入对象仍由调用方负责释放。
+        /// 待显示帧会合并，避免界面较慢时形成无限增长的帧队列。
         /// </summary>
         public void SetImage(Bitmap image)
         {
@@ -159,8 +160,8 @@ namespace NinePointRotationCalibration.Station.Controls
         }
 
         /// <summary>
-        /// Queues a preview frame only when the UI has no frame waiting to be presented.
-        /// The reservation is taken before the expensive full-resolution conversion.
+        /// 仅在界面没有等待显示的帧时排队预览图像。
+        /// 在耗时的全分辨率转换之前先占用刷新名额，避免并发复制。
         /// </summary>
         public bool TrySetPreviewImage(Bitmap image)
         {
@@ -188,7 +189,7 @@ namespace NinePointRotationCalibration.Station.Controls
         }
 
         /// <summary>
-        /// Displays a bitmap without cloning it. Ownership transfers to this control.
+        /// 不复制 Bitmap，直接交给控件显示；调用方不再拥有该对象。
         /// </summary>
         public void SetImageOwned(Bitmap image)
         {
@@ -618,9 +619,11 @@ namespace NinePointRotationCalibration.Station.Controls
             List<ViewportContourOverlay> contours;
             lock (_overlaySync)
             {
-                points = _points.Select(ClonePoint).ToList();
-                rois = _rois.Select(CloneRoi).ToList();
-                contours = _contours.Select(CloneContour).ToList();
+                // Set*Overlays 已经保存了防御性副本；这里仅复制列表引用，
+                // 避免每次重绘都复制全部轮廓点。
+                points = new List<ViewportPointOverlay>(_points);
+                rois = new List<ViewportRoiOverlay>(_rois);
+                contours = new List<ViewportContourOverlay>(_contours);
             }
 
             graphics.SmoothingMode = SmoothingMode.AntiAlias;

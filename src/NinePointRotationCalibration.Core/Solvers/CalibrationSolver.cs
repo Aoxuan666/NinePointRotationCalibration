@@ -4,12 +4,22 @@ using System.Collections.Generic;
 namespace NinePointRotationCalibration
 {
     /// <summary>
-    /// Solves the pixel/stage affine relationship and, when requested, the
-    /// machine/image angle relationship and rotation center.
+    /// 求解像素与机械坐标的仿射关系，并按配置求解机械角度与旋转中心。
     /// </summary>
     public static class CalibrationSolver
     {
+        /// <summary>执行九点仿射标定，并按配置决定是否继续求解旋转关系。</summary>
         public static CalibrationResult Solve(CalibrationJob job)
+        {
+            return Solve(job, null);
+        }
+
+        /// <summary>
+        /// 执行九点和旋转标定；提供几何后端时，底层矩阵计算由该后端完成。
+        /// </summary>
+        public static CalibrationResult Solve(
+            CalibrationJob job,
+            ICalibrationGeometryBackend geometryBackend)
         {
             if (job == null)
                 return CalibrationResult.Failure(CalibrationErrorCode.ParameterInvalid, "Calibration job is null.");
@@ -21,8 +31,7 @@ namespace NinePointRotationCalibration
             if (!ValidateEnumValues(job, out enumError))
                 return CopyDiagnostics(result, CalibrationResult.Failure(CalibrationErrorCode.ParameterInvalid, enumError));
 
-            // Check job/sample invalidation before any numerical option check so
-            // an enabled stale sample always has the same actionable error.
+            // 先检查任务和样本是否失效，确保启用的旧版本样本始终返回明确错误。
             if (job.HasStaleEnabledSamples)
             {
                 CalibrationResult stale = CalibrationResult.Failure(
@@ -35,10 +44,8 @@ namespace NinePointRotationCalibration
             if (!ValidateOptions(job.SolverOptions, out optionsError))
                 return CopyDiagnostics(result, CalibrationResult.Failure(CalibrationErrorCode.ParameterInvalid, optionsError));
 
-            // A brand-new, model-less job is useful for the pure geometry API
-            // (and for hosts that solve from externally acquired poses).  Once
-            // a model has been created, however, changing its definition must
-            // invalidate calibration until the model is rebuilt.
+            // 无模型任务可用于外部采集姿态后的纯几何求解；模型创建后若参数变化，
+            // 必须重新建模才能继续标定。
             if (job.Template != null && job.Template.IsModelDirty &&
                 (job.Template.ModelData != null && job.Template.ModelData.Length > 0 ||
                  job.Template.Revision > 1 || !string.IsNullOrWhiteSpace(job.Template.ModelHash)))
@@ -51,12 +58,12 @@ namespace NinePointRotationCalibration
 
             try
             {
-                if (!AffineCalibrationSolver.Solve(job, result))
+                if (!AffineCalibrationSolver.Solve(job, result, geometryBackend))
                 {
                     return result;
                 }
 
-                bool rotationSucceeded = RotationCalibrationSolver.Solve(job, result);
+                bool rotationSucceeded = RotationCalibrationSolver.Solve(job, result, geometryBackend);
                 if (!rotationSucceeded && job.SolverOptions.RequireRotationCalibration)
                 {
                     result.Success = false;
@@ -89,16 +96,26 @@ namespace NinePointRotationCalibration
             }
         }
 
+        /// <summary>仅执行平移仿射标定，不要求旋转样本。</summary>
         public static CalibrationResult SolveTranslation(CalibrationJob job)
+        {
+            return SolveTranslation(job, null);
+        }
+
+        /// <summary>使用指定几何后端仅执行平移仿射标定。</summary>
+        public static CalibrationResult SolveTranslation(
+            CalibrationJob job,
+            ICalibrationGeometryBackend geometryBackend)
         {
             if (job == null)
                 return CalibrationResult.Failure(CalibrationErrorCode.ParameterInvalid, "Calibration job is null.");
             CalibrationJob copy = job.DeepClone();
             if (copy.SolverOptions == null) copy.SolverOptions = new CalibrationSolverOptions();
             copy.SolverOptions.RequireRotationCalibration = false;
-            return Solve(copy);
+            return Solve(copy, geometryBackend);
         }
 
+        /// <summary>执行标定并以布尔值返回成功状态。</summary>
         public static bool TrySolve(CalibrationJob job, out CalibrationResult result)
         {
             result = Solve(job);

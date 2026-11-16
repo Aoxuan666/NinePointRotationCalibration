@@ -122,6 +122,44 @@ namespace NinePointRotationCalibration.Station.Services.Camera
             }
         }
 
+        public async Task<CameraParameterSet> GetParametersAsync(CancellationToken cancellationToken)
+        {
+            ThrowIfDisposed();
+            await _deviceGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                ICameraParameterDevice parameterDevice = _device as ICameraParameterDevice;
+                if (parameterDevice == null)
+                    throw new NotSupportedException("The selected camera driver does not expose adjustable parameters.");
+                if (!_device.IsConnected) throw new InvalidOperationException("Camera is not connected.");
+                return await parameterDevice.GetParametersAsync(cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                _deviceGate.Release();
+            }
+        }
+
+        public async Task SetParametersAsync(CameraParameterSet parameters, CancellationToken cancellationToken)
+        {
+            ThrowIfDisposed();
+            if (parameters == null) throw new ArgumentNullException(nameof(parameters));
+            await _deviceGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                ICameraParameterDevice parameterDevice = _device as ICameraParameterDevice;
+                if (parameterDevice == null)
+                    throw new NotSupportedException("The selected camera driver does not expose adjustable parameters.");
+                if (!_device.IsConnected) throw new InvalidOperationException("Camera is not connected.");
+                await parameterDevice.SetParametersAsync(parameters, cancellationToken).ConfigureAwait(false);
+                OnLog("INFO", "Camera parameters applied.");
+            }
+            finally
+            {
+                _deviceGate.Release();
+            }
+        }
+
         public async Task<CameraFrame> CaptureAsync(CancellationToken cancellationToken)
         {
             ThrowIfDisposed();

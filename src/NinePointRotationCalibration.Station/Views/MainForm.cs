@@ -699,8 +699,17 @@ namespace NinePointRotationCalibration.Station.Views
             chkCalibrationEnabled.Enabled = !workflowBusy;
             cmbCameraProvider.Enabled = cameraEnabled && !workflowBusy;
             cmbCameraDevice.Enabled = cameraEnabled && !workflowBusy;
-            SetControlEnabled("nudCameraExposure", cameraEnabled && !workflowBusy);
-            SetControlEnabled("nudCameraTimeout", cameraEnabled && !workflowBusy);
+            string[] cameraParameterControls =
+            {
+                "nudCameraExposure",
+                "nudCameraGain",
+                "nudCameraGamma",
+                "cmbCameraTriggerMode",
+                "nudCameraTimeout",
+                "nudPreviewInterval"
+            };
+            foreach (string controlName in cameraParameterControls)
+                SetControlEnabled(controlName, cameraEnabled && !workflowBusy);
 
             string[] cameraActions =
             {

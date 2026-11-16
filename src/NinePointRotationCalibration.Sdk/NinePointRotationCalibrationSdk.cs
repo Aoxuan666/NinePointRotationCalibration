@@ -19,6 +19,7 @@ namespace NinePointRotationCalibration
     public sealed class NinePointRotationCalibrationSdk : IDisposable
     {
         private readonly ITemplateMatchingEngine _templateEngine;
+        private readonly ICalibrationGeometryBackend _calibrationGeometryBackend;
         private readonly bool _ownsTemplateEngine;
         private bool _disposed;
 
@@ -38,6 +39,8 @@ namespace NinePointRotationCalibration
         private NinePointRotationCalibrationSdk(ITemplateMatchingEngine templateEngine, bool ownsTemplateEngine)
         {
             _templateEngine = templateEngine ?? throw new ArgumentNullException(nameof(templateEngine));
+            // SDK 的正式计算路径统一使用 HALCON 几何算子完成矩阵、逆矩阵、点变换和线性求解。
+            _calibrationGeometryBackend = new HalconCalibrationGeometryBackend();
             _ownsTemplateEngine = ownsTemplateEngine;
         }
 
@@ -314,7 +317,9 @@ namespace NinePointRotationCalibration
             ThrowIfDisposed();
             try
             {
-                return CalibrationSolver.Solve(job == null ? null : job.DeepClone());
+                return CalibrationSolver.Solve(
+                    job == null ? null : job.DeepClone(),
+                    _calibrationGeometryBackend);
             }
             catch (Exception exception)
             {

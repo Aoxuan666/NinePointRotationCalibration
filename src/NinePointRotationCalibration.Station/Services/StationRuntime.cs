@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -19,6 +20,7 @@ using NinePointRotationCalibration.Station.Services.Teaching;
 
 namespace NinePointRotationCalibration.Station.Services
 {
+    /// <summary>组合 TCP、相机、标定、示教和检测服务的工作站运行时。</summary>
     public sealed class StationRuntime : IDisposable
     {
         private const int SeenMessageLimit = 4096;
@@ -104,6 +106,7 @@ namespace NinePointRotationCalibration.Station.Services
         public event EventHandler<TeachingEventArgs> TeachingChanged;
         public event EventHandler<InspectionEventArgs> InspectionCompleted;
 
+        /// <summary>从工作站数据目录加载配置并创建默认运行时。</summary>
         public static StationRuntime CreateDefault()
         {
             string dataDirectory = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "data");
@@ -178,6 +181,7 @@ namespace NinePointRotationCalibration.Station.Services
             return StartAsync(CancellationToken.None);
         }
 
+        /// <summary>启动 TCP 服务，并按配置尝试连接相机。</summary>
         public async Task StartAsync(CancellationToken cancellationToken)
         {
             ThrowIfDisposed();
@@ -222,6 +226,7 @@ namespace NinePointRotationCalibration.Station.Services
             }
         }
 
+        /// <summary>停止预览、取消自动标定并关闭 TCP 服务。</summary>
         public async Task StopAsync()
         {
             bool shouldStop;
@@ -250,6 +255,17 @@ namespace NinePointRotationCalibration.Station.Services
             StationOptions options = GetOptionsSnapshot();
             await _camera.StopPreviewAsync().ConfigureAwait(false);
             await _camera.ConnectAsync(deviceId, options.CameraExposureMicroseconds, cancellationToken).ConfigureAwait(false);
+            await _camera.SetParametersAsync(new CameraParameterSet
+            {
+                ExposureMicroseconds = options.CameraExposureMicroseconds,
+                Gain = options.CameraGain,
+                Gamma = options.CameraGamma,
+                Features = ParseCameraFeatures(options.CameraFeatures),
+                TriggerMode = options.CameraTriggerMode
+            }, cancellationToken).ConfigureAwait(false);
+            // Start the acquisition loop for both startup auto-connect and manual
+            // camera switching. Single captures do not start this loop themselves.
+            _camera.StartPreview();
             OnStateChanged("camera", true, _camera.ProviderName + " / " + _camera.ConnectedDeviceId);
         }
 
@@ -272,6 +288,48 @@ namespace NinePointRotationCalibration.Station.Services
             _jsonStore.Save(_optionsPath, snapshot);
         }
 
+        public Task<CameraParameterSet> GetCameraParametersAsync(CancellationToken cancellationToken)
+        {
+            EnsureCameraEnabled();
+            return _camera.GetParametersAsync(cancellationToken);
+        }
+
+        public async Task SetCameraParametersAsync(CameraParameterSet parameters, CancellationToken cancellationToken)
+        {
+            EnsureCameraEnabled();
+            if (parameters == null) throw new ArgumentNullException(nameof(parameters));
+            await _camera.SetParametersAsync(parameters, cancellationToken).ConfigureAwait(false);
+            StationOptions snapshot;
+            lock (_stateSync)
+            {
+                _options.CameraExposureMicroseconds = parameters.ExposureMicroseconds;
+                _options.CameraGain = parameters.Gain;
+                _options.CameraGamma = parameters.Gamma;
+                _options.CameraTriggerMode = parameters.TriggerMode;
+                _options.CameraFeatures = SerializeCameraFeatures(parameters.Features);
+                snapshot = _options.DeepClone();
+            }
+            _jsonStore.Save(_optionsPath, snapshot);
+        }
+
+        private static List<CameraFeatureValue> ParseCameraFeatures(Dictionary<string, string> values)
+        {
+            List<CameraFeatureValue> result = new List<CameraFeatureValue>();
+            if (values == null) return result;
+            foreach (KeyValuePair<string, string> pair in values)
+                result.Add(new CameraFeatureValue { Name = pair.Key, Value = pair.Value, IsWritable = true });
+            return result;
+        }
+
+        private static Dictionary<string, string> SerializeCameraFeatures(List<CameraFeatureValue> features)
+        {
+            Dictionary<string, string> result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            if (features == null) return result;
+            foreach (CameraFeatureValue feature in features)
+                if (feature != null && !string.IsNullOrWhiteSpace(feature.Name)) result[feature.Name] = feature.Value ?? string.Empty;
+            return result;
+        }
+
         public Task CaptureOnceAsync(CancellationToken cancellationToken)
         {
             EnsureCameraEnabled();
@@ -287,6 +345,7 @@ namespace NinePointRotationCalibration.Station.Services
                 cancellationToken);
         }
 
+        /// <summary>执行一个标定点的运动、采图、定位和保存流程。</summary>
         public Task<CalibrationPointRecord> CaptureCalibrationPointAsync(
             int pointNumber,
             CancellationToken cancellationToken)
@@ -299,6 +358,7 @@ namespace NinePointRotationCalibration.Station.Services
                 cancellationToken);
         }
 
+        /// <summary>按计划依次执行全部标定点并计算结果。</summary>
         public Task<CalibrationResult> RunAutomaticCalibrationAsync(CancellationToken cancellationToken)
         {
             EnsureCameraEnabled();
@@ -323,6 +383,7 @@ namespace NinePointRotationCalibration.Station.Services
                 cancellationToken);
         }
 
+        /// <summary>采集并定位一侧示教姿态。</summary>
         public Task<TeachingPose> CaptureTeachingAsync(
             TeachingSide side,
             MachinePose machinePose,
@@ -510,6 +571,7 @@ namespace NinePointRotationCalibration.Station.Services
                 cancellationToken);
         }
 
+        /// <summary>执行在线检测并发布检测结果。</summary>
         public Task<InspectionResult> RunInspectionAsync(
             int expectedCount,
             double currentR,
@@ -523,6 +585,7 @@ namespace NinePointRotationCalibration.Station.Services
                 cancellationToken);
         }
 
+        /// <summary>使用指定图像执行离线检测。</summary>
         public Task<InspectionResult> RunOfflineInspectionAsync(
             Bitmap image,
             int expectedCount,
@@ -634,8 +697,32 @@ namespace NinePointRotationCalibration.Station.Services
 
             string configured;
             lock (_stateSync) configured = _options.CameraSerialNumber;
-            string deviceId = string.IsNullOrWhiteSpace(configured) ? devices[0].Id : configured;
+            CameraDescriptor configuredDevice = string.IsNullOrWhiteSpace(configured)
+                ? null
+                : devices.FirstOrDefault(device => string.Equals(
+                    device.Id,
+                    configured,
+                    StringComparison.OrdinalIgnoreCase));
+            string deviceId = configuredDevice == null ? devices[0].Id : configuredDevice.Id;
+            if (!string.IsNullOrWhiteSpace(configured) && configuredDevice == null)
+            {
+                OnLog("WARN", "Configured camera '" + configured +
+                    "' was not found for provider '" + _camera.ProviderName +
+                    "'. Connecting to discovered camera '" + deviceId + "' instead.");
+            }
+
             await ConnectCameraAsync(deviceId, cancellationToken).ConfigureAwait(false);
+            if (!string.Equals(configured, deviceId, StringComparison.OrdinalIgnoreCase))
+            {
+                StationOptions snapshot;
+                lock (_stateSync)
+                {
+                    _options.CameraSerialNumber = deviceId;
+                    snapshot = _options.DeepClone();
+                }
+                _jsonStore.Save(_optionsPath, snapshot);
+                OnLog("INFO", "Saved active camera selection: " + deviceId);
+            }
         }
 
         private void WireEvents()
@@ -1247,6 +1334,11 @@ namespace NinePointRotationCalibration.Station.Services
             {
                 return new DahuaCameraDevice(options.CameraTimeoutMilliseconds);
             }
+            if (string.Equals(options.CameraProvider, "Hikvision", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(options.CameraProvider, "MVS", StringComparison.OrdinalIgnoreCase))
+            {
+                return new HikvisionCameraDevice();
+            }
             return new MockCameraDevice();
         }
 
@@ -1425,6 +1517,7 @@ namespace NinePointRotationCalibration.Station.Services
 
         private void OnLog(string level, string message)
         {
+            StationLog.Write(level, "runtime", message);
             EventHandler<LogEventArgs> handler = Log;
             if (handler != null) handler(this, new LogEventArgs(level, message));
         }

@@ -67,6 +67,7 @@ namespace NinePointRotationCalibration.Halcon
 
     public static class HalconBlobEngine
     {
+        /// <summary>使用 HALCON 对每个 ROI 执行阈值、形态学、连通域和轮廓分析。</summary>
         public static List<HalconBlobResult> Analyze(
             Bitmap source,
             IList<HalconBlobRegion> regions,
@@ -77,8 +78,7 @@ namespace NinePointRotationCalibration.Halcon
             return Analyze(source, regions, parameters, includeBinary, cancellationToken, true);
         }
 
-        // Preview callers can cancel stale work without turning an expected refresh into
-        // an exception that a debugger reports as an unhandled HALCON failure.
+        // 预览调用方可以取消过期任务，避免正常刷新被误报为未处理的 HALCON 异常。
         public static List<HalconBlobResult> Analyze(
             Bitmap source,
             IList<HalconBlobRegion> regions,
@@ -107,8 +107,7 @@ namespace NinePointRotationCalibration.Halcon
         }
 
         /// <summary>
-        /// Analyzes regions on an image the caller already converted (for example
-        /// the frame used for template matching). No conversion time is reported.
+        /// 在调用方已经转换好的灰度图上分析区域（例如模板匹配使用的图像），不会重复转换图像。
         /// </summary>
         public static List<HalconBlobResult> Analyze(
             HalconGrayImage gray,

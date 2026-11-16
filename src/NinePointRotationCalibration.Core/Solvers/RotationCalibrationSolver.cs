@@ -3,9 +3,14 @@ using System.Collections.Generic;
 
 namespace NinePointRotationCalibration
 {
+    /// <summary>根据旋转样本求解角度方向、旋转中心和旋转残差。</summary>
     internal static class RotationCalibrationSolver
     {
-        public static bool Solve(CalibrationJob job, CalibrationResult result)
+        /// <summary>拟合旋转角度关系和图像/机械坐标中的旋转中心。</summary>
+        public static bool Solve(
+            CalibrationJob job,
+            CalibrationResult result,
+            ICalibrationGeometryBackend geometryBackend)
         {
             CalibrationSolverOptions options = job.SolverOptions;
             RotationCalibrationResult rotation = new RotationCalibrationResult();
@@ -37,14 +42,14 @@ namespace NinePointRotationCalibration
             }
 
             StagePoint referenceStage = ComputeReferenceStage(observations, angleFit.Inliers);
-            NormalizeForStageTranslation(observations, result.StageToPixelMatrix, referenceStage);
+            NormalizeForStageTranslation(observations, result.StageToPixelMatrix, referenceStage, geometryBackend);
 
             bool[] centerInliers;
             double centerColumn;
             double centerRow;
             double localX;
             double localY;
-            if (!FindRobustCenter(observations, angleFit, options, out centerInliers,
+            if (!FindRobustCenter(observations, angleFit, options, geometryBackend, out centerInliers,
                 out centerColumn, out centerRow, out localX, out localY))
             {
                 return Fail(rotation, CalibrationErrorCode.RotationDegenerate,
@@ -65,7 +70,7 @@ namespace NinePointRotationCalibration
                     string.Format("Only {0} rotation inliers remain after robust filtering.", combinedCount));
             }
 
-            if (!FitRigidCenter(observations, combined, angleFit.Direction,
+            if (!FitRigidCenter(observations, combined, angleFit.Direction, geometryBackend,
                 out centerColumn, out centerRow, out localX, out localY))
             {
                 return Fail(rotation, CalibrationErrorCode.RotationDegenerate,
@@ -86,7 +91,9 @@ namespace NinePointRotationCalibration
             rotation.MaxAngleResidualDegrees = angleFit.MaxResidual;
             rotation.MachineAngleSpanDegrees = angleFit.Span;
             rotation.RotationCenterImage = new ImagePoint(centerRow, centerColumn);
-            Point2D centerStage = result.PixelToStageMatrix.Transform(new Point2D(centerColumn, centerRow));
+            Point2D centerStage = geometryBackend == null
+                ? result.PixelToStageMatrix.Transform(new Point2D(centerColumn, centerRow))
+                : geometryBackend.TransformPoint(result.PixelToStageMatrix, new Point2D(centerColumn, centerRow));
             rotation.RotationCenterStage = new StagePoint(centerStage.X, centerStage.Y);
             rotation.ReferenceStage = referenceStage;
             rotation.RadiusPixels = Math.Sqrt((localX * localX) + (localY * localY));
@@ -104,8 +111,11 @@ namespace NinePointRotationCalibration
                 double sin = Math.Sin(phi);
                 double predictedNormalizedColumn = centerColumn + (cos * localX) - (sin * localY);
                 double predictedNormalizedRow = centerRow + (sin * localX) + (cos * localY);
-                Vector2D stageShift = result.StageToPixelMatrix.TransformVector(
-                    new Vector2D(observation.StageX - referenceStage.X, observation.StageY - referenceStage.Y));
+                Vector2D stageShift = geometryBackend == null
+                    ? result.StageToPixelMatrix.TransformVector(
+                        new Vector2D(observation.StageX - referenceStage.X, observation.StageY - referenceStage.Y))
+                    : geometryBackend.TransformVector(result.StageToPixelMatrix,
+                        new Vector2D(observation.StageX - referenceStage.X, observation.StageY - referenceStage.Y));
                 double predictedColumn = predictedNormalizedColumn + stageShift.X;
                 double predictedRow = predictedNormalizedRow + stageShift.Y;
                 double dc = predictedColumn - observation.Column;
@@ -122,7 +132,10 @@ namespace NinePointRotationCalibration
                 CalibrationSampleDiagnostic diagnostic = observation.Diagnostic;
                 diagnostic.IsInlier = combined[i];
                 diagnostic.PredictedImagePose = new ImagePose(predictedRow, predictedColumn, predictedAngle);
-                Point2D predictedStage = result.PixelToStageMatrix.Transform(new Point2D(predictedColumn, predictedRow));
+                Point2D predictedStage = geometryBackend == null
+                    ? result.PixelToStageMatrix.Transform(new Point2D(predictedColumn, predictedRow))
+                    : geometryBackend.TransformPoint(result.PixelToStageMatrix,
+                        new Point2D(predictedColumn, predictedRow));
                 diagnostic.PredictedStagePoint = new StagePoint(predictedStage.X, predictedStage.Y);
                 diagnostic.ResidualColumnPixels = dc;
                 diagnostic.ResidualRowPixels = dr;
@@ -375,12 +388,17 @@ namespace NinePointRotationCalibration
         private static void NormalizeForStageTranslation(
             IList<RotationObservation> observations,
             AffineMatrix2D stageToPixel,
-            StagePoint referenceStage)
+            StagePoint referenceStage,
+            ICalibrationGeometryBackend geometryBackend)
         {
             foreach (RotationObservation observation in observations)
             {
-                Vector2D shift = stageToPixel.TransformVector(
-                    new Vector2D(observation.StageX - referenceStage.X, observation.StageY - referenceStage.Y));
+                Vector2D stageDelta = new Vector2D(
+                    observation.StageX - referenceStage.X,
+                    observation.StageY - referenceStage.Y);
+                Vector2D shift = geometryBackend == null
+                    ? stageToPixel.TransformVector(stageDelta)
+                    : geometryBackend.TransformVector(stageToPixel, stageDelta);
                 observation.NormalizedColumn = observation.Column - shift.X;
                 observation.NormalizedRow = observation.Row - shift.Y;
             }
@@ -390,6 +408,7 @@ namespace NinePointRotationCalibration
             IList<RotationObservation> observations,
             RotationAngleFit angleFit,
             CalibrationSolverOptions options,
+            ICalibrationGeometryBackend geometryBackend,
             out bool[] bestInliers,
             out double centerColumn,
             out double centerRow,
@@ -414,7 +433,8 @@ namespace NinePointRotationCalibration
                     double cr;
                     double lx;
                     double ly;
-                    if (!FitRigidCenter(observations, seed, angleFit.Direction, out cc, out cr, out lx, out ly)) continue;
+                    if (!FitRigidCenter(observations, seed, angleFit.Direction, geometryBackend,
+                        out cc, out cr, out lx, out ly)) continue;
 
                     bool[] candidate = new bool[observations.Count];
                     int count = 0;
@@ -451,7 +471,7 @@ namespace NinePointRotationCalibration
 
             for (int iteration = 0; iteration < 3; iteration++)
             {
-                if (!FitRigidCenter(observations, bestInliers, angleFit.Direction,
+                if (!FitRigidCenter(observations, bestInliers, angleFit.Direction, geometryBackend,
                     out centerColumn, out centerRow, out localX, out localY)) return false;
                 List<double> residuals = new List<double>();
                 for (int i = 0; i < observations.Count; i++)
@@ -482,7 +502,7 @@ namespace NinePointRotationCalibration
                 bestInliers = refined;
             }
 
-            return FitRigidCenter(observations, bestInliers, angleFit.Direction,
+            return FitRigidCenter(observations, bestInliers, angleFit.Direction, geometryBackend,
                 out centerColumn, out centerRow, out localX, out localY);
         }
 
@@ -490,6 +510,7 @@ namespace NinePointRotationCalibration
             IList<RotationObservation> observations,
             bool[] included,
             int direction,
+            ICalibrationGeometryBackend geometryBackend,
             out double centerColumn,
             out double centerRow,
             out double localX,
@@ -513,7 +534,10 @@ namespace NinePointRotationCalibration
 
             if (count < 2) return false;
             double[] solution;
-            if (!SolverMath.SolveLinear(normal, right, out solution)) return false;
+            bool solved = geometryBackend == null
+                ? SolverMath.SolveLinear(normal, right, out solution)
+                : geometryBackend.TrySolveLinear(normal, right, out solution);
+            if (!solved) return false;
             centerColumn = solution[0];
             centerRow = solution[1];
             localX = solution[2];

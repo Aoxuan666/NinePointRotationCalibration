@@ -651,11 +651,13 @@ namespace NinePointRotationCalibration.Station.Views
         {
             TabPage page = CreateTabPage("tabCamera", "相机");
             TableLayoutPanel layout = CreateScrollableStack();
-            layout.RowCount = 5;
+            layout.RowCount = 6;
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 82.0F));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 160.0F));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 132.0F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 236.0F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 280.0F));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 44.0F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100.0F));
             layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100.0F));
 
             GroupBox mode = CreateGroupBox("运行开关");
@@ -697,7 +699,7 @@ namespace NinePointRotationCalibration.Station.Views
             GroupBox connection = CreateGroupBox("相机连接");
             TableLayoutPanel connectionFields = CreateFieldTable(2);
             cmbCameraProvider = CreateComboBox("cmbCameraProvider");
-            cmbCameraProvider.Items.AddRange(new object[] { "大华 (CameraDH)", "模拟相机" });
+            cmbCameraProvider.Items.AddRange(new object[] { "大华 (CameraDH)", "海康 (MVS)", "模拟相机" });
             cmbCameraProvider.SelectedIndex = 0;
             cmbCameraDevice = CreateComboBox("cmbCameraDevice");
             AddField(connectionFields, 0, "相机驱动", cmbCameraProvider);
@@ -716,9 +718,33 @@ namespace NinePointRotationCalibration.Station.Views
 
             GroupBox acquisition = CreateGroupBox("采集参数");
             TableLayoutPanel acquisitionFields = CreateFieldTable(2);
-            AddField(acquisitionFields, 0, "曝光 (us)", CreateDecimalInput("nudCameraExposure", 8000.0M, 1.0M, 10000000.0M, 0));
-            AddField(acquisitionFields, 1, "超时 (ms)", CreateDecimalInput("nudCameraTimeout", 2000.0M, 10.0M, 60000.0M, 0));
+            acquisitionFields.RowCount = 6;
+            acquisitionFields.RowStyles.Add(new RowStyle(SizeType.Absolute, 34.0F));
+            acquisitionFields.RowStyles.Add(new RowStyle(SizeType.Absolute, 34.0F));
+            acquisitionFields.RowStyles.Add(new RowStyle(SizeType.Absolute, 34.0F));
+            acquisitionFields.RowStyles.Add(new RowStyle(SizeType.Absolute, 34.0F));
+            acquisitionFields.RowStyles.Add(new RowStyle(SizeType.Absolute, 34.0F));
+            acquisitionFields.RowStyles.Add(new RowStyle(SizeType.Absolute, 34.0F));
+            AddField(acquisitionFields, 0, "曝光 (us)", CreateDecimalInput("nudCameraExposure", 10000.0M, 1.0M, 10000000.0M, 0));
+            AddField(acquisitionFields, 1, "增益", CreateDecimalInput("nudCameraGain", 0.0M, 0.0M, 10000.0M, 2));
+            AddField(acquisitionFields, 2, "伽马", CreateDecimalInput("nudCameraGamma", 1.0M, 0.1M, 10.0M, 2));
+            ComboBox triggerMode = CreateComboBox("cmbCameraTriggerMode");
+            triggerMode.Items.AddRange(new object[] { "软件触发", "硬件触发", "连续采集" });
+            triggerMode.SelectedIndex = 0;
+            AddField(acquisitionFields, 3, "触发模式", triggerMode);
+            AddField(acquisitionFields, 4, "超时 (ms)", CreateDecimalInput("nudCameraTimeout", 3000.0M, 10.0M, 60000.0M, 0));
+            AddField(acquisitionFields, 5, "预览间隔 (ms)", CreateDecimalInput("nudPreviewInterval", 200.0M, 50.0M, 5000.0M, 0));
             acquisition.Controls.Add(acquisitionFields);
+
+            GroupBox advanced = CreateGroupBox("高级参数");
+            FlowLayoutPanel advancedFeatures = new FlowLayoutPanel();
+            advancedFeatures.AutoScroll = true;
+            advancedFeatures.Dock = DockStyle.Fill;
+            advancedFeatures.FlowDirection = FlowDirection.TopDown;
+            advancedFeatures.Name = "flpCameraAdvancedParameters";
+            advancedFeatures.Padding = new Padding(6, 4, 6, 4);
+            advancedFeatures.WrapContents = false;
+            advanced.Controls.Add(advancedFeatures);
 
             FlowLayoutPanel actions = new FlowLayoutPanel();
             actions.Dock = DockStyle.Fill;
@@ -726,12 +752,13 @@ namespace NinePointRotationCalibration.Station.Views
             actions.Controls.Add(CreateButton("btnApplyCamera", "应用参数", 88, 32, true, "camera.apply"));
             actions.Controls.Add(CreateButton("btnTestCamera", "测试拍照", 88, 32, false, "camera.test"));
 
-            Label hint = CreateHintLabel("相机由视觉工作站独占控制。连接、取图和参数写入应在后台执行，图像窗口只呈现最新帧。");
+            Label hint = CreateHintLabel("高级参数采用固定布局；当前设备不支持的项目会禁用。应用参数时会按相机能力范围校验并同步保存配置。");
             layout.Controls.Add(mode, 0, 0);
             layout.Controls.Add(connection, 0, 1);
             layout.Controls.Add(acquisition, 0, 2);
-            layout.Controls.Add(actions, 0, 3);
-            layout.Controls.Add(hint, 0, 4);
+            layout.Controls.Add(advanced, 0, 3);
+            layout.Controls.Add(actions, 0, 4);
+            layout.Controls.Add(hint, 0, 5);
             page.Controls.Add(layout);
             return page;
         }

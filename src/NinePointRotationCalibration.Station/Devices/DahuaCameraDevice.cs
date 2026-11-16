@@ -64,7 +64,7 @@ namespace NinePointRotationCalibration.Station.Devices
         }
     }
 
-    public sealed class DahuaCameraDevice : ICameraDevice
+    public sealed class DahuaCameraDevice : ICameraDevice, ICameraParameterDevice
     {
         private const uint DriverBufferCount = 8;
 
@@ -191,6 +191,311 @@ namespace NinePointRotationCalibration.Station.Devices
                     return true;
                 },
                 cancellationToken);
+        }
+
+        public Task<CameraParameterSet> GetParametersAsync(CancellationToken cancellationToken)
+        {
+            return RunSerializedAsync(
+                () =>
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    EnsureConnectedCore();
+                    CameraParameterSet parameters = new CameraParameterSet();
+                    parameters.ExposureMicroseconds = GetDoubleFeature("ExposureTime", parameters.ExposureMicroseconds);
+                    parameters.Gain = GetDoubleFeature("GainRaw", parameters.Gain);
+                    parameters.Gamma = GetDoubleFeature("Gamma", parameters.Gamma);
+                    parameters.Saturation = GetIntFeature("Saturation", (long)parameters.Saturation);
+                    parameters.Width = checked((int)GetIntFeature("Width", 0));
+                    parameters.Height = checked((int)GetIntFeature("Height", 0));
+                    parameters.ReverseX = GetBoolFeature("ReverseX");
+                    parameters.ReverseY = GetBoolFeature("ReverseY");
+                    parameters.TriggerMode = GetTriggerMode();
+                    parameters.Features.AddRange(ReadWritableFeatures());
+                    return parameters;
+                },
+                cancellationToken);
+        }
+
+        public Task SetParametersAsync(CameraParameterSet parameters, CancellationToken cancellationToken)
+        {
+            if (parameters == null) throw new ArgumentNullException(nameof(parameters));
+            if (double.IsNaN(parameters.ExposureMicroseconds) || double.IsInfinity(parameters.ExposureMicroseconds) || parameters.ExposureMicroseconds <= 0.0)
+                throw new ArgumentOutOfRangeException(nameof(parameters.ExposureMicroseconds));
+
+            return RunSerializedAsync(
+                () =>
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    EnsureConnectedCore();
+                    SetDoubleFeatureIfAvailable("ExposureTime", parameters.ExposureMicroseconds);
+                    SetDoubleFeatureIfAvailable("GainRaw", parameters.Gain);
+                    SetDoubleFeatureIfAvailable("Gamma", parameters.Gamma);
+                    SetIntFeatureIfAvailable("Saturation", (long)parameters.Saturation);
+                    SetBoolFeatureIfAvailable("ReverseX", parameters.ReverseX);
+                    SetBoolFeatureIfAvailable("ReverseY", parameters.ReverseY);
+                    SetTriggerMode(parameters.TriggerMode);
+                    if (parameters.Features != null)
+                        foreach (CameraFeatureValue feature in parameters.Features)
+                            ApplyFeature(feature);
+                    return true;
+                },
+                cancellationToken);
+        }
+
+        private double GetDoubleFeature(string name, double fallback)
+        {
+            if (!_camera.IMV_FeatureIsAvailable(name)) return fallback;
+            IMVDefine.IMV_EFeatureType featureType = IMVDefine.IMV_EFeatureType.featureUndefined;
+            if (_camera.IMV_GetFeatureType(name, ref featureType) &&
+                featureType == IMVDefine.IMV_EFeatureType.featureInt)
+            {
+                long integerValue = 0;
+                CheckResult(_camera.IMV_GetIntFeatureValue(name, ref integerValue), "Get " + name);
+                return integerValue;
+            }
+
+            double value = fallback;
+            CheckResult(_camera.IMV_GetDoubleFeatureValue(name, ref value), "Get " + name);
+            return value;
+        }
+
+        private long GetIntFeature(string name, long fallback)
+        {
+            if (!_camera.IMV_FeatureIsAvailable(name)) return fallback;
+            long value = fallback;
+            CheckResult(_camera.IMV_GetIntFeatureValue(name, ref value), "Get " + name);
+            return value;
+        }
+
+        private bool GetBoolFeature(string name)
+        {
+            if (!_camera.IMV_FeatureIsAvailable(name)) return false;
+            bool value = false;
+            CheckResult(_camera.IMV_GetBoolFeatureValue(name, ref value), "Get " + name);
+            return value;
+        }
+
+        private List<CameraFeatureValue> ReadWritableFeatures()
+        {
+            string[] names =
+            {
+                "ExposureAuto", "GainAuto", "BalanceWhiteAuto", "AcquisitionFrameRateEnable",
+                "ExposureTime", "GainRaw", "Gain", "Gamma", "Saturation", "BlackLevel", "BlackLevelRaw",
+                "AcquisitionFrameRate", "OffsetX", "OffsetY", "Width", "Height",
+                "BalanceRatioRed", "BalanceRatioGreen", "BalanceRatioBlue", "ReverseX", "ReverseY",
+                "PixelFormat", "TriggerMode", "TriggerSource", "AcquisitionMode"
+            };
+            List<CameraFeatureValue> result = new List<CameraFeatureValue>();
+            foreach (string name in names)
+            {
+                if (!_camera.IMV_FeatureIsAvailable(name) || !_camera.IMV_FeatureIsWriteable(name)) continue;
+                CameraFeatureValue feature = TryReadFeature(name);
+                if (feature != null) result.Add(feature);
+            }
+            return result;
+        }
+
+        private CameraFeatureValue TryReadFeature(string name)
+        {
+            IMVDefine.IMV_EFeatureType featureType = IMVDefine.IMV_EFeatureType.featureUndefined;
+            if (!_camera.IMV_GetFeatureType(name, ref featureType)) return null;
+            string type = featureType.ToString();
+            CameraFeatureValue feature = new CameraFeatureValue
+            {
+                Name = name,
+                DisplayName = GetFeatureDisplayName(name),
+                IsWritable = true,
+                Kind = type.IndexOf("Bool", StringComparison.OrdinalIgnoreCase) >= 0
+                    ? CameraFeatureKind.Boolean
+                    : type.IndexOf("Enum", StringComparison.OrdinalIgnoreCase) >= 0
+                        ? CameraFeatureKind.Enumeration
+                        : type.IndexOf("Int", StringComparison.OrdinalIgnoreCase) >= 0
+                            ? CameraFeatureKind.Integer
+                            : CameraFeatureKind.Number,
+                Unit = GetFeatureUnit(name)
+            };
+
+            if (feature.Kind == CameraFeatureKind.Boolean)
+            {
+                bool value = false;
+                if (_camera.IMV_GetBoolFeatureValue(name, ref value) != IMVDefine.IMV_OK) return null;
+                feature.Value = value ? "true" : "false";
+                return feature;
+            }
+            if (feature.Kind == CameraFeatureKind.Enumeration)
+            {
+                IMVDefine.IMV_String value = new IMVDefine.IMV_String();
+                if (_camera.IMV_GetEnumFeatureSymbol(name, ref value) != IMVDefine.IMV_OK) return null;
+                feature.Value = value.str;
+                feature.EnumValues.Add(value.str);
+                return feature;
+            }
+            if (feature.Kind == CameraFeatureKind.Integer)
+            {
+                long value = 0;
+                if (_camera.IMV_GetIntFeatureValue(name, ref value) != IMVDefine.IMV_OK) return null;
+                long minimum = 0;
+                long maximum = 0;
+                feature.HasRange = _camera.IMV_GetIntFeatureMin(name, ref minimum) == IMVDefine.IMV_OK &&
+                                   _camera.IMV_GetIntFeatureMax(name, ref maximum) == IMVDefine.IMV_OK;
+                feature.Minimum = minimum;
+                feature.Maximum = maximum;
+                feature.Increment = 1.0;
+                feature.Value = value.ToString(CultureInfo.InvariantCulture);
+                return feature;
+            }
+
+            double numericValue = 0.0;
+            if (_camera.IMV_GetDoubleFeatureValue(name, ref numericValue) != IMVDefine.IMV_OK) return null;
+            double numericMinimum = 0.0;
+            double numericMaximum = 0.0;
+            feature.HasRange = _camera.IMV_GetDoubleFeatureMin(name, ref numericMinimum) == IMVDefine.IMV_OK &&
+                               _camera.IMV_GetDoubleFeatureMax(name, ref numericMaximum) == IMVDefine.IMV_OK;
+            feature.Minimum = numericMinimum;
+            feature.Maximum = numericMaximum;
+            feature.Increment = 0.001;
+            feature.Value = numericValue.ToString("0.########", CultureInfo.InvariantCulture);
+            return feature;
+        }
+
+        private void ApplyFeature(CameraFeatureValue feature)
+        {
+            if (feature == null || string.IsNullOrWhiteSpace(feature.Name) ||
+                !_camera.IMV_FeatureIsAvailable(feature.Name) || !_camera.IMV_FeatureIsWriteable(feature.Name)) return;
+            if (feature.Kind == CameraFeatureKind.Boolean)
+            {
+                bool value;
+                if (bool.TryParse(feature.Value, out value)) SetBoolFeatureIfAvailable(feature.Name, value);
+                return;
+            }
+            if (feature.Kind == CameraFeatureKind.Enumeration)
+            {
+                SetEnumFeatureIfAvailable(feature.Name, feature.Value);
+                return;
+            }
+            double valueAsDouble;
+            if (!double.TryParse(feature.Value, NumberStyles.Float, CultureInfo.InvariantCulture, out valueAsDouble)) return;
+            if (feature.Kind == CameraFeatureKind.Integer)
+                SetIntFeatureIfAvailable(feature.Name, checked((long)Math.Round(valueAsDouble, MidpointRounding.AwayFromZero)));
+            else
+                SetDoubleFeatureIfAvailable(feature.Name, valueAsDouble);
+        }
+
+        private static string GetFeatureDisplayName(string name)
+        {
+            switch (name)
+            {
+                case "ExposureAuto": return "自动曝光";
+                case "GainAuto": return "自动增益";
+                case "BalanceWhiteAuto": return "自动白平衡";
+                case "BalanceRatioRed": return "白平衡 R";
+                case "BalanceRatioGreen": return "白平衡 G";
+                case "BalanceRatioBlue": return "白平衡 B";
+                case "AcquisitionFrameRate": return "采集帧率";
+                case "BlackLevel":
+                case "BlackLevelRaw": return "黑电平";
+                case "OffsetX": return "ROI X 偏移";
+                case "OffsetY": return "ROI Y 偏移";
+                case "PixelFormat": return "像素格式";
+                default: return name;
+            }
+        }
+
+        private static string GetFeatureUnit(string name)
+        {
+            if (string.Equals(name, "ExposureTime", StringComparison.OrdinalIgnoreCase)) return "us";
+            if (string.Equals(name, "AcquisitionFrameRate", StringComparison.OrdinalIgnoreCase)) return "fps";
+            return string.Empty;
+        }
+
+        private void SetDoubleFeatureIfAvailable(string name, double value)
+        {
+            if (!_camera.IMV_FeatureIsAvailable(name) || !_camera.IMV_FeatureIsWriteable(name)) return;
+            if (double.IsNaN(value) || double.IsInfinity(value)) return;
+
+            IMVDefine.IMV_EFeatureType featureType = IMVDefine.IMV_EFeatureType.featureUndefined;
+            if (_camera.IMV_GetFeatureType(name, ref featureType) &&
+                featureType == IMVDefine.IMV_EFeatureType.featureInt)
+            {
+                if (value < long.MinValue || value > long.MaxValue) return;
+
+                long integerValue = checked((long)Math.Round(value, MidpointRounding.AwayFromZero));
+                long minimum = long.MinValue;
+                long maximum = long.MaxValue;
+                bool hasMinimum = _camera.IMV_GetIntFeatureMin(name, ref minimum) == IMVDefine.IMV_OK;
+                bool hasMaximum = _camera.IMV_GetIntFeatureMax(name, ref maximum) == IMVDefine.IMV_OK;
+                if (!hasMinimum || !hasMaximum || integerValue < minimum || integerValue > maximum) return;
+
+                CheckResult(_camera.IMV_SetIntFeatureValue(name, integerValue), "Set " + name);
+                return;
+            }
+
+            if (featureType == IMVDefine.IMV_EFeatureType.featureFloat)
+            {
+                double minimum = 0.0;
+                double maximum = 0.0;
+                bool hasMinimum = _camera.IMV_GetDoubleFeatureMin(name, ref minimum) == IMVDefine.IMV_OK;
+                bool hasMaximum = _camera.IMV_GetDoubleFeatureMax(name, ref maximum) == IMVDefine.IMV_OK;
+                if (!hasMinimum || !hasMaximum || value < minimum || value > maximum) return;
+            }
+
+            // Some Dahua models expose GainRaw but do not provide a usable floating
+            // point range. Keep the camera's factory/current value in that case.
+            if (string.Equals(name, "GainRaw", StringComparison.OrdinalIgnoreCase))
+            {
+                double current = 0.0;
+                if (_camera.IMV_GetDoubleFeatureValue(name, ref current) != IMVDefine.IMV_OK)
+                    return;
+            }
+
+            CheckResult(_camera.IMV_SetDoubleFeatureValue(name, value), "Set " + name);
+        }
+
+        private void SetIntFeatureIfAvailable(string name, long value)
+        {
+            if (!_camera.IMV_FeatureIsAvailable(name) || !_camera.IMV_FeatureIsWriteable(name)) return;
+            long minimum = long.MinValue;
+            long maximum = long.MaxValue;
+            bool hasMinimum = _camera.IMV_GetIntFeatureMin(name, ref minimum) == IMVDefine.IMV_OK;
+            bool hasMaximum = _camera.IMV_GetIntFeatureMax(name, ref maximum) == IMVDefine.IMV_OK;
+            if (!hasMinimum || !hasMaximum || value < minimum || value > maximum) return;
+            CheckResult(_camera.IMV_SetIntFeatureValue(name, value), "Set " + name);
+        }
+
+        private void SetBoolFeatureIfAvailable(string name, bool value)
+        {
+            if (_camera.IMV_FeatureIsAvailable(name))
+                CheckResult(_camera.IMV_SetBoolFeatureValue(name, value), "Set " + name);
+        }
+
+        private string GetTriggerMode()
+        {
+            if (!_camera.IMV_FeatureIsAvailable("TriggerMode")) return "Software";
+            IMVDefine.IMV_String mode = new IMVDefine.IMV_String();
+            CheckResult(_camera.IMV_GetEnumFeatureSymbol("TriggerMode", ref mode), "Get TriggerMode");
+            if (string.Equals(mode.str, "Off", StringComparison.OrdinalIgnoreCase)) return "Continuous";
+            if (_camera.IMV_FeatureIsAvailable("TriggerSource"))
+            {
+                IMVDefine.IMV_String source = new IMVDefine.IMV_String();
+                CheckResult(_camera.IMV_GetEnumFeatureSymbol("TriggerSource", ref source), "Get TriggerSource");
+                return string.Equals(source.str, "Software", StringComparison.OrdinalIgnoreCase) ? "Software" : "Hardware";
+            }
+            return "Software";
+        }
+
+        private void SetTriggerMode(string triggerMode)
+        {
+            if (string.IsNullOrWhiteSpace(triggerMode) || !_camera.IMV_FeatureIsAvailable("TriggerMode")) return;
+            if (string.Equals(triggerMode, "Continuous", StringComparison.OrdinalIgnoreCase))
+            {
+                CheckResult(_camera.IMV_SetEnumFeatureSymbol("TriggerMode", "Off"), "Set continuous trigger mode");
+                return;
+            }
+
+            CheckResult(_camera.IMV_SetEnumFeatureSymbol("TriggerMode", "On"), "Enable trigger mode");
+            string source = string.Equals(triggerMode, "Hardware", StringComparison.OrdinalIgnoreCase) ? "Line1" : "Software";
+            if (_camera.IMV_FeatureIsAvailable("TriggerSource"))
+                CheckResult(_camera.IMV_SetEnumFeatureSymbol("TriggerSource", source), "Set trigger source");
         }
 
         public Task<CameraFrame> CaptureAsync(CancellationToken cancellationToken)
@@ -324,12 +629,14 @@ namespace NinePointRotationCalibration.Station.Devices
             if (clearResult != IMVDefine.IMV_OK && clearResult != IMVDefine.IMV_NOT_SUPPORT)
                 throw new CameraDeviceException("Clear frame buffer", clearResult);
             cancellationToken.ThrowIfCancellationRequested();
-            CheckResult(
-                _camera.IMV_ExecuteCommandFeature("TriggerSoftware"),
-                "Execute software trigger");
+            if (IsSoftwareTriggerEnabled())
+            {
+                CheckResult(
+                    _camera.IMV_ExecuteCommandFeature("TriggerSoftware"),
+                    "Execute software trigger");
+            }
 
             IMVDefine.IMV_Frame frame = new IMVDefine.IMV_Frame();
-            bool frameAcquired = false;
             int releaseResult = IMVDefine.IMV_OK;
             Bitmap bitmap = null;
             int getFrameResult = _camera.IMV_GetFrame(
@@ -338,7 +645,6 @@ namespace NinePointRotationCalibration.Station.Devices
             if (getFrameResult != IMVDefine.IMV_OK)
                 throw new CameraDeviceException("Get frame (timeout " + _captureTimeoutMilliseconds + " ms)", getFrameResult);
 
-            frameAcquired = true;
             try
             {
                 if (frame.frameInfo.status != 0)
@@ -348,16 +654,14 @@ namespace NinePointRotationCalibration.Station.Devices
             }
             finally
             {
-                if (frameAcquired)
+                // A successful GetFrame must always be paired with ReleaseFrame.
+                try
                 {
-                    try
-                    {
-                        releaseResult = _camera.IMV_ReleaseFrame(ref frame);
-                    }
-                    catch
-                    {
-                        releaseResult = IMVDefine.IMV_ERROR;
-                    }
+                    releaseResult = _camera.IMV_ReleaseFrame(ref frame);
+                }
+                catch
+                {
+                    releaseResult = IMVDefine.IMV_ERROR;
                 }
             }
 
@@ -369,12 +673,24 @@ namespace NinePointRotationCalibration.Station.Devices
 
             if (cancellationToken.IsCancellationRequested)
             {
-                if (bitmap != null) bitmap.Dispose();
+                bitmap.Dispose();
                 cancellationToken.ThrowIfCancellationRequested();
             }
 
             long sequence = ++_sequence;
             return new CameraFrame(bitmap, sequence, DateTime.UtcNow);
+        }
+
+        private bool IsSoftwareTriggerEnabled()
+        {
+            if (!_camera.IMV_FeatureIsAvailable("TriggerMode")) return true;
+            IMVDefine.IMV_String mode = new IMVDefine.IMV_String();
+            CheckResult(_camera.IMV_GetEnumFeatureSymbol("TriggerMode", ref mode), "Get TriggerMode before capture");
+            if (string.Equals(mode.str, "Off", StringComparison.OrdinalIgnoreCase)) return false;
+            if (!_camera.IMV_FeatureIsAvailable("TriggerSource")) return true;
+            IMVDefine.IMV_String source = new IMVDefine.IMV_String();
+            CheckResult(_camera.IMV_GetEnumFeatureSymbol("TriggerSource", ref source), "Get TriggerSource before capture");
+            return string.Equals(source.str, "Software", StringComparison.OrdinalIgnoreCase);
         }
 
         private Bitmap ConvertFrameToBitmap(IMVDefine.IMV_Frame frame)
@@ -384,25 +700,14 @@ namespace NinePointRotationCalibration.Station.Devices
             if (width <= 0 || height <= 0 || frame.pData == IntPtr.Zero)
                 throw new CameraDeviceException("Validate frame data", IMVDefine.IMV_INVALID_FRAME);
 
-            if (IsMonoPixelFormat(frame.frameInfo.pixelFormat))
-            {
-                IntPtr pixels = GetConvertedPixels(
-                    frame,
-                    IMVDefine.IMV_EPixelType.gvspPixelMono8,
-                    1);
-                return CopyToBitmap(pixels, width, height, 1);
-            }
-
-            if (IsColorPixelFormat(frame.frameInfo.pixelFormat))
-            {
-                IntPtr pixels = GetConvertedPixels(
-                    frame,
-                    IMVDefine.IMV_EPixelType.gvspPixelBGR8,
-                    3);
-                return CopyToBitmap(pixels, width, height, 3);
-            }
-
-            throw new NotSupportedException("Unsupported Dahua pixel format: " + frame.frameInfo.pixelFormat + ".");
+            // Let the SDK handle all pixel conversion, including Bayer demosaicing.
+            bool monochrome = IsMonoPixelFormat(frame.frameInfo.pixelFormat);
+            int channels = monochrome ? 1 : 3;
+            IMVDefine.IMV_EPixelType targetFormat = monochrome
+                ? IMVDefine.IMV_EPixelType.gvspPixelMono8
+                : IMVDefine.IMV_EPixelType.gvspPixelBGR8;
+            IntPtr pixels = GetConvertedPixels(frame, targetFormat, channels);
+            return CopyToBitmap(pixels, width, height, channels);
         }
 
         private IntPtr GetConvertedPixels(
@@ -430,12 +735,12 @@ namespace NinePointRotationCalibration.Station.Devices
                 nDstBufSize = checked((uint)requiredSize)
             };
             CheckResult(_camera.IMV_PixelConvert(ref convert), "Convert pixel format");
-            if (convert.nDstDataLen > convert.nDstBufSize)
+            if (convert.nDstDataLen != checked((uint)requiredSize))
                 throw new CameraDeviceException("Validate converted frame length", IMVDefine.IMV_INSUFFICIENT_MEMORY);
             return _conversionBuffer;
         }
 
-        private static Bitmap CopyToBitmap(IntPtr source, int width, int height, int channelCount)
+        private static unsafe Bitmap CopyToBitmap(IntPtr source, int width, int height, int channelCount)
         {
             PixelFormat pixelFormat = channelCount == 1
                 ? PixelFormat.Format8bppIndexed
@@ -450,14 +755,15 @@ namespace NinePointRotationCalibration.Station.Devices
                 try
                 {
                     int rowBytes = checked(width * channelCount);
-                    byte[] row = new byte[rowBytes];
+                    // Bitmap rows are aligned to four bytes. Copy the SDK output
+                    // directly, without allocating an intermediate managed row.
                     for (int y = 0; y < height; y++)
                     {
-                        Marshal.Copy(IntPtr.Add(source, checked(y * rowBytes)), row, 0, rowBytes);
-                        IntPtr destination = data.Stride >= 0
-                            ? IntPtr.Add(data.Scan0, checked(y * data.Stride))
-                            : IntPtr.Add(data.Scan0, checked((height - 1 - y) * -data.Stride));
-                        Marshal.Copy(row, 0, destination, rowBytes);
+                        Buffer.MemoryCopy(
+                            (byte*)source + checked(y * rowBytes),
+                            (byte*)data.Scan0 + checked(y * data.Stride),
+                            Math.Abs(data.Stride),
+                            rowBytes);
                     }
                 }
                 finally

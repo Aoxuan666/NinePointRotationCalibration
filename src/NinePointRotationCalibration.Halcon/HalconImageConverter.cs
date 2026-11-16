@@ -7,18 +7,18 @@ using HalconDotNet;
 namespace NinePointRotationCalibration.Halcon
 {
     /// <summary>
-    /// Converts caller-owned bitmaps without retaining or modifying them.
+    /// 将调用方拥有的 Bitmap 转换为 HALCON 图像，不持有或修改调用方对象。
     /// </summary>
     public static class HalconImageConverter
     {
+        /// <summary>将调用方拥有的 Bitmap 转换为单通道 HALCON byte 图像。</summary>
         public static HImage ToGrayHImage(Bitmap source)
         {
             if (source == null) throw new ArgumentNullException(nameof(source));
             if (source.Width <= 0 || source.Height <= 0)
                 throw new ArgumentException("The input image has no pixels.", nameof(source));
 
-            // Fast paths read the bitmap buffer directly. Only unusual formats
-            // (and indexed bitmaps with a non-gray palette) pay for a GDI+ redraw.
+            // 常用格式直接读取 Bitmap 缓冲区；只有特殊格式或非灰度索引图像才回退到 GDI+ 重绘。
             HImage converted;
             if (source.PixelFormat == PixelFormat.Format8bppIndexed && HasGrayPalette(source))
             {
@@ -137,6 +137,7 @@ namespace NinePointRotationCalibration.Halcon
             return true;
         }
 
+        /// <summary>将单通道 HALCON byte 图像复制为由本方法拥有的灰度 Bitmap。</summary>
         public static Bitmap ToGrayBitmap(HImage image)
         {
             if (image == null) throw new ArgumentNullException(nameof(image));

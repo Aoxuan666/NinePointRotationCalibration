@@ -9,6 +9,9 @@ using NinePointRotationCalibration.Station.Models;
 
 namespace NinePointRotationCalibration.Station.Services.Calibration
 {
+    /// <summary>
+    /// 协调运动、采图、HALCON 定位、样本保存和标定计算的站级流程服务。
+    /// </summary>
     public sealed class CalibrationCoordinator : IDisposable
     {
         private readonly object _sync = new object();
@@ -51,6 +54,7 @@ namespace NinePointRotationCalibration.Station.Services.Calibration
         public event EventHandler<FrameEventArgs> FrameCaptured;
         public event EventHandler<LogEventArgs> Log;
 
+        /// <summary>指示自动标定是否正在执行。</summary>
         public bool IsAutomaticRunning
         {
             get
@@ -59,11 +63,13 @@ namespace NinePointRotationCalibration.Station.Services.Calibration
             }
         }
 
+        /// <summary>返回当前标定任务的独立快照。</summary>
         public CalibrationJob GetJobSnapshot()
         {
             lock (_sync) return _job.DeepClone();
         }
 
+        /// <summary>返回所有标定点状态的独立快照。</summary>
         public IReadOnlyList<CalibrationPointRecord> GetRecordsSnapshot()
         {
             lock (_sync)
@@ -75,6 +81,7 @@ namespace NinePointRotationCalibration.Station.Services.Calibration
             }
         }
 
+        /// <summary>更新标定步长和运动等待超时，并同步刷新标定点计划。</summary>
         public void UpdateOptions(StationOptions options)
         {
             if (options == null) throw new ArgumentNullException(nameof(options));
@@ -108,12 +115,14 @@ namespace NinePointRotationCalibration.Station.Services.Calibration
             }
         }
 
+        /// <summary>替换当前任务，并将已有样本映射到标定点状态。</summary>
         public void SetJob(CalibrationJob job)
         {
             if (job == null) throw new ArgumentNullException(nameof(job));
             lock (_sync)
             {
                 _job = job.DeepClone();
+                long templateRevision = _job.Template == null ? 0 : _job.Template.Revision;
                 foreach (CalibrationPointRecord record in _records.Values)
                 {
                     record.Status = CalibrationPointStatus.Pending;
@@ -130,8 +139,13 @@ namespace NinePointRotationCalibration.Station.Services.Calibration
                     CalibrationSample sample = _job.Samples == null
                         ? null
                         : _job.Samples.LastOrDefault(item => item != null &&
+                            item.Enabled &&
+                            item.Kind == record.Kind &&
+                            item.IsCurrent(templateRevision) &&
                             string.Equals(item.Tag, record.Tag, StringComparison.OrdinalIgnoreCase));
-                    if (sample == null) continue;
+                    if (sample == null || sample.MachinePose == null || sample.ImagePose == null
+                        || !sample.MachinePose.IsFinite || !sample.ImagePose.IsFinite
+                        || !IsFinite(sample.MatchScore)) continue;
                     record.MachineX = sample.MachinePose.X;
                     record.MachineY = sample.MachinePose.Y;
                     record.MachineR = sample.MachinePose.ThetaDegrees;
@@ -146,6 +160,9 @@ namespace NinePointRotationCalibration.Station.Services.Calibration
             }
         }
 
+        /// <summary>
+        /// 执行单个标定点：发送移动请求、等待到位、采图、HALCON 定位并保存样本。
+        /// </summary>
         public async Task<CalibrationPointRecord> CapturePointAsync(int pointNumber, CancellationToken cancellationToken)
         {
             ThrowIfDisposed();
@@ -219,6 +236,8 @@ namespace NinePointRotationCalibration.Station.Services.Calibration
                         return failed;
                     }
 
+                    // 先完成持久化，再提交内存状态，避免保存失败时出现“内存已成功、磁盘已失败”的假状态。
+                    if (_saveJobAsync != null) await _saveJobAsync(capture.Job.DeepClone()).ConfigureAwait(false);
                     lock (_sync) _job = capture.Job.DeepClone();
                     CalibrationPointRecord completed = UpdateRecord(
                         point,
@@ -226,7 +245,6 @@ namespace NinePointRotationCalibration.Station.Services.Calibration
                         "Captured",
                         arrival,
                         capture);
-                    if (_saveJobAsync != null) await _saveJobAsync(capture.Job.DeepClone()).ConfigureAwait(false);
                     await SendPointResultAsync(request.MessageId, completed, CancellationToken.None).ConfigureAwait(false);
                     return completed;
                 }
@@ -269,6 +287,7 @@ namespace NinePointRotationCalibration.Station.Services.Calibration
             }
         }
 
+        /// <summary>按当前点位计划依次执行采点，全部完成后计算标定结果。</summary>
         public async Task<CalibrationResult> RunAutomaticAsync(CancellationToken cancellationToken)
         {
             ThrowIfDisposed();
@@ -301,6 +320,7 @@ namespace NinePointRotationCalibration.Station.Services.Calibration
             }
         }
 
+        /// <summary>请求取消正在运行的自动标定。</summary>
         public void CancelAutomatic()
         {
             lock (_sync)
@@ -309,6 +329,7 @@ namespace NinePointRotationCalibration.Station.Services.Calibration
             }
         }
 
+        /// <summary>使用当前任务样本执行标定计算，并发送完成消息。</summary>
         public async Task<CalibrationResult> CalculateAsync(CancellationToken cancellationToken)
         {
             ThrowIfDisposed();
@@ -342,6 +363,7 @@ namespace NinePointRotationCalibration.Station.Services.Calibration
             return result;
         }
 
+        /// <summary>处理运动控制器返回的到位消息。</summary>
         public bool HandleProtocolMessage(ProtocolEnvelope envelope)
         {
             if (envelope == null || !string.Equals(

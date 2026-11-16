@@ -18,6 +18,8 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <DahuaSdkPath Condition="'$(DahuaSdkPath)' == '' And Exists('$(MSBuildThisFileDirectory)..\..\lib\Dahua\x64\MVSDK_Net.dll')">$(MSBuildThisFileDirectory)..\..\lib\Dahua\x64\MVSDK_Net.dll</DahuaSdkPath>
     <DahuaSdkPath Condition="'$(DahuaSdkPath)' == '' And Exists('C:\Program Files\HuarayTech\MV Viewer\Development\DOTNET DLL\IMV\DOTNET_4.0\x64\MVSDK_Net.dll')">C:\Program Files\HuarayTech\MV Viewer\Development\DOTNET DLL\IMV\DOTNET_4.0\x64\MVSDK_Net.dll</DahuaSdkPath>
+    <HikvisionSdkDirectory Condition="'$(HikvisionSdkDirectory)' == ''">$(MSBuildThisFileDirectory)..\..\lib\Hikvision</HikvisionSdkDirectory>
+    <DefineConstants Condition="Exists('$(HikvisionSdkDirectory)\Seprays.Camera.dll')">$(DefineConstants);HIKVISION_SDK</DefineConstants>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
     <DebugSymbols>true</DebugSymbols>
@@ -40,6 +42,20 @@
       <HintPath>$(DahuaSdkPath)</HintPath>
       <Private>true</Private>
     </Reference>
+    <Reference Include="Seprays.Camera" Condition="Exists('$(HikvisionSdkDirectory)\Seprays.Camera.dll')">
+      <HintPath>$(HikvisionSdkDirectory)\Seprays.Camera.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="MvCameraControl.Net" Condition="Exists('$(HikvisionSdkDirectory)\MvCameraControl.Net.dll')">
+      <HintPath>$(HikvisionSdkDirectory)\MvCameraControl.Net.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Content Include="$(MSBuildThisFileDirectory)..\..\lib\Dahua\x64\CLIDelegate.dll" Condition="Exists('$(MSBuildThisFileDirectory)..\..\lib\Dahua\x64\CLIDelegate.dll')">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="$(MSBuildThisFileDirectory)..\..\lib\Dahua\x64\ThridLibray.dll" Condition="Exists('$(MSBuildThisFileDirectory)..\..\lib\Dahua\x64\ThridLibray.dll')">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
     <Reference Include="System" />
     <Reference Include="System.Core" />
     <Reference Include="System.Drawing" />

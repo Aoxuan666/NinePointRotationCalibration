@@ -41,7 +41,8 @@
     <Reference Include="System.Runtime.Serialization" />
   </ItemGroup>
   <ItemGroup>
-    <Compile Include="**\*.cs" Exclude="bin\**\*;obj\**\*" />
+    <Compile Include="**\*.cs" Exclude="bin\**\*;obj\**\*;Solvers\ICalibrationGeometryBackend.cs" />
+    <Compile Include="Solvers\ICalibrationGeometryBackend.cs" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 </Project>

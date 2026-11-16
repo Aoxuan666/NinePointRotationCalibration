@@ -5,11 +5,12 @@ using HalconDotNet;
 namespace NinePointRotationCalibration.Halcon
 {
     /// <summary>
-    /// HALCON-backed 2D geometry used by calibration and inspection.
-    /// Coordinates exposed by the application remain X/column and Y/row.
+    /// 使用 HALCON 算子执行标定和检测所需的二维几何计算。
+    /// 应用层坐标仍按 X/列、Y/行的约定传递。
     /// </summary>
     public static class HalconGeometry
     {
+        /// <summary>使用 HALCON 对应点算子拟合二维仿射矩阵。</summary>
         public static bool TryFitAffine(
             IList<double> sourceX,
             IList<double> sourceY,
@@ -39,6 +40,7 @@ namespace NinePointRotationCalibration.Halcon
             }
         }
 
+        /// <summary>使用 HALCON 仿射矩阵算子计算逆矩阵。</summary>
         public static bool TryInvert(AffineMatrix2D matrix, out AffineMatrix2D inverse)
         {
             inverse = default(AffineMatrix2D);
@@ -58,6 +60,7 @@ namespace NinePointRotationCalibration.Halcon
             }
         }
 
+        /// <summary>使用 HALCON 仿射点变换算子变换一个二维点。</summary>
         public static Point2D TransformPoint(AffineMatrix2D matrix, Point2D point)
         {
             using (HTuple hom = ToTuple(matrix))
@@ -71,6 +74,7 @@ namespace NinePointRotationCalibration.Halcon
             }
         }
 
+        /// <summary>使用 HALCON 仿射点变换算子变换一个不含平移的二维向量。</summary>
         public static Vector2D TransformVector(AffineMatrix2D matrix, Vector2D vector)
         {
             Point2D origin = TransformPoint(matrix, new Point2D(0.0, 0.0));
@@ -78,6 +82,7 @@ namespace NinePointRotationCalibration.Halcon
             return new Vector2D(endpoint.X - origin.X, endpoint.Y - origin.Y);
         }
 
+        /// <summary>使用 HALCON 矩阵算子求解线性方程组。</summary>
         public static bool TrySolveLinear(double[,] coefficients, double[] right, out double[] solution)
         {
             solution = null;
@@ -131,6 +136,7 @@ namespace NinePointRotationCalibration.Halcon
             }
         }
 
+        /// <summary>使用 HALCON 刚体变换算子变换图像点。</summary>
         public static ImagePoint TransformRigid(
             ImagePose sourcePose,
             ImagePose targetPose,

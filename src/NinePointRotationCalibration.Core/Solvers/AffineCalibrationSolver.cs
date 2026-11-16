@@ -3,9 +3,14 @@ using System.Collections.Generic;
 
 namespace NinePointRotationCalibration
 {
+    /// <summary>使用带鲁棒外点剔除的仿射模型求解像素与机械坐标关系。</summary>
     internal static class AffineCalibrationSolver
     {
-        public static bool Solve(CalibrationJob job, CalibrationResult result)
+        /// <summary>拟合平移样本并输出正逆仿射矩阵及残差诊断。</summary>
+        public static bool Solve(
+            CalibrationJob job,
+            CalibrationResult result,
+            ICalibrationGeometryBackend geometryBackend)
         {
             CalibrationSolverOptions options = job.SolverOptions;
             List<AffineObservation> observations = CollectObservations(job, result.Diagnostics, options);
@@ -39,7 +44,7 @@ namespace NinePointRotationCalibration
 
             bool[] inliers;
             AffineMatrix2D matrix;
-            if (!FindInitialModel(observations, options, out matrix, out inliers))
+            if (!FindInitialModel(observations, options, geometryBackend, out matrix, out inliers))
             {
                 return Fail(result, CalibrationErrorCode.DegenerateGeometry,
                     "Translation samples are collinear, duplicated, or do not form a stable affine model.");
@@ -47,13 +52,13 @@ namespace NinePointRotationCalibration
 
             for (int iteration = 0; iteration < 3; iteration++)
             {
-                if (!FitAffine(observations, inliers, out matrix))
+                if (!FitAffine(observations, inliers, geometryBackend, out matrix))
                 {
                     return Fail(result, CalibrationErrorCode.DegenerateGeometry,
                         "Could not refit an affine model from the selected inliers.");
                 }
 
-                List<double> residuals = ComputeResiduals(observations, matrix);
+                List<double> residuals = ComputeResiduals(observations, matrix, geometryBackend);
                 double threshold = SolverMath.MadThreshold(
                     residuals,
                     options.MadMultiplier,
@@ -80,14 +85,16 @@ namespace NinePointRotationCalibration
                     string.Format("Only {0} translation inliers remain after robust filtering.", inlierCount));
             }
 
-            if (!FitAffine(observations, inliers, out matrix))
+            if (!FitAffine(observations, inliers, geometryBackend, out matrix))
             {
                 return Fail(result, CalibrationErrorCode.DegenerateGeometry,
                     "Final affine inliers do not define an invertible model.");
             }
 
             AffineMatrix2D inverse;
-            if (!matrix.TryInvert(out inverse))
+            if (geometryBackend == null
+                ? !matrix.TryInvert(out inverse)
+                : !geometryBackend.TryInvert(matrix, out inverse))
             {
                 return Fail(result, CalibrationErrorCode.DegenerateGeometry,
                     "The fitted stage-to-pixel matrix is singular.");
@@ -118,11 +125,15 @@ namespace NinePointRotationCalibration
             for (int i = 0; i < observations.Count; i++)
             {
                 AffineObservation observation = observations[i];
-                Point2D predictedPixel = matrix.Transform(new Point2D(observation.X, observation.Y));
+                Point2D predictedPixel = geometryBackend == null
+                    ? matrix.Transform(new Point2D(observation.X, observation.Y))
+                    : geometryBackend.TransformPoint(matrix, new Point2D(observation.X, observation.Y));
                 double dc = predictedPixel.X - observation.Column;
                 double dr = predictedPixel.Y - observation.Row;
                 double pixelResidual = Math.Sqrt((dc * dc) + (dr * dr));
-                Point2D predictedStage = inverse.Transform(new Point2D(observation.Column, observation.Row));
+                Point2D predictedStage = geometryBackend == null
+                    ? inverse.Transform(new Point2D(observation.Column, observation.Row))
+                    : geometryBackend.TransformPoint(inverse, new Point2D(observation.Column, observation.Row));
                 double dsx = predictedStage.X - observation.X;
                 double dsy = predictedStage.Y - observation.Y;
                 double stageResidual = Math.Sqrt((dsx * dsx) + (dsy * dsy));
@@ -233,6 +244,7 @@ namespace NinePointRotationCalibration
         private static bool FindInitialModel(
             IList<AffineObservation> observations,
             CalibrationSolverOptions options,
+            ICalibrationGeometryBackend geometryBackend,
             out AffineMatrix2D bestMatrix,
             out bool[] bestInliers)
         {
@@ -241,7 +253,7 @@ namespace NinePointRotationCalibration
             if (!options.EnableRansac)
             {
                 bestInliers = AllTrue(observations.Count);
-                return FitAffine(observations, bestInliers, out bestMatrix);
+                return FitAffine(observations, bestInliers, geometryBackend, out bestMatrix);
             }
 
             int bestCount = -1;
@@ -259,7 +271,7 @@ namespace NinePointRotationCalibration
                     {
                         for (int k = j + 1; k < observations.Count && tested < limit; k++)
                         {
-                            EvaluateCandidate(observations, options, i, j, k,
+                            EvaluateCandidate(observations, options, geometryBackend, i, j, k,
                                 ref bestMatrix, ref bestInliers, ref bestCount, ref bestSupport, ref bestError);
                             tested++;
                         }
@@ -283,7 +295,7 @@ namespace NinePointRotationCalibration
                     int j = a + b + c - i - k;
                     string key = i + ":" + j + ":" + k;
                     if (!tested.Add(key)) continue;
-                    EvaluateCandidate(observations, options, i, j, k,
+                    EvaluateCandidate(observations, options, geometryBackend, i, j, k,
                         ref bestMatrix, ref bestInliers, ref bestCount, ref bestSupport, ref bestError);
                 }
             }
@@ -294,6 +306,7 @@ namespace NinePointRotationCalibration
         private static void EvaluateCandidate(
             IList<AffineObservation> observations,
             CalibrationSolverOptions options,
+            ICalibrationGeometryBackend geometryBackend,
             int first,
             int second,
             int third,
@@ -308,7 +321,7 @@ namespace NinePointRotationCalibration
             seed[second] = true;
             seed[third] = true;
             AffineMatrix2D candidate;
-            if (!FitAffine(observations, seed, out candidate)) return;
+            if (!FitAffine(observations, seed, geometryBackend, out candidate)) return;
 
             bool[] inliers = new bool[observations.Count];
             int count = 0;
@@ -316,7 +329,7 @@ namespace NinePointRotationCalibration
             double error = 0.0;
             for (int i = 0; i < observations.Count; i++)
             {
-                double residual = Residual(observations[i], candidate);
+            double residual = Residual(observations[i], candidate, geometryBackend);
                 if (residual <= options.RansacInlierThresholdPixels)
                 {
                     inliers[i] = true;
@@ -337,9 +350,31 @@ namespace NinePointRotationCalibration
             bestInliers = inliers;
         }
 
-        private static bool FitAffine(IList<AffineObservation> observations, bool[] included, out AffineMatrix2D matrix)
+        private static bool FitAffine(
+            IList<AffineObservation> observations,
+            bool[] included,
+            ICalibrationGeometryBackend geometryBackend,
+            out AffineMatrix2D matrix)
         {
             matrix = default(AffineMatrix2D);
+            if (geometryBackend != null)
+            {
+                List<double> sourceX = new List<double>();
+                List<double> sourceY = new List<double>();
+                List<double> targetX = new List<double>();
+                List<double> targetY = new List<double>();
+                for (int i = 0; i < observations.Count; i++)
+                {
+                    if (included != null && !included[i]) continue;
+                    sourceX.Add(observations[i].X);
+                    sourceY.Add(observations[i].Y);
+                    targetX.Add(observations[i].Column);
+                    targetY.Add(observations[i].Row);
+                }
+
+                return geometryBackend.TryFitAffine(sourceX, sourceY, targetX, targetY, out matrix);
+            }
+
             int count = 0;
             double totalWeight = 0.0;
             double meanX = 0.0;
@@ -408,16 +443,25 @@ namespace NinePointRotationCalibration
             return matrix.IsFinite;
         }
 
-        private static List<double> ComputeResiduals(IList<AffineObservation> observations, AffineMatrix2D matrix)
+        private static List<double> ComputeResiduals(
+            IList<AffineObservation> observations,
+            AffineMatrix2D matrix,
+            ICalibrationGeometryBackend geometryBackend)
         {
             List<double> residuals = new List<double>(observations.Count);
-            foreach (AffineObservation observation in observations) residuals.Add(Residual(observation, matrix));
+            foreach (AffineObservation observation in observations)
+                residuals.Add(Residual(observation, matrix, geometryBackend));
             return residuals;
         }
 
-        private static double Residual(AffineObservation observation, AffineMatrix2D matrix)
+        private static double Residual(
+            AffineObservation observation,
+            AffineMatrix2D matrix,
+            ICalibrationGeometryBackend geometryBackend)
         {
-            Point2D predicted = matrix.Transform(new Point2D(observation.X, observation.Y));
+            Point2D predicted = geometryBackend == null
+                ? matrix.Transform(new Point2D(observation.X, observation.Y))
+                : geometryBackend.TransformPoint(matrix, new Point2D(observation.X, observation.Y));
             double dc = predicted.X - observation.Column;
             double dr = predicted.Y - observation.Row;
             return Math.Sqrt((dc * dc) + (dr * dr));

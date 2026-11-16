@@ -3,8 +3,10 @@ using System.Collections.Generic;
 
 namespace NinePointRotationCalibration
 {
+    /// <summary>集中校验标定任务配置、模板模型和样本几何条件。</summary>
     public static class CalibrationJobValidator
     {
+        /// <summary>按指定范围返回任务的结构、参数和样本校验结果。</summary>
         public static JobValidationResult Validate(
             CalibrationJob job,
             CalibrationValidationScope scope = CalibrationValidationScope.Full)

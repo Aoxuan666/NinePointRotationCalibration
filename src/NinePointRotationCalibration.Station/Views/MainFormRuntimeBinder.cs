@@ -46,9 +46,11 @@ namespace NinePointRotationCalibration.Station.Views
         private long _displayGeneration;
         private long _inspectionFrameGeneration = -1;
         private bool _disposed;
+        private CameraParameterSet _cameraParameterSnapshot;
 
         public MainFormRuntimeBinder(MainForm view, StationRuntime runtime)
         {
+            StationLog.EnsureInitialized();
             _view = view ?? throw new ArgumentNullException(nameof(view));
             _runtime = runtime ?? throw new ArgumentNullException(nameof(runtime));
             _lifetime = new CancellationTokenSource();
@@ -90,7 +92,28 @@ namespace NinePointRotationCalibration.Station.Views
             SetNumeric("nudMotionTimeout", options.MotionTimeoutMilliseconds);
             SetNumeric("nudExpectedCount", options.ExpectedBoardCount);
             SetNumeric("nudCameraExposure", options.CameraExposureMicroseconds);
+            SetNumeric("nudCameraGain", options.CameraGain);
+            SetNumeric("nudCameraGamma", options.CameraGamma);
             SetNumeric("nudCameraTimeout", options.CameraTimeoutMilliseconds);
+            SetNumeric("nudPreviewInterval", options.PreviewIntervalMilliseconds);
+            RenderCameraFeatures(new CameraParameterSet
+            {
+                Features = options.CameraFeatures == null
+                    ? new List<CameraFeatureValue>()
+                    : options.CameraFeatures.Select(item => new CameraFeatureValue
+                    {
+                        Name = item.Key,
+                        DisplayName = item.Key,
+                        Value = item.Value,
+                        IsWritable = true
+                    }).ToList()
+            });
+            ComboBox triggerMode = FindControl<ComboBox>("cmbCameraTriggerMode");
+            triggerMode.SelectedItem = string.Equals(options.CameraTriggerMode, "Hardware", StringComparison.OrdinalIgnoreCase)
+                ? "硬件触发"
+                : string.Equals(options.CameraTriggerMode, "Continuous", StringComparison.OrdinalIgnoreCase)
+                    ? "连续采集"
+                    : "软件触发";
             FindControl<CheckBox>("chkArchiveImages").Checked = options.ArchiveImages;
             SelectCameraProvider(options.CameraProvider);
             _view.RefreshFeatureAvailability(options.CameraEnabled, options.CalibrationEnabled, false);
@@ -444,6 +467,7 @@ namespace NinePointRotationCalibration.Station.Views
             Exception error = exception is AggregateException
                 ? ((AggregateException)exception).Flatten().InnerExceptions.FirstOrDefault() ?? exception
                 : exception;
+            StationLog.WriteException("ERROR", "UI operation: " + operation, error);
             _view.AppendLog(operation + "失败：" + error.Message, true);
             _view.SetOperationStatus(operation + "失败", false, true);
         }
@@ -458,11 +482,13 @@ namespace NinePointRotationCalibration.Station.Views
         private string GetSelectedCameraProvider()
         {
             string text = Convert.ToString(_view.CameraProviderInput.SelectedItem, CultureInfo.InvariantCulture) ?? string.Empty;
-            return text.IndexOf("大华", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                   text.IndexOf("Dahua", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                   text.IndexOf("CameraDH", StringComparison.OrdinalIgnoreCase) >= 0
-                ? "Dahua"
-                : "Mock";
+            if (text.IndexOf("大华", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                text.IndexOf("Dahua", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                text.IndexOf("CameraDH", StringComparison.OrdinalIgnoreCase) >= 0) return "Dahua";
+            if (text.IndexOf("海康", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                text.IndexOf("Hikvision", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                text.IndexOf("MVS", StringComparison.OrdinalIgnoreCase) >= 0) return "Hikvision";
+            return "Mock";
         }
 
         private void SelectCameraProvider(string provider)
@@ -470,7 +496,9 @@ namespace NinePointRotationCalibration.Station.Views
             ComboBox input = _view.CameraProviderInput;
             bool dahua = string.Equals(provider, "Dahua", StringComparison.OrdinalIgnoreCase) ||
                          string.Equals(provider, "DH", StringComparison.OrdinalIgnoreCase);
-            int preferred = dahua ? 0 : Math.Min(2, input.Items.Count - 1);
+            bool hikvision = string.Equals(provider, "Hikvision", StringComparison.OrdinalIgnoreCase) ||
+                             string.Equals(provider, "MVS", StringComparison.OrdinalIgnoreCase);
+            int preferred = dahua ? 0 : hikvision ? 1 : Math.Min(2, input.Items.Count - 1);
             if (preferred >= 0) input.SelectedIndex = preferred;
         }
 

@@ -17,6 +17,7 @@ namespace NinePointRotationCalibration.Station.Models
 
     public static class CalibrationPlan
     {
+        /// <summary>创建九个平移点和五个旋转点组成的标准标定计划。</summary>
         public static IReadOnlyList<CalibrationPlanPoint> Create(double stepX, double stepY, double stepR)
         {
             if (stepX <= 0.0) throw new ArgumentOutOfRangeException(nameof(stepX));
@@ -60,6 +61,7 @@ namespace NinePointRotationCalibration.Station.Models
             return result;
         }
 
+        /// <summary>按点号查找计划点；点号不存在时抛出参数异常。</summary>
         public static CalibrationPlanPoint Find(IReadOnlyList<CalibrationPlanPoint> points, int pointNumber)
         {
             CalibrationPlanPoint point = points == null ? null : points.FirstOrDefault(item => item.PointNumber == pointNumber);

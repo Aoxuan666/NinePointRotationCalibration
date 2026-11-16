@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Collections.Generic;
 using System.Runtime.Serialization;
 
 namespace NinePointRotationCalibration.Station.Models
@@ -32,6 +33,10 @@ namespace NinePointRotationCalibration.Station.Models
             DahuaSdkAssemblyPath = @"C:\Program Files\HuarayTech\MV Viewer\Development\DOTNET DLL\IMV\DOTNET_4.0\x64\MVSDK_Net.dll";
             CameraSerialNumber = string.Empty;
             CameraExposureMicroseconds = 10000;
+            CameraGain = 0;
+            CameraGamma = 1.0;
+            CameraTriggerMode = "Software";
+            CameraFeatures = new Dictionary<string, string>(System.StringComparer.OrdinalIgnoreCase);
             CameraTimeoutMilliseconds = 3000;
             TranslationStepX = 10.0;
             TranslationStepY = 10.0;
@@ -74,6 +79,10 @@ namespace NinePointRotationCalibration.Station.Models
         public string DahuaSdkAssemblyPath { get; set; }
         public string CameraSerialNumber { get; set; }
         public double CameraExposureMicroseconds { get; set; }
+        public double CameraGain { get; set; }
+        public double CameraGamma { get; set; }
+        public string CameraTriggerMode { get; set; }
+        public Dictionary<string, string> CameraFeatures { get; set; }
         public int CameraTimeoutMilliseconds { get; set; }
         public double TranslationStepX { get; set; }
         public double TranslationStepY { get; set; }
@@ -94,7 +103,23 @@ namespace NinePointRotationCalibration.Station.Models
 
         public bool NormalizeAfterLoad()
         {
-            if (_configurationVersion >= CurrentConfigurationVersion) return false;
+            bool changed = false;
+            if (CameraGamma <= 0.0)
+            {
+                CameraGamma = 1.0;
+                changed = true;
+            }
+            if (string.IsNullOrWhiteSpace(CameraTriggerMode))
+            {
+                CameraTriggerMode = "Software";
+                changed = true;
+            }
+            if (CameraFeatures == null)
+            {
+                CameraFeatures = new Dictionary<string, string>(System.StringComparer.OrdinalIgnoreCase);
+                changed = true;
+            }
+            if (_configurationVersion >= CurrentConfigurationVersion) return changed;
 
             // Version 0 is the original configuration shape. The two enable flags did
             // not exist there, so their deserialized false values must not disable a

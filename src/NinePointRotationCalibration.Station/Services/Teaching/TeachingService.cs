@@ -6,6 +6,7 @@ using NinePointRotationCalibration.Station.Models;
 
 namespace NinePointRotationCalibration.Station.Services.Teaching
 {
+    /// <summary>负责左右工位示教采图、模板定位和示教数据保存。</summary>
     public sealed class TeachingService : IDisposable
     {
         private readonly object _sync = new object();
@@ -40,6 +41,7 @@ namespace NinePointRotationCalibration.Station.Services.Teaching
             lock (_sync) return Clone(_data);
         }
 
+        /// <summary>采集一幅图像并使用 HALCON 模板定位生成指定侧的示教姿态。</summary>
         public async Task<TeachingPose> CaptureAsync(
             TeachingSide side,
             MachinePose machinePose,
@@ -96,6 +98,7 @@ namespace NinePointRotationCalibration.Station.Services.Teaching
             }
         }
 
+        /// <summary>清除指定侧的示教姿态并保存修改。</summary>
         public async Task<TeachingPose> ClearAsync(
             TeachingSide side,
             CancellationToken cancellationToken)
