@@ -5,6 +5,7 @@ using System.Runtime.Serialization;
 
 namespace NinePointRotationCalibration.Station.Models
 {
+    /// <summary>视觉工作站运行时配置项（含通信、相机、标定及数据文件存储路径）。</summary>
     [Serializable]
     public sealed class StationOptions
     {
@@ -58,12 +59,14 @@ namespace NinePointRotationCalibration.Station.Models
             set { _configurationVersion = value; }
         }
 
+        /// <summary>是否启用相机采集链路。</summary>
         public bool CameraEnabled
         {
             get { return _cameraEnabled; }
             set { _cameraEnabled = value; }
         }
 
+        /// <summary>是否允许执行九点与旋转标定流程。</summary>
         public bool CalibrationEnabled
         {
             get { return _calibrationEnabled; }
@@ -96,6 +99,7 @@ namespace NinePointRotationCalibration.Station.Models
         public string DetectionProfilePath { get; set; }
         public string ImageArchiveDirectory { get; set; }
 
+        /// <summary>创建包含独立相机特性字典的配置深拷贝。</summary>
         public StationOptions DeepClone()
         {
             StationOptions clone = (StationOptions)MemberwiseClone();
@@ -105,6 +109,7 @@ namespace NinePointRotationCalibration.Station.Models
             return clone;
         }
 
+        /// <summary>反序列化加载后补全缺失默认值并迁移旧版配置。</summary>
         public bool NormalizeAfterLoad()
         {
             bool changed = false;
@@ -125,9 +130,7 @@ namespace NinePointRotationCalibration.Station.Models
             }
             if (_configurationVersion >= CurrentConfigurationVersion) return changed;
 
-            // Version 0 is the original configuration shape. The two enable flags did
-            // not exist there, so their deserialized false values must not disable a
-            // previously working station.
+            // V0 旧版配置不含相机与标定启用开关，迁移时默认置为启用，避免升级后误关闭原有站点功能。
             _cameraEnabled = true;
             _calibrationEnabled = true;
             _configurationVersion = CurrentConfigurationVersion;

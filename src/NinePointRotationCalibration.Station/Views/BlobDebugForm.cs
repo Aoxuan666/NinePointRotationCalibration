@@ -16,6 +16,7 @@ using NinePointRotationCalibration.Station.Services.Inspection;
 
 namespace NinePointRotationCalibration.Station.Views
 {
+    /// <summary>交互式 Blob 检测参数调试窗口，支持实时预览局部二值图与过滤统计。</summary>
     public partial class BlobDebugForm : Form
     {
         private readonly Bitmap _sourceImage;
@@ -70,6 +71,7 @@ namespace NinePointRotationCalibration.Station.Views
             toolTip.SetToolTip(btnActualPixels, "以一个图像像素对应一个屏幕像素显示。");
         }
 
+        /// <summary>用户确认后应用并深拷贝返回最终调试的检测配置。</summary>
         public DetectionProfile AppliedProfile
         {
             get { return CloneProfile(_appliedProfile); }
@@ -141,6 +143,7 @@ namespace NinePointRotationCalibration.Station.Views
 
         private static void NumericInput_MouseWheel(object sender, MouseEventArgs e)
         {
+            // 覆盖 WinForms 默认滚轮一次步进 3 格的行为，聚焦时每次仅增减 1 个 Increment
             HandledMouseEventArgs handled = e as HandledMouseEventArgs;
             if (handled != null) handled.Handled = true;
             NumericUpDown input = sender as NumericUpDown;
@@ -188,6 +191,7 @@ namespace NinePointRotationCalibration.Station.Views
         {
             if (_closing || IsDisposed) return;
 
+            // 递增预览代次并取消旧任务，结合防抖定时器避免连续调参引发乱序刷新
             previewTimer.Stop();
             _previewGeneration++;
             CancelCurrentPreview();
@@ -390,9 +394,8 @@ namespace NinePointRotationCalibration.Station.Views
                         : result.Message);
             }
 
-            // HALCON locating cannot be interrupted. Preserve a successful result even when
-            // this preview became stale while LocateAll was running, so the next preview only
-            // needs to rerun thresholding and Blob analysis.
+            // HALCON 定位过程不可中断；即使当前预览代次在 LocateAll 期间已过期，也保留成功缓存，
+            // 这样后续调参只需重算阈值分割与 Blob 分析
             _cachedMatches = result;
             if (cancellationToken.IsCancellationRequested) return null;
             return _cachedMatches;
@@ -482,6 +485,7 @@ namespace NinePointRotationCalibration.Station.Views
             IEnumerable<BlobAnalysisResult> analyses,
             CancellationToken cancellationToken)
         {
+            // 在原图副本上仅将各检测 ROI 旋转多边形内的像素替换为二值结果，ROI 外部保留原图便于对照定位
             Bitmap combined = new Bitmap(_sourceImage);
             try
             {
@@ -856,6 +860,7 @@ namespace NinePointRotationCalibration.Station.Views
 
         private void ReleaseAnalysisResources()
         {
+            // 窗体关闭时原子触发取消，并等待在途后台预览任务全部结束后再安全释放原生资源
             if (Interlocked.Exchange(ref _releaseStarted, 1) != 0) return;
             _closing = true;
             if (previewTimer != null) previewTimer.Stop();

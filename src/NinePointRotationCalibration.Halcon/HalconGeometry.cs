@@ -77,6 +77,7 @@ namespace NinePointRotationCalibration.Halcon
         /// <summary>使用 HALCON 仿射点变换算子变换一个不含平移的二维向量。</summary>
         public static Vector2D TransformVector(AffineMatrix2D matrix, Vector2D vector)
         {
+            // 用终点与原点变换结果相减以抵消平移分量，仅保留旋转缩放剪切。
             Point2D origin = TransformPoint(matrix, new Point2D(0.0, 0.0));
             Point2D endpoint = TransformPoint(matrix, new Point2D(vector.X, vector.Y));
             return new Vector2D(endpoint.X - origin.X, endpoint.Y - origin.Y);
@@ -91,6 +92,7 @@ namespace NinePointRotationCalibration.Halcon
                 coefficients.GetLength(0) != right.Length || right.Length == 0)
                 return false;
 
+            // SolveMatrix 返回由 HALCON 管理的矩阵句柄，必须在 finally 中调用 ClearMatrix 释放。
             HTuple leftId = null;
             HTuple rightId = null;
             HTuple resultId = null;
@@ -145,6 +147,7 @@ namespace NinePointRotationCalibration.Halcon
             if (sourcePose == null) sourcePose = new ImagePose();
             if (targetPose == null) targetPose = new ImagePose();
             HTuple hom;
+            // 按 (Column, Row) 顺序传入时坐标手性与 HALCON 默认 (Row, Column) 相反，角度需取反。
             HOperatorSet.VectorAngleToRigid(
                 sourcePose.Column,
                 sourcePose.Row,
@@ -180,6 +183,7 @@ namespace NinePointRotationCalibration.Halcon
             matrix = new AffineMatrix2D(
                 hom[0].D, hom[1].D, hom[2].D,
                 hom[3].D, hom[4].D, hom[5].D);
+            // 排除奇异矩阵或含 NaN/Infinity 的退化仿射变换。
             return matrix.IsFinite && Math.Abs(matrix.Determinant) > 1e-15;
         }
 

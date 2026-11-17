@@ -145,6 +145,7 @@ namespace NinePointRotationCalibration
                 return Halcon.TemplateMatchCollectionResult.Failure(CalibrationErrorCode.TemplateMissing, "Template is missing.");
             try
             {
+                // 优先走灰度图直通接口以复用前级图像转换；仅当引擎不支持时回退到 Bitmap。
                 Halcon.IGrayImageTemplateMatchingEngine grayEngine = _templateEngine as Halcon.IGrayImageTemplateMatchingEngine;
                 Halcon.TemplateMatchCollectionResult result = gray != null && grayEngine != null
                     ? grayEngine.LocateAll(gray, ownedTemplate, returnOverlay)
@@ -401,6 +402,7 @@ namespace NinePointRotationCalibration
             ThrowIfDisposed();
             if (referenceImage == null)
                 return CalibrationSetupResult.Failure(CalibrationErrorCode.ParameterInvalid, "Reference image is null.");
+            // WinForms 模态对话框和原生文件对话框要求运行在 STA 线程上。
             if (Thread.CurrentThread.GetApartmentState() != ApartmentState.STA)
             {
                 return CalibrationSetupResult.Failure(

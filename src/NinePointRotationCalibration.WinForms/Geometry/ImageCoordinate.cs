@@ -3,6 +3,9 @@ using System.Drawing;
 
 namespace NinePointRotationCalibration.WinForms.Geometry
 {
+    /// <summary>
+    /// 表示图像坐标系中的二维点（以像素为单位的行/列坐标）。
+    /// </summary>
     [Serializable]
     public struct ImageCoordinate : IEquatable<ImageCoordinate>
     {
@@ -16,6 +19,9 @@ namespace NinePointRotationCalibration.WinForms.Geometry
 
         public double Column { get; set; }
 
+        /// <summary>
+        /// 转换为 GDI+ 绘制使用的 PointF（X 对应 Column，Y 对应 Row）。
+        /// </summary>
         public PointF ToPointF()
         {
             return new PointF((float)Column, (float)Row);

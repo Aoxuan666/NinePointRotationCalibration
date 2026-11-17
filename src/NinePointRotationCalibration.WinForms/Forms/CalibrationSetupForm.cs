@@ -14,6 +14,9 @@ using NinePointRotationCalibration.WinForms.Services;
 
 namespace NinePointRotationCalibration.WinForms.Forms
 {
+    /// <summary>
+    /// 九点加旋转标定配置窗体，提供图像定位、平移/旋转样本采集管理、标定矩阵求解与诊断结果展示。
+    /// </summary>
     public sealed class CalibrationSetupForm : Form
     {
         private readonly CalibrationCanvas _canvas;
@@ -204,6 +207,9 @@ namespace NinePointRotationCalibration.WinForms.Forms
             get { return _canvas; }
         }
 
+        /// <summary>
+        /// 更新画布当前图像并清空尚未添加为样本的临时定位结果。
+        /// </summary>
         public void SetCurrentImage(Bitmap image)
         {
             if (image == null)
@@ -230,6 +236,9 @@ namespace NinePointRotationCalibration.WinForms.Forms
             SetStatus(string.Format("当前图像：{0} × {1}", _currentImage.Width, _currentImage.Height), false);
         }
 
+        /// <summary>
+        /// 加载完整的标定配置与样本状态并刷新界面。
+        /// </summary>
         public void SetState(CalibrationSetupState state)
         {
             if (state == null)
@@ -242,6 +251,9 @@ namespace NinePointRotationCalibration.WinForms.Forms
             LoadStateToUi();
         }
 
+        /// <summary>
+        /// 应用外部或后台求解得到的标定结果并更新画布叠加。
+        /// </summary>
         public void SetResult(CalibrationResultView result)
         {
             _state.Result = result == null ? null : result.DeepClone();
@@ -294,8 +306,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 return;
             }
 
-            // DPI scaling is complete by Shown. Clamp the scaled minimum and
-            // requested size together so the footer remains above the taskbar.
+            // Shown 阶段已完成 DPI 缩放；联合钳位最小尺寸与窗体尺寸，防止底部操作栏被任务栏遮挡。
             MinimumSize = new Size(
                 Math.Max(1, Math.Min(MinimumSize.Width, workingArea.Width)),
                 Math.Max(1, Math.Min(MinimumSize.Height, workingArea.Height)));
@@ -779,6 +790,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
             SyncStateSamples();
             int translationCount = _state.Samples.Count(item => item.Enabled && item.Kind == CalibrationUiSampleKind.Translation && item.TemplateRevision == _state.Template.Revision);
             int rotationCount = _state.Samples.Count(item => item.Enabled && item.Kind == CalibrationUiSampleKind.Rotation && item.TemplateRevision == _state.Template.Revision);
+            // 允许仅执行九点 XY 标定；只有存在当前模板版本的旋转样本时才校验最低旋转样本数
             bool hasCurrentRotationSamples = _state.Samples.Any(item =>
                 item != null
                 && item.Enabled
@@ -861,6 +873,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 }
                 long previousRevision = _state.Template == null ? 0L : _state.Template.Revision;
                 _state.Template = editor.ResultState.DeepClone();
+                // 模板版本号变更后禁用旧模板下采集的历史样本并清除已计算的标定结果
                 if (_state.Template.Revision != previousRevision)
                 {
                     foreach (CalibrationSampleRow sample in _translationSamples.Concat(_rotationSamples))
@@ -1017,6 +1030,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
             {
                 return;
             }
+            // 标定采样阶段以只读方式展示模板/搜索 ROI 与基准中心，并隐藏掩膜涂抹层
             _canvas.TemplateRoi = template.TemplateRoi;
             _canvas.SearchRoi = template.SearchRoi;
             _canvas.ReferenceAnchor = template.ReferenceAnchor;
@@ -1032,6 +1046,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
         private void UpdateCanvasOverlay()
         {
             CanvasRuntimeOverlay overlay = new CanvasRuntimeOverlay();
+            // 汇总所有样本点（灰=禁用或版本过期，绿=内点，红=剔除），叠加当前定位轮廓及标定旋转中心
             foreach (CalibrationSampleRow sample in _translationSamples.Concat(_rotationSamples))
             {
                 Color color = !sample.Enabled || sample.TemplateRevision != _state.Template.Revision
@@ -1640,6 +1655,9 @@ namespace NinePointRotationCalibration.WinForms.Forms
         }
     }
 
+    /// <summary>
+    /// 单次标定图像定位完成事件参数。
+    /// </summary>
     public sealed class CalibrationLocateCompletedEventArgs : EventArgs
     {
         public CalibrationLocateCompletedEventArgs(CalibrationLocateUiResult result)
@@ -1650,6 +1668,9 @@ namespace NinePointRotationCalibration.WinForms.Forms
         public CalibrationLocateUiResult Result { get; private set; }
     }
 
+    /// <summary>
+    /// 标定计算完成事件参数。
+    /// </summary>
     public sealed class CalibrationCalculationCompletedEventArgs : EventArgs
     {
         public CalibrationCalculationCompletedEventArgs(CalibrationCalculationUiResult result)

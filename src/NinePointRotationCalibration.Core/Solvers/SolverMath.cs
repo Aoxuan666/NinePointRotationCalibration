@@ -3,8 +3,10 @@ using System.Collections.Generic;
 
 namespace NinePointRotationCalibration
 {
+    /// <summary>求解器内部使用的鲁棒统计、线性方程求解与加权残差工具。</summary>
     internal static class SolverMath
     {
+        /// <summary>计算序列的中位数。</summary>
         public static double Median(IList<double> values)
         {
             if (values == null || values.Count == 0) return double.NaN;
@@ -17,17 +19,20 @@ namespace NinePointRotationCalibration
                 : (sorted[middle - 1] + sorted[middle]) * 0.5;
         }
 
+        /// <summary>基于中位数绝对偏差（MAD）计算自适应外点阈值。</summary>
         public static double MadThreshold(IList<double> residuals, double multiplier, double minimumThreshold)
         {
             if (residuals == null || residuals.Count == 0) return minimumThreshold;
             double median = Median(residuals);
             List<double> deviations = new List<double>(residuals.Count);
             for (int i = 0; i < residuals.Count; i++) deviations.Add(Math.Abs(residuals[i] - median));
+            // 1.4826 为正态分布下 MAD 到标准差的一致性缩放因子。
             double sigma = 1.4826 * Median(deviations);
             if (!Numeric.IsFinite(sigma)) sigma = 0.0;
             return Math.Max(minimumThreshold, median + (multiplier * sigma));
         }
 
+        /// <summary>使用列主元高斯-约旦消元法求解线性方程组 Ax = b。</summary>
         public static bool SolveLinear(double[,] matrix, double[] right, out double[] solution)
         {
             int count = right == null ? 0 : right.Length;
@@ -53,6 +58,7 @@ namespace NinePointRotationCalibration
 
             for (int pivotColumn = 0; pivotColumn < count; pivotColumn++)
             {
+                // 选取当前列绝对值最大的行作为主元，降低数值消元误差。
                 int pivotRow = pivotColumn;
                 double pivotSize = Math.Abs(augmented[pivotRow, pivotColumn]);
                 for (int row = pivotColumn + 1; row < count; row++)
@@ -99,6 +105,7 @@ namespace NinePointRotationCalibration
             return true;
         }
 
+        /// <summary>计算加权均方根误差（RMS）。</summary>
         public static double WeightedRms(IList<double> residuals, IList<double> weights)
         {
             if (residuals == null || residuals.Count == 0) return double.NaN;
@@ -114,6 +121,7 @@ namespace NinePointRotationCalibration
             return totalWeight <= 0.0 ? double.NaN : Math.Sqrt(weightedSquares / totalWeight);
         }
 
+        /// <summary>由模板匹配得分计算拟合权重（限幅后取平方以放大高分样本比重）。</summary>
         public static double WeightFromScore(double score, bool enabled)
         {
             if (!enabled) return 1.0;

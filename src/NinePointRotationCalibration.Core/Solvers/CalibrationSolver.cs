@@ -109,6 +109,7 @@ namespace NinePointRotationCalibration
         {
             if (job == null)
                 return CalibrationResult.Failure(CalibrationErrorCode.ParameterInvalid, "Calibration job is null.");
+            // 深拷贝任务后再关闭旋转要求，避免修改调用方传入的配置。
             CalibrationJob copy = job.DeepClone();
             if (copy.SolverOptions == null) copy.SolverOptions = new CalibrationSolverOptions();
             copy.SolverOptions.RequireRotationCalibration = false;

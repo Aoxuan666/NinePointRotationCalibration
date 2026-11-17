@@ -6,6 +6,7 @@ using NinePointRotationCalibration.Station.Views;
 
 namespace NinePointRotationCalibration.Station
 {
+    /// <summary>视觉工作站应用程序入口与全局 UI 异常兜底处理。</summary>
     internal static class Program
     {
         private static bool _reportingUiException;
@@ -13,6 +14,7 @@ namespace NinePointRotationCalibration.Station
         [STAThread]
         private static void Main()
         {
+            // 捕获 WinForms UI 线程与 AppDomain 未处理异常，避免单次界面操作异常导致程序直接闪退
             Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
             Application.ThreadException += HandleThreadException;
             AppDomain.CurrentDomain.UnhandledException += HandleUnhandledException;
@@ -74,6 +76,7 @@ namespace NinePointRotationCalibration.Station
             {
             }
 
+            // 避免弹窗期间再次触发 UI 异常导致递归弹窗
             if (!showMessage || _reportingUiException) return;
             _reportingUiException = true;
             try

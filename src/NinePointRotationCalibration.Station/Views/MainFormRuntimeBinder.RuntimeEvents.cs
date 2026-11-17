@@ -17,7 +17,7 @@ using NinePointRotationCalibration.Station.Services.Inspection;
 
 namespace NinePointRotationCalibration.Station.Views
 {
-    /// <summary>Runtime event handlers: log, state, frames, calibration, teaching and inspection results.</summary>
+    /// <summary>运行时事件响应：日志转发、状态栏同步、帧分发、标定/示教更新与检测结果展示。</summary>
     public sealed partial class MainFormRuntimeBinder
     {
         private void Runtime_Log(object sender, LogEventArgs e)
@@ -79,9 +79,7 @@ namespace NinePointRotationCalibration.Station.Views
                 lock (_displaySync)
                 {
                     if (_displayMode != DisplayMode.LivePreview || _disposed) return;
-                    // Drop a preview frame before copying it when the viewport is
-                    // already waiting on a frame. This keeps camera throughput from
-                    // turning into a UI-thread bitmap allocation queue.
+                    // 视口已有待绘制帧时在复制前直接丢弃新预览帧，防止相机高帧率在 UI 线程堆积内存
                     if (_view.Viewport.TrySetPreviewImage(e.Image))
                     {
                         _view.SetImageInformation(string.Format(
@@ -96,6 +94,7 @@ namespace NinePointRotationCalibration.Station.Views
                 return;
             }
 
+            // 非实时预览帧（单次拍照、标定、示教及在线/离线检测）会锁定主画面，防止被后续预览流覆盖
             Bitmap copy = (Bitmap)e.Image.Clone();
             PinOwnedDisplayImage(
                 copy,
@@ -242,6 +241,7 @@ namespace NinePointRotationCalibration.Station.Views
             _view.ReplaceDetectionResults(rows);
             lock (_displaySync)
             {
+                // 仅当锁定帧仍对应本次检测的代次时才缓存并绘制叠加层，避免异步乱序刷新
                 if (_displayMode == DisplayMode.LockedFrame &&
                     _inspectionFrameGeneration >= 0 &&
                     _inspectionFrameGeneration == _displayGeneration)
@@ -276,6 +276,7 @@ namespace NinePointRotationCalibration.Station.Views
                 result.ActualCount,
                 result.Success && result.Pass,
                 result.HasManualMarks);
+            // 若开启了主画面二值预览，则在检测结果同步后立即触发一次局部二值图重绘
             if (IsBinaryPreviewEnabled()) ScheduleBinaryPreview(false);
         }
     }

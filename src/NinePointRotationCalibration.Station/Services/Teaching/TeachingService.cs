@@ -39,6 +39,7 @@ namespace NinePointRotationCalibration.Station.Services.Teaching
         public event EventHandler<TeachingEventArgs> TeachingChanged;
         public event EventHandler<FrameEventArgs> FrameCaptured;
 
+        /// <summary>获取当前左、右吸嘴示教数据的线程安全快照。</summary>
         public TeachingData GetSnapshot()
         {
             lock (_sync) return Clone(_data);
@@ -69,6 +70,7 @@ namespace NinePointRotationCalibration.Station.Services.Teaching
                     if (match == null || !match.Success)
                         throw new InvalidOperationException(match == null ? "Template locate returned no result." : match.Message);
 
+                    // 记录示教基准时刻的视觉与机械位姿；MachineR 同时作为后续盲摆回正的固定角
                     TeachingPose pose = new TeachingPose
                     {
                         Side = side,
@@ -166,6 +168,7 @@ namespace NinePointRotationCalibration.Station.Services.Teaching
         {
             EventHandler<FrameEventArgs> handler = FrameCaptured;
             if (handler == null || image == null) return;
+            // 复制图像帧向外发布，避免订阅方与示教流程共用同一位图句柄
             using (FrameEventArgs args = new FrameEventArgs((Bitmap)image.Clone(), source))
                 handler(this, args);
         }

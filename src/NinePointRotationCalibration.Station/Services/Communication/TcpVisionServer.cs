@@ -10,6 +10,7 @@ using NinePointRotationCalibration.Station.Models;
 
 namespace NinePointRotationCalibration.Station.Services.Communication
 {
+    /// <summary>TCP 上位机连接建立事件参数。</summary>
     public sealed class TcpConnectionEventArgs : EventArgs
     {
         public TcpConnectionEventArgs(string remoteEndPoint)
@@ -27,6 +28,7 @@ namespace NinePointRotationCalibration.Station.Services.Communication
         public string RemoteEndPoint { get; private set; }
     }
 
+    /// <summary>TCP 上位机连接断开事件参数。</summary>
     public sealed class TcpDisconnectedEventArgs : EventArgs
     {
         public TcpDisconnectedEventArgs(string remoteEndPoint, string reason, Exception exception)
@@ -52,6 +54,7 @@ namespace NinePointRotationCalibration.Station.Services.Communication
         public Exception Exception { get; private set; }
     }
 
+    /// <summary>接收到上位机协议消息的事件参数（附带源连接 ID）。</summary>
     public sealed class ProtocolMessageEventArgs : EventArgs
     {
         public ProtocolMessageEventArgs(ProtocolEnvelope message, string remoteEndPoint)
@@ -75,6 +78,7 @@ namespace NinePointRotationCalibration.Station.Services.Communication
         public string RemoteEndPoint { get; private set; }
     }
 
+    /// <summary>单客户端长度前缀 TCP 协议服务端（4 字节大端长度头 + UTF-8 JSON 负载）。</summary>
     public sealed class TcpVisionServer : IDisposable
     {
         public const int FrameHeaderSize = 4;
@@ -164,11 +168,13 @@ namespace NinePointRotationCalibration.Station.Services.Communication
             }
         }
 
+        /// <summary>启动 TCP 监听并开始接受上位机连接。</summary>
         public Task StartAsync()
         {
             return StartAsync(CancellationToken.None);
         }
 
+        /// <summary>启动 TCP 监听并开始接受上位机连接。</summary>
         public async Task StartAsync(CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -215,11 +221,13 @@ namespace NinePointRotationCalibration.Station.Services.Communication
             RaiseLog("INFO", "TCP vision server listening on " + startedEndPoint + ".");
         }
 
+        /// <summary>停止 TCP 监听并关闭当前客户端连接。</summary>
         public Task StopAsync()
         {
             return StopAsync(CancellationToken.None);
         }
 
+        /// <summary>停止 TCP 监听，关闭连接并等待后台收发任务退出。</summary>
         public async Task StopAsync(CancellationToken cancellationToken)
         {
             await _lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -246,7 +254,7 @@ namespace NinePointRotationCalibration.Station.Services.Communication
                 }
                 catch (SocketException)
                 {
-                    // The listener is already closed.
+                    // 监听套接字已关闭。
                 }
 
                 CloseConnection(connection, "Server stopped.", null);
@@ -275,21 +283,25 @@ namespace NinePointRotationCalibration.Station.Services.Communication
             RaiseLog("INFO", "TCP vision server stopped.");
         }
 
+        /// <summary>向当前活跃的上位机客户端发送协议消息。</summary>
         public Task SendAsync(ProtocolEnvelope message)
         {
             return SendAsync(message, CancellationToken.None);
         }
 
+        /// <summary>向当前活跃的上位机客户端发送协议消息（支持取消）。</summary>
         public Task SendAsync(ProtocolEnvelope message, CancellationToken cancellationToken)
         {
             return SendCoreAsync(null, false, message, cancellationToken);
         }
 
+        /// <summary>向指定连接 ID 的上位机客户端发送协议消息，连接已变更时拒绝发送。</summary>
         public Task SendAsync(string connectionId, ProtocolEnvelope message)
         {
             return SendAsync(connectionId, message, CancellationToken.None);
         }
 
+        /// <summary>向指定连接 ID 的上位机客户端发送协议消息，防止旧连接结果串发至重连新连接。</summary>
         public Task SendAsync(
             string connectionId,
             ProtocolEnvelope message,
@@ -341,8 +353,7 @@ namespace NinePointRotationCalibration.Station.Services.Communication
                     connection = active;
                 }
 
-                // One write per frame: with NoDelay a separate header write would go
-                // out as its own TCP segment ahead of the payload.
+                // 将长度头与负载合并为单次 WriteAsync 发送，避免 NoDelay 下产生独立小包。
                 byte[] frame = new byte[header.Length + payload.Length];
                 Buffer.BlockCopy(header, 0, frame, 0, header.Length);
                 Buffer.BlockCopy(payload, 0, frame, header.Length, payload.Length);
@@ -370,6 +381,7 @@ namespace NinePointRotationCalibration.Station.Services.Communication
             }
         }
 
+        /// <summary>停止 TCP 监听并释放全部底层网络与同步资源。</summary>
         public void Dispose()
         {
             lock (_stateSync)
@@ -418,6 +430,7 @@ namespace NinePointRotationCalibration.Station.Services.Communication
                 ClientConnection connection = new ClientConnection(client, cancellationToken);
                 bool accepted;
 
+                // 本服务仅维持单个上位机主连接，已有活跃连接时直接拒绝多余客户端
                 lock (_stateSync)
                 {
                     accepted = _running && _activeConnection == null;
@@ -526,6 +539,7 @@ namespace NinePointRotationCalibration.Station.Services.Communication
 
         private void CloseConnection(ClientConnection connection, string reason, Exception exception)
         {
+            // 通过原子标记确保每条客户端连接仅释放并触发一次 Disconnected 事件
             if (connection == null || !connection.TryMarkClosed()) return;
 
             lock (_stateSync)
@@ -703,7 +717,7 @@ namespace NinePointRotationCalibration.Station.Services.Communication
                 }
                 catch
                 {
-                    // Logging must not break the transport loop.
+                    // 日志回调异常不得中断底层网络收发循环。
                 }
             }
         }

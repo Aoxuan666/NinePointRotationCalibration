@@ -5,12 +5,18 @@ using NinePointRotationCalibration.WinForms.Geometry;
 
 namespace NinePointRotationCalibration.WinForms.Models
 {
+    /// <summary>
+    /// 标定采集样本类型。
+    /// </summary>
     public enum CalibrationUiSampleKind
     {
         Translation,
         Rotation
     }
 
+    /// <summary>
+    /// 标定样本表格绑定行，保存机械位姿、图像匹配位姿与残差诊断状态。
+    /// </summary>
     [Serializable]
     public sealed class CalibrationSampleRow
     {
@@ -44,16 +50,25 @@ namespace NinePointRotationCalibration.WinForms.Models
 
         public bool IsInlier { get; set; } = true;
 
+        /// <summary>
+        /// 采集该样本时所用的模板版本号，用于识别过期样本。
+        /// </summary>
         public long TemplateRevision { get; set; }
 
         public string Status { get; set; }
 
+        /// <summary>
+        /// 创建样本行的副本。
+        /// </summary>
         public CalibrationSampleRow DeepClone()
         {
             return (CalibrationSampleRow)MemberwiseClone();
         }
     }
 
+    /// <summary>
+    /// 标定计算结果的界面展示模型，包含仿射矩阵、旋转中心及诊断列表。
+    /// </summary>
     [Serializable]
     public sealed class CalibrationResultView
     {
@@ -92,6 +107,9 @@ namespace NinePointRotationCalibration.WinForms.Models
 
         public int RejectedCount { get; set; }
 
+        /// <summary>
+        /// 图像角与机械角之间的方向关系（1 表示同向，-1 表示反向，0 表示未知）。
+        /// </summary>
         public int RotationDirection { get; set; }
 
         public double RotationOffsetDegrees { get; set; }
@@ -108,6 +126,9 @@ namespace NinePointRotationCalibration.WinForms.Models
 
         public List<string> Diagnostics { get; set; }
 
+        /// <summary>
+        /// 创建标定结果视图的深拷贝。
+        /// </summary>
         public CalibrationResultView DeepClone()
         {
             CalibrationResultView clone = (CalibrationResultView)MemberwiseClone();
@@ -118,6 +139,9 @@ namespace NinePointRotationCalibration.WinForms.Models
         }
     }
 
+    /// <summary>
+    /// 标定配置窗体的完整可编辑状态快照。
+    /// </summary>
     [Serializable]
     public sealed class CalibrationSetupState
     {
@@ -144,6 +168,9 @@ namespace NinePointRotationCalibration.WinForms.Models
 
         public int MinimumRotationSamples { get; set; }
 
+        /// <summary>
+        /// 创建标定配置状态的深拷贝。
+        /// </summary>
         public CalibrationSetupState DeepClone()
         {
             return new CalibrationSetupState
@@ -162,6 +189,9 @@ namespace NinePointRotationCalibration.WinForms.Models
         }
     }
 
+    /// <summary>
+    /// 单次图像定位操作的界面结果。
+    /// </summary>
     public sealed class CalibrationLocateUiResult : TemplateOperationResult
     {
         public ImageCoordinate Position { get; set; }
@@ -175,6 +205,9 @@ namespace NinePointRotationCalibration.WinForms.Models
         public List<List<ImageCoordinate>> MatchedContours { get; set; } = new List<List<ImageCoordinate>>();
     }
 
+    /// <summary>
+    /// 标定计算操作的界面结果，返回结果视图与更新后的样本列表。
+    /// </summary>
     public sealed class CalibrationCalculationUiResult : TemplateOperationResult
     {
         public CalibrationResultView Result { get; set; }

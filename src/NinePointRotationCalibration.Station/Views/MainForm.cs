@@ -9,6 +9,7 @@ using NinePointRotationCalibration.Station.Controls;
 
 namespace NinePointRotationCalibration.Station.Views
 {
+    /// <summary>界面显示的相机连接状态。</summary>
     public enum CameraUiState
     {
         Disabled,
@@ -18,6 +19,7 @@ namespace NinePointRotationCalibration.Station.Views
         Error
     }
 
+    /// <summary>界面显示的 TCP 服务与上位机连接状态。</summary>
     public enum TcpUiState
     {
         NotListening,
@@ -25,6 +27,7 @@ namespace NinePointRotationCalibration.Station.Views
         Connected
     }
 
+    /// <summary>用户点击 1-14 号标定点位按钮时的事件参数。</summary>
     public sealed class CalibrationPointRequestedEventArgs : EventArgs
     {
         public CalibrationPointRequestedEventArgs(int pointNumber)
@@ -35,6 +38,7 @@ namespace NinePointRotationCalibration.Station.Views
         public int PointNumber { get; private set; }
     }
 
+    /// <summary>基于控件 Tag 路由界面操作请求的通用事件参数。</summary>
     public sealed class UiActionRequestedEventArgs : EventArgs
     {
         public UiActionRequestedEventArgs(string actionKey, Control source)
@@ -47,6 +51,7 @@ namespace NinePointRotationCalibration.Station.Views
         public Control Source { get; private set; }
     }
 
+    /// <summary>视觉工作站主窗体；仅负责界面布局与交互事件转发，运行时绑定由外部协调器完成。</summary>
     [DesignerCategory("Form")]
     public partial class MainForm : Form
     {
@@ -78,8 +83,7 @@ namespace NinePointRotationCalibration.Station.Views
         }
 
         /// <summary>
-        /// Compatibility overload for composition roots. The UI deliberately does not inspect
-        /// or retain the supplied object; runtime binding belongs outside the designer surface.
+        /// 供组合根调用的兼容重载；窗体故意不持有传入服务引用，运行时绑定由外部绑定器处理以保持设计器可用。
         /// </summary>
         public MainForm(object compositionRoot) : this()
         {
@@ -428,6 +432,7 @@ namespace NinePointRotationCalibration.Station.Views
             });
         }
 
+        /// <summary>更新左右吸嘴的图像/机械示教显示，并同步刷新双吸嘴同轴间距与盲摆策略提示。</summary>
         public void UpdateTeaching(
             string side,
             double imageRow,
@@ -474,6 +479,7 @@ namespace NinePointRotationCalibration.Station.Views
         private void UpdateDualNozzleSummary()
         {
             if (lblDualNozzleSummary == null) return;
+            // 两侧均已示教时计算双吸嘴机械坐标间距，并标明吸取对齐转角 + 固定角盲摆策略
             if (_leftTeachingValid && _rightTeachingValid)
             {
                 double dx = _rightTeachX - _leftTeachX;
@@ -669,6 +675,7 @@ namespace NinePointRotationCalibration.Station.Views
                 button.Click += CalibrationPointButton_Click;
             }
 
+            // 统一按控件 Tag 路由常规操作按钮、复选框和数值框；标定点按钮单独通过 CalibrationPointRequested 派发
             foreach (Control control in FindControls(this))
             {
                 Button button = control as Button;
@@ -733,6 +740,7 @@ namespace NinePointRotationCalibration.Station.Views
 
         private void TabWork_DrawItem(object sender, DrawItemEventArgs e)
         {
+            // 自绘右侧工作区标签页：突出选中态并在底部绘制青绿色强调指示条
             if (e.Index < 0 || e.Index >= tabWork.TabPages.Count) return;
             TabPage page = tabWork.TabPages[e.Index];
             Rectangle bounds = e.Bounds;
@@ -875,11 +883,8 @@ namespace NinePointRotationCalibration.Station.Views
                 "detection.test",
                 !workflowBusy && (acquisitionCalibrationAvailable || imageViewport.HasImage));
 
-            // Calibration-template operations are guarded by the same runtime
-            // calibration switch. Keep the visible command state synchronized with
-            // that guard so a click cannot turn into a seemingly silent failure.
-            // Template editing/testing may use an imported image, so cameraEnabled is
-            // intentionally not part of these conditions.
+            // 标定模板相关按钮受运行时标定开关保护，需与后台守卫保持同步，避免点击后无响应；
+            // 模板创建与测试可使用本地导入图像，因此不依赖相机开关。
             bool calibrationTemplateAvailable = calibrationEnabled && !workflowBusy;
             bool positioningTemplateAvailable = !workflowBusy;
             SetActionControlEnabled("template.calibration.create", calibrationTemplateAvailable);
@@ -968,6 +973,7 @@ namespace NinePointRotationCalibration.Station.Views
 
         private void RunOnUiThread(MethodInvoker action)
         {
+            // 安全封送到 UI 线程；窗体已销毁或正在关闭时忽略滞后回调
             if (action == null || IsDisposed || Disposing) return;
             if (IsHandleCreated && InvokeRequired)
             {

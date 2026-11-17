@@ -40,6 +40,7 @@ namespace NinePointRotationCalibration
             return result;
         }
 
+        /// <summary>校验模板 ROI、匹配参数、掩膜笔刷及模型二进制哈希。</summary>
         private static void ValidateTemplate(TemplateDefinition template, JobValidationResult result)
         {
             if (template == null)
@@ -218,6 +219,7 @@ namespace NinePointRotationCalibration
                 result.Add(ValidationSeverity.Error, "ROTATION_THRESHOLD_INVALID", "Rotation solver thresholds are invalid.", "SolverOptions");
         }
 
+        /// <summary>校验平移与旋转样本的数量、版本一致性、轴行程及角度跨度条件。</summary>
         private static void ValidateSamples(CalibrationJob job, CalibrationValidationScope scope, JobValidationResult result)
         {
             CalibrationSolverOptions options = job.SolverOptions ?? new CalibrationSolverOptions();
@@ -302,6 +304,7 @@ namespace NinePointRotationCalibration
             }
         }
 
+        /// <summary>按首个角度展开后续角度，计算旋转样本在圆周上的总角度跨度（度）。</summary>
         private static double CircularSpan(IList<double> angles)
         {
             if (angles == null || angles.Count < 2) return 0.0;
@@ -310,6 +313,7 @@ namespace NinePointRotationCalibration
             double max = reference;
             for (int i = 1; i < angles.Count; i++)
             {
+                // 相对参考角做周期归一化后再取包络，避免跨越 ±180 度时跨度被误放大。
                 double value = reference + AngleMath.NormalizeDegrees(angles[i] - reference);
                 min = Math.Min(min, value);
                 max = Math.Max(max, value);

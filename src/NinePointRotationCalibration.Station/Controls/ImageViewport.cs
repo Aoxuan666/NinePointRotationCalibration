@@ -10,6 +10,7 @@ using System.Windows.Forms;
 
 namespace NinePointRotationCalibration.Station.Controls
 {
+    /// <summary>视口中的十字点位叠加层配置。</summary>
     public sealed class ViewportPointOverlay
     {
         public ViewportPointOverlay()
@@ -25,6 +26,7 @@ namespace NinePointRotationCalibration.Station.Controls
         public float Radius { get; set; }
     }
 
+    /// <summary>视口中的可旋转矩形 ROI 叠加层配置。</summary>
     public sealed class ViewportRoiOverlay
     {
         public ViewportRoiOverlay()
@@ -41,6 +43,7 @@ namespace NinePointRotationCalibration.Station.Controls
         public float LineWidth { get; set; }
     }
 
+    /// <summary>视口中的轮廓多段线叠加层配置。</summary>
     public sealed class ViewportContourOverlay
     {
         public ViewportContourOverlay()
@@ -57,6 +60,7 @@ namespace NinePointRotationCalibration.Station.Controls
         public float LineWidth { get; set; }
     }
 
+    /// <summary>鼠标在图像区域内移动时的像素坐标事件参数。</summary>
     public sealed class ImagePositionEventArgs : EventArgs
     {
         public ImagePositionEventArgs(PointF imagePoint, bool isInsideImage)
@@ -202,6 +206,7 @@ namespace NinePointRotationCalibration.Station.Controls
             QueueOwnedImage(image);
         }
 
+        /// <summary>获取当前显示图像的线程安全克隆副本（无图时返回 null）。</summary>
         public Bitmap Snapshot()
         {
             if (InvokeRequired)
@@ -212,6 +217,7 @@ namespace NinePointRotationCalibration.Station.Controls
             return _displayedImage == null ? null : new Bitmap(_displayedImage);
         }
 
+        /// <summary>清空当前显示图像与待渲染帧缓存，并重置缩放平移状态。</summary>
         public void ClearImage()
         {
             if (_disposed) return;
@@ -316,6 +322,7 @@ namespace NinePointRotationCalibration.Station.Controls
             InvalidateSafe();
         }
 
+        /// <summary>将控件客户区坐标换算为图像像素坐标。</summary>
         public PointF ClientToImage(Point clientPoint)
         {
             float scale;
@@ -324,6 +331,7 @@ namespace NinePointRotationCalibration.Station.Controls
             return new PointF((clientPoint.X - origin.X) / scale, (clientPoint.Y - origin.Y) / scale);
         }
 
+        /// <summary>将图像像素坐标换算为控件客户区坐标。</summary>
         public PointF ImageToClient(PointF imagePoint)
         {
             float scale;
@@ -423,6 +431,7 @@ namespace NinePointRotationCalibration.Station.Controls
             PointF oldOrigin;
             if (!TryGetTransform(out oldScale, out oldOrigin)) return;
 
+            // 以鼠标指针所在的图像像素点为缩放锚点，调整平移补偿以保持指针下图像位置不变
             PointF anchor = new PointF(
                 (e.X - oldOrigin.X) / oldScale,
                 (e.Y - oldOrigin.Y) / oldScale);
@@ -499,6 +508,7 @@ namespace NinePointRotationCalibration.Station.Controls
                 }
                 else
                 {
+                    // 帧合并策略：丢弃尚未绘制的旧待显示帧并立即释放，仅保留最新帧
                     replaced = _pendingImage;
                     _pendingImage = image;
                     if (!_presentScheduled && IsHandleCreated)
@@ -667,6 +677,7 @@ namespace NinePointRotationCalibration.Station.Controls
                 new PointF(bounds.Left, bounds.Bottom)
             };
 
+            // 绕 ROI 中心按角度旋转四角并变换至客户区坐标，支持旋转矩形绘制
             double radians = roi.AngleDegrees * Math.PI / 180.0;
             double cosine = Math.Cos(radians);
             double sine = Math.Sin(radians);
@@ -699,6 +710,7 @@ namespace NinePointRotationCalibration.Station.Controls
         {
             if (contour == null || contour.Points == null || contour.Points.Count == 0) return;
 
+            // 对超长轮廓按步长抽稀并剔除屏幕距离过近(小于 0.8px)的冗余点，限制单轮廓最多绘制约 5000 点
             List<PointF> display = new List<PointF>(Math.Min(contour.Points.Count, 5000));
             PointF previous = PointF.Empty;
             bool hasPrevious = false;

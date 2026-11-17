@@ -17,7 +17,7 @@ using NinePointRotationCalibration.Station.Services.Inspection;
 
 namespace NinePointRotationCalibration.Station.Views
 {
-    /// <summary>Image display state: locked/live frames and the binary preview.</summary>
+    /// <summary>主窗口图像显示状态管理：实时预览、锁定帧及主画面局部二值预览。</summary>
     public sealed partial class MainFormRuntimeBinder
     {
         private bool IsBinaryPreviewEnabled()
@@ -30,6 +30,7 @@ namespace NinePointRotationCalibration.Station.Views
         {
             if (_disposed || !IsBinaryPreviewEnabled()) return;
 
+            // 取消上一次尚未完成的二值预览，并记录当前 _displayGeneration 防止旧帧覆盖新锁定图像
             CancellationTokenSource cancellation =
                 CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
             lock (_binaryPreviewSync)
@@ -173,6 +174,7 @@ namespace NinePointRotationCalibration.Station.Views
                                 HalfHeight = source.Height / 2.0
                             }
                         };
+                    // 仅将各检测 ROI 旋转多边形内部替换成二值分割图，ROI 之外保留原图以便观察定位
                     foreach (DetectionRoi roi in targets)
                     {
                         cancellationToken.ThrowIfCancellationRequested();
@@ -298,6 +300,7 @@ namespace NinePointRotationCalibration.Station.Views
 
         private Bitmap SnapshotAndLockCurrentImage()
         {
+            // 已处于锁定帧模式时直接克隆返回，避免重复截屏并保持当前基准帧不变
             lock (_displaySync)
             {
                 if (_lockedDisplayImage != null) return (Bitmap)_lockedDisplayImage.Clone();
@@ -306,11 +309,13 @@ namespace NinePointRotationCalibration.Station.Views
             Bitmap snapshot = _view.Viewport.Snapshot();
             if (snapshot == null) return null;
 
+            // 实时预览状态下抓取一帧并切入 LockedFrame 模式，防止后续预览帧冲掉调试画面
             Bitmap lockedCopy = (Bitmap)snapshot.Clone();
             PinOwnedDisplayImage(lockedCopy, "检测输入", false);
             return snapshot;
         }
 
+        // 接管传入位图所有权并切换为 LockedFrame 模式，递增 _displayGeneration 使旧预览失效
         private void PinOwnedDisplayImage(
             Bitmap image,
             string source,
@@ -342,6 +347,7 @@ namespace NinePointRotationCalibration.Station.Views
             if (previous != null) previous.Dispose();
         }
 
+        // 退出锁定状态与二值预览，恢复接收相机实时预览流
         private void ResumeLivePreview()
         {
             CancelBinaryPreview();
@@ -382,6 +388,7 @@ namespace NinePointRotationCalibration.Station.Views
                 capturedAtUtc.ToLocalTime()));
         }
 
+        // 承载后台生成的二值预览图与轮廓，TakeImage 用于将位图所有权安全移交视口
         private sealed class BinaryPreviewPayload : IDisposable
         {
             public BinaryPreviewPayload()

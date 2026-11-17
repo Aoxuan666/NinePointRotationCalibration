@@ -2,6 +2,7 @@ using System;
 
 namespace NinePointRotationCalibration.Station.Models
 {
+    /// <summary>单个标定点的执行状态。</summary>
     public enum CalibrationPointStatus
     {
         Pending = 0,
@@ -12,6 +13,7 @@ namespace NinePointRotationCalibration.Station.Models
         Failed = 5
     }
 
+    /// <summary>标定点的计划偏移、实测机台坐标与图像匹配结果记录。</summary>
     public sealed class CalibrationPointRecord
     {
         public int PointNumber { get; set; }
@@ -31,12 +33,14 @@ namespace NinePointRotationCalibration.Station.Models
         public string Message { get; set; }
         public DateTime? CapturedAtUtc { get; set; }
 
+        /// <summary>创建点位记录的独立副本用于跨线程快照传递。</summary>
         public CalibrationPointRecord DeepClone()
         {
             return (CalibrationPointRecord)MemberwiseClone();
         }
     }
 
+    /// <summary>标定点状态变更事件参数。</summary>
     public sealed class CalibrationPointEventArgs : EventArgs
     {
         public CalibrationPointEventArgs(CalibrationPointRecord record)
@@ -47,6 +51,7 @@ namespace NinePointRotationCalibration.Station.Models
         public CalibrationPointRecord Record { get; private set; }
     }
 
+    /// <summary>标定计算完成事件参数。</summary>
     public sealed class CalibrationResultEventArgs : EventArgs
     {
         public CalibrationResultEventArgs(CalibrationResult result)
@@ -57,6 +62,7 @@ namespace NinePointRotationCalibration.Station.Models
         public CalibrationResult Result { get; private set; }
     }
 
+    /// <summary>图像帧推送事件参数（持有位图所有权并在 Dispose 时释放）。</summary>
     public sealed class FrameEventArgs : EventArgs, IDisposable
     {
         public FrameEventArgs(System.Drawing.Bitmap image, string source)
@@ -70,6 +76,7 @@ namespace NinePointRotationCalibration.Station.Models
         public string Source { get; private set; }
         public DateTime CapturedAtUtc { get; private set; }
 
+        /// <summary>释放随事件传递的位图副本。</summary>
         public void Dispose()
         {
             System.Drawing.Bitmap image = Image;
@@ -78,6 +85,7 @@ namespace NinePointRotationCalibration.Station.Models
         }
     }
 
+    /// <summary>工作站运行日志事件参数。</summary>
     public sealed class LogEventArgs : EventArgs
     {
         public LogEventArgs(string level, string message)
@@ -92,6 +100,7 @@ namespace NinePointRotationCalibration.Station.Models
         public string Message { get; private set; }
     }
 
+    /// <summary>吸嘴示教位姿更新事件参数。</summary>
     public sealed class TeachingEventArgs : EventArgs
     {
         public TeachingEventArgs(TeachingPose pose)
@@ -114,6 +123,7 @@ namespace NinePointRotationCalibration.Station.Models
         public TeachingPose Pose { get; private set; }
     }
 
+    /// <summary>整盘视觉检测完成事件参数。</summary>
     public sealed class InspectionEventArgs : EventArgs
     {
         public InspectionEventArgs(InspectionResult result)
@@ -124,6 +134,7 @@ namespace NinePointRotationCalibration.Station.Models
         public InspectionResult Result { get; private set; }
     }
 
+    /// <summary>运行时组件可用性状态变更事件参数。</summary>
     public sealed class RuntimeStateEventArgs : EventArgs
     {
         public RuntimeStateEventArgs(string component, bool available, string detail)

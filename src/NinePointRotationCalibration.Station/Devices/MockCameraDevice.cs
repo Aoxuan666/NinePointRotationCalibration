@@ -9,6 +9,7 @@ using NinePointRotationCalibration.Station.Models;
 
 namespace NinePointRotationCalibration.Station.Devices
 {
+    /// <summary>无实体相机时的仿真 PCB 相机驱动，可生成 6 块分板及人工坏板标记测试场景。</summary>
     public sealed class MockCameraDevice : ICameraDevice, ICameraParameterDevice
     {
         public const string DefaultDeviceId = "MOCK-PCB-01";
@@ -62,6 +63,7 @@ namespace NinePointRotationCalibration.Station.Devices
             }
         }
 
+        /// <summary>返回固定模拟相机设备描述符。</summary>
         public async Task<IReadOnlyList<CameraDescriptor>> EnumerateAsync(CancellationToken cancellationToken)
         {
             ThrowIfDisposed();
@@ -85,6 +87,7 @@ namespace NinePointRotationCalibration.Station.Devices
             }
         }
 
+        /// <summary>连接模拟相机设备。</summary>
         public async Task ConnectAsync(string deviceId, CancellationToken cancellationToken)
         {
             ThrowIfDisposed();
@@ -112,6 +115,7 @@ namespace NinePointRotationCalibration.Station.Devices
             }
         }
 
+        /// <summary>断开模拟相机连接。</summary>
         public async Task DisconnectAsync()
         {
             ThrowIfDisposed();
@@ -131,6 +135,7 @@ namespace NinePointRotationCalibration.Station.Devices
             }
         }
 
+        /// <summary>更新模拟曝光时间（微秒），同时影响生成图像亮度。</summary>
         public async Task SetExposureAsync(double exposureMicroseconds, CancellationToken cancellationToken)
         {
             if (double.IsNaN(exposureMicroseconds) || double.IsInfinity(exposureMicroseconds) || exposureMicroseconds <= 0.0)
@@ -152,6 +157,7 @@ namespace NinePointRotationCalibration.Station.Devices
             }
         }
 
+        /// <summary>获取模拟相机当前参数集的独立拷贝。</summary>
         public async Task<CameraParameterSet> GetParametersAsync(CancellationToken cancellationToken)
         {
             ThrowIfDisposed();
@@ -159,6 +165,7 @@ namespace NinePointRotationCalibration.Station.Devices
             lock (_parametersSync) return CloneParameters(_parameters);
         }
 
+        /// <summary>更新模拟相机参数集。</summary>
         public async Task SetParametersAsync(CameraParameterSet parameters, CancellationToken cancellationToken)
         {
             if (parameters == null) throw new ArgumentNullException(nameof(parameters));
@@ -203,6 +210,7 @@ namespace NinePointRotationCalibration.Station.Devices
             return clone;
         }
 
+        /// <summary>模拟采集延迟并生成一帧 6 分板仿真 PCB 图像。</summary>
         public async Task<CameraFrame> CaptureAsync(CancellationToken cancellationToken)
         {
             ThrowIfDisposed();
@@ -212,6 +220,7 @@ namespace NinePointRotationCalibration.Station.Devices
                 ThrowIfDisposed();
                 EnsureConnected();
 
+                // 根据曝光值模拟成像耗时并按曝光比例调整合成图像亮度
                 int delayMilliseconds = Math.Max(12, Math.Min(120, (int)Math.Ceiling(_exposureMicroseconds / 1000.0)));
                 await Task.Delay(delayMilliseconds, cancellationToken).ConfigureAwait(false);
 
@@ -225,6 +234,7 @@ namespace NinePointRotationCalibration.Station.Devices
             }
         }
 
+        /// <summary>等待当前操作完成后释放信号量与连接状态。</summary>
         public void Dispose()
         {
             lock (_stateSync)
@@ -290,6 +300,7 @@ namespace NinePointRotationCalibration.Station.Devices
                     graphics.DrawLine(guidePen, 0, height / 2, width, height / 2);
                 }
 
+                // 按 2x3 排布绘制 6 块带倾角子板；开启间歇故障模拟时每 8 帧省略最后一块板以测试缺板报警
                 float[] centersX = { 270.0f, 800.0f, 1330.0f };
                 float[] centersY = { 270.0f, 730.0f };
                 float[] angles = { -2.2f, 0.8f, 2.0f, 1.5f, -1.0f, 2.7f };
@@ -380,6 +391,7 @@ namespace NinePointRotationCalibration.Station.Devices
                     }
                 }
 
+                // 在固定子板位置绘制矩形标签、人工叉号或圆点标记，供坏板识别与矩形过滤联调
                 if (boardIndex == 1 || boardIndex == 5)
                     DrawRectangularLabel(graphics, boardIndex == 1 ? -52.0f : 42.0f, 34.0f);
 

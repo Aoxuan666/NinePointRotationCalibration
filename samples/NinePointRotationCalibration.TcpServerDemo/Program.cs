@@ -9,6 +9,7 @@ using NinePointRotationCalibration.Station.Services.Communication;
 
 namespace NinePointRotationCalibration.TcpServerDemo
 {
+    /// <summary>TCP 视觉通信服务端控制台示例，支持协议自动应答与交互命令发送。</summary>
     internal static class Program
     {
         private static readonly object ConsoleSync = new object();
@@ -25,6 +26,7 @@ namespace NinePointRotationCalibration.TcpServerDemo
             RunAsync(args ?? new string[0]).GetAwaiter().GetResult();
         }
 
+        // 解析 --bind / --port / --manual 参数并启动 TCP 服务端及命令行循环
         private static async Task RunAsync(string[] args)
         {
             string bindAddress = GetOption(args, "--bind", "0.0.0.0");
@@ -102,6 +104,7 @@ namespace NinePointRotationCalibration.TcpServerDemo
             }
         }
 
+        // 按连接校验 messageId 去重后，自动应答握手/心跳、检测触发与运动到位消息
         private static async Task HandleMessageAsync(
             string connectionId,
             ProtocolEnvelope message,
@@ -159,6 +162,7 @@ namespace NinePointRotationCalibration.TcpServerDemo
             return SendAsync(connectionId, ack, cancellationToken);
         }
 
+        // 校验 currentR 参数并返回模拟的多板检测协议响应
         private static async Task HandleInspectionTriggerAsync(
             string connectionId,
             ProtocolEnvelope request,
@@ -193,6 +197,7 @@ namespace NinePointRotationCalibration.TcpServerDemo
             await SendAsync(connectionId, result, cancellationToken).ConfigureAwait(false);
         }
 
+        // 根据关联的 move.request ID 构造模拟标定点结果回传
         private static Task HandleMotionArrivedAsync(
             string connectionId,
             ProtocolEnvelope request,
@@ -241,6 +246,7 @@ namespace NinePointRotationCalibration.TcpServerDemo
             }
         }
 
+        // 解析并发送交互测试报文；move 指令在 1-14 号标定点间循环（5 与 12 为共享原点）
         private static async Task ExecuteSendCommandAsync(string command, CancellationToken cancellationToken)
         {
             string[] parts = command.Split(new[] { ' ' }, 2, StringSplitOptions.RemoveEmptyEntries);

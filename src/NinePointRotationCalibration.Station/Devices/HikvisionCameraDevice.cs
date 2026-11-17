@@ -12,6 +12,7 @@ using Seprays.Camera;
 
 namespace NinePointRotationCalibration.Station.Devices
 {
+    /// <summary>基于海康 MVS（Seprays.Camera）的工业相机驱动封装；未配置 SDK 时编译为占位实现。</summary>
     public sealed class HikvisionCameraDevice : ICameraDevice, ICameraParameterDevice
     {
 #if HIKVISION_SDK
@@ -29,6 +30,7 @@ namespace NinePointRotationCalibration.Station.Devices
         public bool IsConnected { get { lock (_stateSync) return _camera != null && _camera.m_bIsOpen; } }
         public string ConnectedDeviceId { get { lock (_stateSync) return _connectedDeviceId; } }
 
+        /// <summary>串行枚举当前在线的海康相机序列号列表。</summary>
         public Task<IReadOnlyList<CameraDescriptor>> EnumerateAsync(CancellationToken cancellationToken)
         {
             return RunSerializedAsync<IReadOnlyList<CameraDescriptor>>(() =>
@@ -55,11 +57,13 @@ namespace NinePointRotationCalibration.Station.Devices
                 }
                 finally
                 {
+                    // Seprays.Camera 枚举时会持有非托管资源，使用完毕需显式释放
                     enumerator.FreeHGlobal();
                 }
             }, cancellationToken);
         }
 
+        /// <summary>按序列号打开海康相机并默认切至软触发模式。</summary>
         public Task ConnectAsync(string deviceId, CancellationToken cancellationToken)
         {
             if (string.IsNullOrWhiteSpace(deviceId)) throw new ArgumentException("A camera serial number is required.", nameof(deviceId));
@@ -92,11 +96,13 @@ namespace NinePointRotationCalibration.Station.Devices
             }, cancellationToken);
         }
 
+        /// <summary>断开相机并释放 Seprays.Camera 非托管句柄。</summary>
         public Task DisconnectAsync()
         {
             return RunSerializedAsync(() => { DisconnectCore(); return true; }, CancellationToken.None);
         }
 
+        /// <summary>设置相机曝光时间（微秒）。</summary>
         public Task SetExposureAsync(double exposureMicroseconds, CancellationToken cancellationToken)
         {
             if (double.IsNaN(exposureMicroseconds) || double.IsInfinity(exposureMicroseconds) || exposureMicroseconds <= 0)
@@ -110,6 +116,7 @@ namespace NinePointRotationCalibration.Station.Devices
             }, cancellationToken);
         }
 
+        /// <summary>读取当前海康相机参数并映射为通用参数集。</summary>
         public Task<CameraParameterSet> GetParametersAsync(CancellationToken cancellationToken)
         {
             return RunSerializedAsync(() =>
@@ -156,6 +163,7 @@ namespace NinePointRotationCalibration.Station.Devices
             }, cancellationToken);
         }
 
+        /// <summary>将通用参数集批量写入当前海康相机。</summary>
         public Task SetParametersAsync(CameraParameterSet parameters, CancellationToken cancellationToken)
         {
             if (parameters == null) throw new ArgumentNullException(nameof(parameters));
@@ -201,6 +209,7 @@ namespace NinePointRotationCalibration.Station.Devices
             });
         }
 
+        // 通过反射探测可选增益读写方法，以兼容不同版本的 Seprays.Camera 封装
         private static bool TryGetOptionalFloat(CameraMVS camera, string[] methodNames, out float value)
         {
             value = 0;
@@ -245,6 +254,7 @@ namespace NinePointRotationCalibration.Station.Devices
             return false;
         }
 
+        /// <summary>触发（软触发模式下发软触发命令）并抓取一帧图像。</summary>
         public Task<CameraFrame> CaptureAsync(CancellationToken cancellationToken)
         {
             return RunSerializedAsync(() =>
@@ -253,6 +263,7 @@ namespace NinePointRotationCalibration.Station.Devices
                 cancellationToken.ThrowIfCancellationRequested();
                 string triggerMode;
                 lock (_stateSync) triggerMode = _triggerMode;
+                // 软触发模式下需先执行一次 SoftTriggerOnce，再调用 GrabOneImage 取图
                 if (string.Equals(triggerMode, "Software", StringComparison.OrdinalIgnoreCase))
                 {
                     int error = 0;
@@ -276,6 +287,7 @@ namespace NinePointRotationCalibration.Station.Devices
             }, cancellationToken);
         }
 
+        /// <summary>串行关闭海康相机并释放非托管资源。</summary>
         public void Dispose()
         {
             if (_disposed) return;

@@ -199,6 +199,7 @@ namespace NinePointRotationCalibration
             if (all.Count <= maximumCount) return all;
 
             List<ImageCoordinate> sampled = new List<ImageCoordinate>(maximumCount);
+            // 按均匀步长抽样，限制界面特征点预览数量以保证绘制流畅。
             double step = (double)all.Count / maximumCount;
             for (int index = 0; index < maximumCount; index++)
                 sampled.Add(all[(int)Math.Floor(index * step)]);

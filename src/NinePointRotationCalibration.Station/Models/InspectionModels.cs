@@ -5,6 +5,7 @@ using System.Runtime.Serialization;
 
 namespace NinePointRotationCalibration.Station.Models
 {
+    /// <summary>基于模板参考坐标系或固定像素区域的检测 ROI 定义。</summary>
     public sealed class DetectionRoi
     {
         public double ReferenceCenterRow { get; set; }
@@ -14,6 +15,7 @@ namespace NinePointRotationCalibration.Station.Models
         public double HalfHeight { get; set; }
     }
 
+    /// <summary>人工标记（X/点）斑点二值化检测与矩形过滤参数。</summary>
     public sealed class DetectionProfile
     {
         public DetectionProfile()
@@ -31,9 +33,11 @@ namespace NinePointRotationCalibration.Station.Models
             TemplateMatchingEnabled = true;
         }
 
-        // Retained only to migrate detection-profile.json files created by older versions.
+        // 仅用于兼容迁移旧版 detection-profile.json 文件。
         public DetectionRoi Roi { get; set; }
+        /// <summary>是否随单板模板匹配位姿变换检测区域。</summary>
         public bool FollowTemplateTransform { get; set; }
+        /// <summary>是否启用模板匹配（关闭时仅执行全图或固定 ROI 斑点检测）。</summary>
         public bool TemplateMatchingEnabled { get; set; }
         public bool AutoThreshold { get; set; }
         public bool DetectDarkForeground { get; set; }
@@ -45,8 +49,7 @@ namespace NinePointRotationCalibration.Station.Models
         public bool FillHoles { get; set; }
         public int MorphologyRadius { get; set; }
 
-        // Older detection profiles do not contain this field. Seed the safe,
-        // production-default value before the serializer applies present fields.
+        // 旧版检测配置文件缺少新增开关字段，在反序列化前先预置安全的生产默认值。
         [OnDeserializing]
         private void OnDeserializing(StreamingContext context)
         {
@@ -58,6 +61,7 @@ namespace NinePointRotationCalibration.Station.Models
         }
     }
 
+    /// <summary>单个候选斑点的几何特征与矩形过滤状态。</summary>
     public sealed class BlobFinding
     {
         public BlobFinding()
@@ -69,10 +73,12 @@ namespace NinePointRotationCalibration.Station.Models
         public double Column { get; set; }
         public double Area { get; set; }
         public double Rectangularity { get; set; }
+        /// <summary>是否因矩形填充度过高（疑似矩形标签而非人工坏板标记）被排除。</summary>
         public bool RejectedAsRectangle { get; set; }
         public List<PointF> Contour { get; set; }
     }
 
+    /// <summary>单次斑点分析的二值掩膜图、检出斑点及分阶段耗时统计。</summary>
     public sealed class BlobAnalysisResult : IDisposable
     {
         public BlobAnalysisResult()
@@ -94,6 +100,7 @@ namespace NinePointRotationCalibration.Station.Models
         public double ComponentElapsedMilliseconds { get; set; }
         public double ElapsedMilliseconds { get; set; }
 
+        /// <summary>释放二值预览位图资源。</summary>
         public void Dispose()
         {
             Bitmap binaryImage = BinaryImage;
@@ -102,6 +109,7 @@ namespace NinePointRotationCalibration.Station.Models
         }
     }
 
+    /// <summary>单块分板（子板）的模板匹配结果、坏板标记与机台目标位姿。</summary>
     public sealed class BoardInspectionItem
     {
         public BoardInspectionItem()
@@ -123,6 +131,7 @@ namespace NinePointRotationCalibration.Station.Models
         public List<MappedTargetPose> Targets { get; set; }
     }
 
+    /// <summary>整盘视觉定位与人工标记检测的汇总结果。</summary>
     public sealed class InspectionResult
     {
         public InspectionResult()
@@ -135,6 +144,7 @@ namespace NinePointRotationCalibration.Station.Models
         public bool Success { get; set; }
         public bool CountMatchesExpected { get; set; }
         public bool HasManualMarks { get; set; }
+        /// <summary>是否综合通过（定位成功、数量匹配且无人工坏板标记）。</summary>
         public bool Pass { get; set; }
         public string ErrorCode { get; set; }
         public string Message { get; set; }

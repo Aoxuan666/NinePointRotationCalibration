@@ -3,8 +3,7 @@ using System;
 namespace NinePointRotationCalibration
 {
     /// <summary>
-    /// A 2D affine transform: x' = M11*x + M12*y + OffsetX,
-    /// y' = M21*x + M22*y + OffsetY.
+    /// 二维仿射变换矩阵：x' = M11*x + M12*y + OffsetX，y' = M21*x + M22*y + OffsetY。
     /// </summary>
     [Serializable]
     public struct AffineMatrix2D : IEquatable<AffineMatrix2D>
@@ -28,11 +27,13 @@ namespace NinePointRotationCalibration
         public double M22 { get; set; }
         public double OffsetY { get; set; }
 
+        /// <summary>单位仿射矩阵。</summary>
         public static AffineMatrix2D Identity
         {
             get { return new AffineMatrix2D(1.0, 0.0, 0.0, 0.0, 1.0, 0.0); }
         }
 
+        /// <summary>2x2 线性部分的行列式。</summary>
         public double Determinant { get { return (M11 * M22) - (M12 * M21); } }
         public bool IsFinite
         {
@@ -43,6 +44,7 @@ namespace NinePointRotationCalibration
             }
         }
 
+        /// <summary>对二维坐标点执行完整仿射变换（含平移）。</summary>
         public Point2D Transform(Point2D point)
         {
             return new Point2D(
@@ -50,6 +52,7 @@ namespace NinePointRotationCalibration
                 (M21 * point.X) + (M22 * point.Y) + OffsetY);
         }
 
+        /// <summary>仅对二维方向向量执行线性变换（不含平移）。</summary>
         public Vector2D TransformVector(Vector2D vector)
         {
             return new Vector2D(
@@ -57,9 +60,11 @@ namespace NinePointRotationCalibration
                 (M21 * vector.X) + (M22 * vector.Y));
         }
 
+        /// <summary>尝试求当前仿射矩阵的逆矩阵；奇异时返回 false。</summary>
         public bool TryInvert(out AffineMatrix2D inverse)
         {
             double determinant = Determinant;
+            // 使用矩阵范数尺度缩放奇异阈值，避免大/小坐标量纲下误判。
             double scale = Math.Max(1.0, Math.Max(Math.Abs(M11) + Math.Abs(M12), Math.Abs(M21) + Math.Abs(M22)));
             if (!IsFinite || Math.Abs(determinant) <= 1e-14 * scale * scale)
             {
@@ -71,6 +76,7 @@ namespace NinePointRotationCalibration
             double i12 = -M12 / determinant;
             double i21 = -M21 / determinant;
             double i22 = M11 / determinant;
+            // 逆矩阵平移项为 -A^(-1) * t。
             inverse = new AffineMatrix2D(
                 i11,
                 i12,
@@ -81,6 +87,7 @@ namespace NinePointRotationCalibration
             return true;
         }
 
+        /// <summary>求仿射矩阵的逆矩阵，奇异时抛出异常。</summary>
         public AffineMatrix2D Inverse()
         {
             AffineMatrix2D inverse;
@@ -92,7 +99,7 @@ namespace NinePointRotationCalibration
             return inverse;
         }
 
-        /// <summary>Returns this(after(x)), i.e. this * after.</summary>
+        /// <summary>复合两个仿射变换，返回 this(after(x))（即先应用 after 再应用当前变换）。</summary>
         public AffineMatrix2D Compose(AffineMatrix2D after)
         {
             return new AffineMatrix2D(
@@ -104,10 +111,12 @@ namespace NinePointRotationCalibration
                 (M21 * after.OffsetX) + (M22 * after.OffsetY) + OffsetY);
         }
 
+        /// <summary>线性部分的谱条件数（最大与最小奇异值之比），用于评估病态程度。</summary>
         public double ConditionNumber
         {
             get
             {
+                // 计算 2x2 对称矩阵 A^T * A 的两个特征值，再开方得到奇异值之比。
                 double a = (M11 * M11) + (M21 * M21);
                 double b = (M11 * M12) + (M21 * M22);
                 double d = (M12 * M12) + (M22 * M22);

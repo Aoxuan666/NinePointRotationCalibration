@@ -13,6 +13,7 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
     /// </summary>
     public sealed class TargetPoseMapper
     {
+        /// <summary>为单块定位到的 PCB 分别计算左、右吸嘴的吸取机械坐标及回正盲摆角度。</summary>
         public List<MappedTargetPose> Map(
             CalibrationResult calibration,
             TeachingData teaching,
@@ -72,7 +73,7 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
 
             double direction = calibration.Rotation.DirectionMultiplier;
 
-            // imageAngle = direction * machineAngle + offset => machineDelta = direction * deltaImageAngle
+            // PickR 为旋转对齐来料板角后的吸取目标 R；BlindPlaceR 为回正盲摆的固定示教角（常为 0°）
             double imageCorrection = NormalizeDegrees(boardMatch.AngleDegrees - teaching.ImageAngleDegrees);
             double pickR = teaching.MachineR + (direction * imageCorrection);
             double offsetR = NormalizeDegrees(pickR - currentR);
@@ -104,9 +105,8 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
         }
 
         /// <summary>
-        /// Direction of a template pose expressed as an angle in the stage frame.
-        /// HALCON angles turn counter-clockwise on screen with rows pointing down,
-        /// so the pose direction in (column, row) is (cos a, -sin a).
+        /// 将图像坐标系下的模板朝向角换算为机械台面坐标系中的角度。
+        /// HALCON 角度在 Row 向下的图像中为逆时针正方向，因此单位方向向量为 (cos a, -sin a)。
         /// </summary>
         private static double StageAngleDegrees(CalibrationResult calibration, ImagePoint anchor, double imageAngleDegrees)
         {

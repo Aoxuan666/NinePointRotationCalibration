@@ -8,16 +8,16 @@ using NinePointRotationCalibration.WinForms.Models;
 namespace NinePointRotationCalibration.WinForms.Adapters
 {
     /// <summary>
-    /// Converts the UI editing models to the stable Core DTOs used by the SDK.
-    /// Pass the original Core object as the baseline when updating so fields that
-    /// are not editable in the UI (job identity, solver limits and HALCON metadata)
-    /// remain unchanged.
+    /// 在 UI 编辑模型与 SDK 使用的核心 DTO 之间进行双向转换；更新时传入原始核心对象作为基线，以保留 UI 不可编辑的字段（任务标识、求解器限制及 HALCON 元数据）。
     /// </summary>
     public static class CoreUiMapper
     {
         private const string DefaultMetric = "use_polarity";
         private const string EdgeContourMetric = "ignore_local_polarity";
 
+        /// <summary>
+        /// 将核心模板定义转换为 WinForms 模板编辑器状态。
+        /// </summary>
         public static TemplateEditorState FromCoreTemplate(Core.TemplateDefinition template)
         {
             TemplateEditorState state = new TemplateEditorState();
@@ -79,6 +79,7 @@ namespace NinePointRotationCalibration.WinForms.Adapters
                 state.Parameters.FeaturePointSpacingPixels = extraction.PointSpacingPixels;
                 state.Parameters.MaximumFeaturePointCount = extraction.MaximumPointCount;
             }
+            // Shape 外轮廓 XLD 模式固定使用 ignore_local_polarity，其余模式保留各自极性配置
             state.Parameters.Metric = shapeModel
                 ? state.Parameters.FeatureExtractionMode == Core.ShapeFeatureExtractionMode.EdgeContours
                     ? EdgeContourMetric
@@ -129,6 +130,9 @@ namespace NinePointRotationCalibration.WinForms.Adapters
             return state;
         }
 
+        /// <summary>
+        /// 将 WinForms 模板编辑器状态写回核心模板定义，并以 baseline 保留非 UI 字段。
+        /// </summary>
         public static Core.TemplateDefinition ToCoreTemplate(
             TemplateEditorState state,
             Core.TemplateDefinition baseline = null,
@@ -231,7 +235,7 @@ namespace NinePointRotationCalibration.WinForms.Adapters
             template.MatchParameters.TimeoutMilliseconds = parameters.TimeoutMilliseconds;
             template.MatchParameters.ContourPointSpacingPixels = parameters.ContourPointSpacingPixels;
 
-            // Preserve non-freehand masks that the brush editor cannot alter.
+            // 保留画笔编辑器无法修改的非手绘结构化掩膜区域
             List<Core.TemplateMaskShape> retainedMasks = (template.MaskRegions ?? new List<Core.TemplateMaskShape>())
                 .Where(item => item != null && item.Region != null && item.Region.Kind != Core.RegionKind.Freehand)
                 .Select(item => item.DeepClone())
@@ -257,6 +261,9 @@ namespace NinePointRotationCalibration.WinForms.Adapters
             return template;
         }
 
+        /// <summary>
+        /// 将核心标定任务与可选计算结果转换为配置窗体状态。
+        /// </summary>
         public static CalibrationSetupState FromCoreJob(
             Core.CalibrationJob job,
             Core.CalibrationResult result = null)
@@ -302,6 +309,9 @@ namespace NinePointRotationCalibration.WinForms.Adapters
             return state;
         }
 
+        /// <summary>
+        /// 将配置窗体状态转换回核心标定任务，并以 baseline 保留未在 UI 暴露的任务元数据。
+        /// </summary>
         public static Core.CalibrationJob ToCoreJob(
             CalibrationSetupState state,
             Core.CalibrationJob baseline = null,
@@ -331,6 +341,9 @@ namespace NinePointRotationCalibration.WinForms.Adapters
             return job;
         }
 
+        /// <summary>
+        /// 将核心模板匹配结果转换为标定定位 UI 结果。
+        /// </summary>
         public static CalibrationLocateUiResult FromCoreMatch(Core.TemplateMatchResult match)
         {
             if (match == null)
@@ -350,6 +363,9 @@ namespace NinePointRotationCalibration.WinForms.Adapters
             };
         }
 
+        /// <summary>
+        /// 将核心模板匹配结果转换为模板编辑器测试匹配结果。
+        /// </summary>
         public static TemplateTestResult FromCoreTemplateTest(Core.TemplateMatchResult match)
         {
             CalibrationLocateUiResult locate = FromCoreMatch(match);
@@ -365,6 +381,9 @@ namespace NinePointRotationCalibration.WinForms.Adapters
             };
         }
 
+        /// <summary>
+        /// 将核心标定求解结果转换为界面展示视图模型。
+        /// </summary>
         public static CalibrationResultView FromCoreResult(Core.CalibrationResult result)
         {
             if (result == null)
@@ -424,6 +443,9 @@ namespace NinePointRotationCalibration.WinForms.Adapters
             return view;
         }
 
+        /// <summary>
+        /// 把求解器输出的样本内点标记与像素残差同步回 UI 样本列表。
+        /// </summary>
         public static void ApplyDiagnostics(
             IList<CalibrationSampleRow> samples,
             Core.CalibrationResult result)
@@ -511,9 +533,8 @@ namespace NinePointRotationCalibration.WinForms.Adapters
             }
             if (region.Kind == Core.RegionKind.Rectangle1 || region.Kind == Core.RegionKind.Rectangle2)
             {
-                // HALCON Length1/Length2 are the horizontal/vertical half
-                // extents at Phi=0. Only the visual angle direction differs
-                // from the canvas because image rows increase downwards.
+                // HALCON Length1/Length2 对应 Phi=0 时的水平/垂直半长；
+                // 由于图像行坐标向下递增，画布角度方向与 HALCON Phi 相反，因此角度需取反。
                 return new RotatedRectangle(
                     region.CenterRow,
                     region.CenterColumn,
@@ -539,6 +560,7 @@ namespace NinePointRotationCalibration.WinForms.Adapters
                 Kind = Core.RegionKind.Rectangle2,
                 CenterRow = rectangle.CenterRow,
                 CenterColumn = rectangle.CenterColumn,
+                // 画布顺时针为正，转回 HALCON 数学逆时针 Phi 弧度需取反
                 PhiRadians = -DegreesToRadians(rectangle.AngleDegrees),
                 Length1 = rectangle.HalfWidth,
                 Length2 = rectangle.HalfHeight

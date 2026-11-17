@@ -6,6 +6,9 @@ using NinePointRotationCalibration.WinForms.Geometry;
 
 namespace NinePointRotationCalibration.WinForms.Models
 {
+    /// <summary>
+    /// 模板编辑器中的示教建模与运行匹配参数配置。
+    /// </summary>
     [Serializable]
     public sealed class TemplateEditorParameters
     {
@@ -113,6 +116,7 @@ namespace NinePointRotationCalibration.WinForms.Models
         [OnDeserialized]
         private void OnDeserialized(StreamingContext context)
         {
+            // 兼容旧版序列化数据：未拆分匹配参数时回退沿用示教金字塔层数与角度范围
             if (_hasSeparateMatchParameters) return;
             MatchNumLevels = NumLevels;
             MatchAngleStartDegrees = AngleStartDegrees;
@@ -120,12 +124,18 @@ namespace NinePointRotationCalibration.WinForms.Models
             _hasSeparateMatchParameters = true;
         }
 
+        /// <summary>
+        /// 创建参数配置的副本。
+        /// </summary>
         public TemplateEditorParameters DeepClone()
         {
             return (TemplateEditorParameters)MemberwiseClone();
         }
     }
 
+    /// <summary>
+    /// 模板编辑器的完整状态，包含各 ROI、基准中心、掩膜笔画、参数及 HALCON 模型数据。
+    /// </summary>
     [Serializable]
     public sealed class TemplateEditorState
     {
@@ -148,6 +158,9 @@ namespace NinePointRotationCalibration.WinForms.Models
 
         public RotatedRectangle DetectionRoi { get; set; }
 
+        /// <summary>
+        /// 上位机使用的定位基准中心，可独立于 HALCON 模型域中心进行平移。
+        /// </summary>
         public ImageCoordinate ReferenceAnchor { get; set; }
 
         public bool AnchorLocked { get; set; }
@@ -188,6 +201,9 @@ namespace NinePointRotationCalibration.WinForms.Models
 
         public long Revision { get; set; }
 
+        /// <summary>
+        /// 模板结构或参数已修改、需要重新创建模型时为 true。
+        /// </summary>
         public bool ModelDirty { get; set; }
 
         public bool HasModel
@@ -195,6 +211,9 @@ namespace NinePointRotationCalibration.WinForms.Models
             get { return ModelData != null && ModelData.Length > 0; }
         }
 
+        /// <summary>
+        /// 创建模板编辑器状态的深拷贝。
+        /// </summary>
         public TemplateEditorState DeepClone()
         {
             TemplateEditorState clone = new TemplateEditorState
@@ -234,6 +253,9 @@ namespace NinePointRotationCalibration.WinForms.Models
         }
     }
 
+    /// <summary>
+    /// 模板编辑相关后台操作的通用返回结果基类。
+    /// </summary>
     public class TemplateOperationResult
     {
         public bool Success { get; set; }
@@ -242,12 +264,18 @@ namespace NinePointRotationCalibration.WinForms.Models
 
         public Exception Exception { get; set; }
 
+        /// <summary>
+        /// 构造失败状态的操作结果。
+        /// </summary>
         public static TemplateOperationResult Failed(string message, Exception exception = null)
         {
             return new TemplateOperationResult { Success = false, Message = message, Exception = exception };
         }
     }
 
+    /// <summary>
+    /// 特征提取操作返回结果，包含预览特征点、轮廓及推荐参数。
+    /// </summary>
     public sealed class TemplateFeatureResult : TemplateOperationResult
     {
         public TemplateFeatureResult()
@@ -263,6 +291,9 @@ namespace NinePointRotationCalibration.WinForms.Models
         public TemplateEditorParameters RecommendedParameters { get; set; }
     }
 
+    /// <summary>
+    /// 模型创建操作返回结果，包含序列化的 HALCON 模型数据与参考元数据。
+    /// </summary>
     public sealed class TemplateBuildResult : TemplateOperationResult
     {
         public TemplateBuildResult()
@@ -291,6 +322,9 @@ namespace NinePointRotationCalibration.WinForms.Models
         public List<List<ImageCoordinate>> Contours { get; set; }
     }
 
+    /// <summary>
+    /// 模板测试匹配操作返回结果。
+    /// </summary>
     public sealed class TemplateTestResult : TemplateOperationResult
     {
         public TemplateTestResult()

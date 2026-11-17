@@ -8,8 +8,10 @@ using NinePointRotationCalibration.Station.Models;
 
 namespace NinePointRotationCalibration.Station.Services.Inspection
 {
+    /// <summary>基于 HALCON 的板件检测 ROI 解析与 Blob 斑点分析器。</summary>
     public sealed class BoardBlobAnalyzer
     {
+        /// <summary>对单块定位结果执行 Blob 分析并返回特征列表。</summary>
         public List<BlobFinding> Analyze(Bitmap source, TemplateDefinition template,
             TemplateMatchResult match, DetectionProfile profile)
         {
@@ -18,6 +20,7 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
                 return result.Findings;
         } 
 
+        /// <summary>按模板匹配位姿解析检测 ROI，并执行详细 Blob 分析（可选输出二值图）。</summary>
         public BlobAnalysisResult AnalyzeDetailed(Bitmap source, TemplateDefinition template,
             TemplateMatchResult match, DetectionProfile profile, bool includeBinary,
             CancellationToken cancellationToken)
@@ -27,6 +30,7 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
                 profile, includeBinary, cancellationToken);
         }
 
+        /// <summary>跳过模板定位，直接对整幅图像执行详细 Blob 分析。</summary>
         public BlobAnalysisResult AnalyzeDirectDetailed(Bitmap source, TemplateDefinition template,
             DetectionProfile profile, bool includeBinary, CancellationToken cancellationToken)
         {
@@ -35,6 +39,7 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
                 includeBinary, cancellationToken);
         }
 
+        /// <summary>取消时不抛异常的整图 Blob 分析，供实时调试预览使用。</summary>
         public BlobAnalysisResult AnalyzeDirectDetailedNoThrow(Bitmap source,
             TemplateDefinition template, DetectionProfile profile, bool includeBinary,
             CancellationToken cancellationToken)
@@ -45,6 +50,7 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
             return results.Count == 0 ? new BlobAnalysisResult { Roi = roi } : results[0];
         }
 
+        /// <summary>对单个指定的检测 ROI 执行 Blob 分析。</summary>
         public BlobAnalysisResult AnalyzeRoiDetailed(Bitmap source, DetectionRoi roi,
             DetectionProfile profile, bool includeBinary, CancellationToken cancellationToken)
         {
@@ -53,6 +59,7 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
             return results.Count == 0 ? new BlobAnalysisResult { Roi = roi } : results[0];
         }
 
+        /// <summary>批量分析多个检测 ROI，取消时抛出 OperationCanceledException。</summary>
         public List<BlobAnalysisResult> AnalyzeRoisDetailed(Bitmap source,
             IList<DetectionRoi> rois, DetectionProfile profile, bool includeBinary,
             CancellationToken cancellationToken)
@@ -61,6 +68,7 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
                 cancellationToken, true);
         }
 
+        /// <summary>批量分析多个检测 ROI，取消时直接返回空结果而不抛异常。</summary>
         public List<BlobAnalysisResult> AnalyzeRoisDetailedNoThrow(Bitmap source,
             IList<DetectionRoi> rois, DetectionProfile profile, bool includeBinary,
             CancellationToken cancellationToken)
@@ -70,8 +78,7 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
         }
 
         /// <summary>
-        /// Production path: analyzes ROIs on the gray image already converted for
-        /// template matching, so the frame is converted only once per trigger.
+        /// 生产路径：直接复用模板匹配阶段已转换的灰度图分析各 ROI，保证每帧触发仅转换一次图像。
         /// </summary>
         public List<BlobAnalysisResult> AnalyzeRoisDetailed(HalconGrayImage gray,
             IList<DetectionRoi> rois, DetectionProfile profile, bool includeBinary,
@@ -166,6 +173,7 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
                 ComponentElapsedMilliseconds = source.ComponentElapsedMilliseconds,
                 ElapsedMilliseconds = source.ElapsedMilliseconds + source.ImageConversionElapsedMilliseconds
             };
+            // 将二值图所有权移交给外部结果对象，防止 finally 块释放 halconResults 时误销毁
             source.BinaryImage = null;
             if (source.HasFinding)
             {
@@ -183,6 +191,7 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
             return result;
         }
 
+        /// <summary>根据模板匹配结果与检测配置，推算当前板在图像坐标系下的检测 ROI。</summary>
         public DetectionRoi ResolveDetectionRoi(TemplateDefinition template,
             TemplateMatchResult match, DetectionProfile profile)
         {
@@ -194,6 +203,7 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
                 source = CreateReferenceImageRegion(template);
             if (source == null) return null;
             DetectionRoi transformed = TransformRegion(template, match, source);
+            // 未开启跟随旋转时，将变换后的 ROI 退化为轴对齐外接矩形
             if (transformed != null && !profile.FollowTemplateTransform)
                 transformed = ToAxisAlignedBounds(transformed);
             return transformed;
@@ -218,6 +228,7 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
             {
                 ReferenceCenterRow = center.Row,
                 ReferenceCenterColumn = center.Column,
+                // HALCON 角度在 Row 向下的图像中为逆时针正方向，GDI+ 绘制旋转角为顺时针正方向，此处取反换算
                 PhiDegrees = -(phi + deltaAngle) * 180.0 / Math.PI,
                 HalfWidth = halfWidth,
                 HalfHeight = halfHeight

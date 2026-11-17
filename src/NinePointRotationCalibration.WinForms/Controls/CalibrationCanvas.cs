@@ -11,6 +11,9 @@ using NinePointRotationCalibration.WinForms.Models;
 
 namespace NinePointRotationCalibration.WinForms.Controls
 {
+    /// <summary>
+    /// 支持图像平移缩放、旋转 ROI 编辑、基准中心微调、掩膜涂抹及结果叠加绘制的交互画布控件。
+    /// </summary>
     [DefaultEvent("RoiChanged")]
     public sealed class CalibrationCanvas : Control
     {
@@ -19,6 +22,7 @@ namespace NinePointRotationCalibration.WinForms.Controls
         private const float HandleRadius = 5.0f;
         private const float HandleHitRadius = 9.0f;
 
+        // 重叠 ROI 本体点击测试的默认前景优先级顺序
         private static readonly CanvasRoiTarget[] RoiBodyHitOrder =
         {
             CanvasRoiTarget.Template,
@@ -30,9 +34,7 @@ namespace NinePointRotationCalibration.WinForms.Controls
         private readonly Timer _zoomRenderTimer;
         private Bitmap _image;
         private Bitmap _interactivePreview;
-        // Re-sampling a multi-megapixel source on every mouse move is the main
-        // cost while editing an ROI. Reuse one high-quality scaled frame for
-        // the current zoom; panning and ROI edits then only blit this bitmap.
+        // 避免编辑 ROI 或平移时在每次鼠标移动重采样千万像素源图，按当前缩放率缓存一张降采样位图复用。
         private Bitmap _scaledImage;
         private int _scaledImageWidth;
         private int _scaledImageHeight;
@@ -248,6 +250,9 @@ namespace NinePointRotationCalibration.WinForms.Controls
             }
         }
 
+        /// <summary>
+        /// 设置当前显示图像（内部持有深拷贝）并初始化默认 ROI 与适应窗口视图。
+        /// </summary>
         public void SetImage(Bitmap image)
         {
             Bitmap replacement = image == null ? null : new Bitmap(image);
@@ -300,16 +305,25 @@ namespace NinePointRotationCalibration.WinForms.Controls
             FitImage();
         }
 
+        /// <summary>
+        /// 返回当前图像的一份独立副本。
+        /// </summary>
         public Bitmap CopyImage()
         {
             return _image == null ? null : new Bitmap(_image);
         }
 
+        /// <summary>
+        /// 清空当前图像与缩放缓存。
+        /// </summary>
         public void ClearImage()
         {
             SetImage(null);
         }
 
+        /// <summary>
+        /// 自适应缩放并居中显示整幅图像。
+        /// </summary>
         public void FitImage()
         {
             if (_image == null || ClientSize.Width <= 0 || ClientSize.Height <= 0)
@@ -333,6 +347,9 @@ namespace NinePointRotationCalibration.WinForms.Controls
             Invalidate();
         }
 
+        /// <summary>
+        /// 按 1:1 原始像素比例居中显示图像。
+        /// </summary>
         public void ShowOneToOne()
         {
             if (_image == null)
@@ -350,6 +367,9 @@ namespace NinePointRotationCalibration.WinForms.Controls
             Invalidate();
         }
 
+        /// <summary>
+        /// 替换画布中显示的掩膜笔画列表。
+        /// </summary>
         public void SetMaskStrokes(IEnumerable<MaskStroke> strokes)
         {
             _maskStrokes.Clear();
@@ -361,16 +381,25 @@ namespace NinePointRotationCalibration.WinForms.Controls
             Invalidate();
         }
 
+        /// <summary>
+        /// 获取当前画布掩膜笔画列表的深拷贝。
+        /// </summary>
         public IList<MaskStroke> GetMaskStrokes()
         {
             return _maskStrokes.Select(item => item.DeepClone()).ToList();
         }
 
+        /// <summary>
+        /// 清除运行时叠加图层（定位结果、样本点与 HUD）。
+        /// </summary>
         public void ClearRuntimeOverlay()
         {
             RuntimeOverlay = new CanvasRuntimeOverlay();
         }
 
+        /// <summary>
+        /// 将图像坐标（Row/Column）变换为控件客户区屏幕坐标。
+        /// </summary>
         public PointF ImageToClient(ImageCoordinate point)
         {
             EnsureViewInitialized();
@@ -379,6 +408,9 @@ namespace NinePointRotationCalibration.WinForms.Controls
                 (float)(_offsetY + (point.Row * _zoom)));
         }
 
+        /// <summary>
+        /// 将控件客户区屏幕坐标反算为图像坐标（Row/Column）。
+        /// </summary>
         public ImageCoordinate ClientToImage(PointF point)
         {
             EnsureViewInitialized();
@@ -440,11 +472,12 @@ namespace NinePointRotationCalibration.WinForms.Controls
 
             if (!_viewInitialized)
             {
-                // Avoid raising ViewChanged/Invalidate while already painting.
+                // 绘制阶段直接初始化视图参数，避免在 OnPaint 内触发 ViewChanged 或重入 Invalidate。
                 EnsureViewInitialized();
             }
 
             DrawImageLayer(graphics);
+            // 交互拖拽或快速滚轮缩放期间跳过静态特征点叠加，保证实时帧率
             if (!interactive)
             {
                 DrawOverlayLayer(graphics, _editorOverlay, false);
@@ -472,6 +505,7 @@ namespace NinePointRotationCalibration.WinForms.Controls
             }
 
             Focus();
+            // 以鼠标指针所在的图像像素为锚点缩放，并启用 120ms 防抖延迟恢复高质量渲染
             ImageCoordinate anchor = ClientToImage(eventArgs.Location);
             double factor = eventArgs.Delta > 0 ? 1.15 : (1.0 / 1.15);
             double nextZoom = Clamp(_zoom * factor, MinimumZoom, MaximumZoom);
@@ -798,10 +832,8 @@ namespace NinePointRotationCalibration.WinForms.Controls
                 graphics.CompositingMode = CompositingMode.SourceCopy;
                 graphics.InterpolationMode = InterpolationMode.NearestNeighbor;
                 graphics.PixelOffsetMode = PixelOffsetMode.Half;
-                // Preserve the exact floating-point viewport transform. The
-                // cache dimensions are rounded to whole pixels, so blitting it
-                // unscaled at an integer origin would let ROI/point overlays
-                // drift by up to a pixel from the underlying image.
+                // 保持精确的浮点视口变换：缩放缓存尺寸经过整数取整，若按整数原点直接贴图，
+                // ROI 与特征点叠加会相对底层图像偏移最多 1 个像素。
                 graphics.DrawImage(
                     displayImage,
                     destination,
@@ -825,8 +857,7 @@ namespace NinePointRotationCalibration.WinForms.Controls
             int width = Math.Max(1, (int)Math.Round(_image.Width * _zoom));
             int height = Math.Max(1, (int)Math.Round(_image.Height * _zoom));
 
-            // At (or above) native resolution a cache consumes as much memory as
-            // the source and gives no useful speed-up. GDI's direct path is fast.
+            // 放大或 1:1 显示时由 GDI 直接绘制原图，避免缓存占用与源图相当的内存。
             if (_zoom >= 1.0 || width >= _image.Width || height >= _image.Height)
             {
                 InvalidateImageCache();
@@ -874,6 +905,7 @@ namespace NinePointRotationCalibration.WinForms.Controls
                 return null;
             }
 
+            // 为超大图像预生成最长边不超过 1600px 的快速预览帧，保证滚轮连续缩放流畅
             const int maximumDimension = 1600;
             int previewWidth = source.Width;
             int previewHeight = source.Height;
@@ -942,6 +974,7 @@ namespace NinePointRotationCalibration.WinForms.Controls
             GraphicsState state = graphics.Save();
             try
             {
+                // 仅在模板 ROI 多边形区域内裁剪并显示掩膜笔画
                 PointF[] clipPoints = _templateRoi.GetCorners().Select(ImageToClient).ToArray();
                 using (GraphicsPath path = new GraphicsPath())
                 {
@@ -1387,6 +1420,7 @@ namespace NinePointRotationCalibration.WinForms.Controls
                 return;
             }
 
+            // 将当前指针映射回拖拽初值 ROI 的局部坐标系，保持对侧边固定后再反算新中心
             PointF local = _dragStartRoi.ImageToLocal(current);
             double halfWidth = _dragStartRoi.HalfWidth;
             double halfHeight = _dragStartRoi.HalfHeight;
@@ -1443,6 +1477,7 @@ namespace NinePointRotationCalibration.WinForms.Controls
                 return;
             }
 
+            // 按指针相对 ROI 中心的方位角增量旋转，保证拖拽手感连续无跳变
             double currentPointerAngleDegrees = GetPointerAngleDegrees(_dragStartRoi, current);
             double pointerDeltaDegrees = RotatedRectangle.NormalizeAngle(
                 currentPointerAngleDegrees - _dragStartPointerAngleDegrees);
@@ -1496,6 +1531,7 @@ namespace NinePointRotationCalibration.WinForms.Controls
             if (!_transactionChanged)
             {
                 _activeStroke = null;
+                // 在 ROI 本体上原地单击（未产生拖拽位移）时，在重叠 ROI 间循环切换选中目标
                 if ((operation == DragOperation.MoveRoi || operation == DragOperation.SelectRoi) &&
                     _activeHandle.Kind == RoiHandleKind.Body &&
                     _lastScreen == _dragStartScreen)
@@ -1564,6 +1600,7 @@ namespace NinePointRotationCalibration.WinForms.Controls
         {
             ImageCoordinate imagePoint = ClientToImage(location);
             RotatedRectangle selected = null;
+            // 优先检测当前已选中 ROI 的缩放/旋转控制柄及其内部区域，避免被覆盖 ROI 抢占焦点
             if (_selectedRoi != CanvasRoiTarget.None)
             {
                 selected = GetRoi(_selectedRoi);
@@ -1758,6 +1795,7 @@ namespace NinePointRotationCalibration.WinForms.Controls
                 return;
             }
 
+            // 根据旋转后的轴对齐外接框将 ROI 限制在图像边界内；若外接框宽/高超过图像则自动居中
             RectangleF bounds = roi.GetAxisAlignedBounds();
             double maximumRow = Math.Max(0.0, _image.Height - 1.0);
             double maximumColumn = Math.Max(0.0, _image.Width - 1.0);

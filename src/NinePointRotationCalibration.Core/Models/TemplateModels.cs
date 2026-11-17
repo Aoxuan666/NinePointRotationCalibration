@@ -5,12 +5,14 @@ using System.Security.Cryptography;
 
 namespace NinePointRotationCalibration
 {
+    /// <summary>形状模板建模时的特征提取方式。</summary>
     public enum ShapeFeatureExtractionMode
     {
         LegacyImageDomain = 0,
         EdgeContours = 1
     }
 
+    /// <summary>边缘轮廓提取与采样设置。</summary>
     [Serializable]
     public sealed class ShapeFeatureExtractionSettings
     {
@@ -52,6 +54,7 @@ namespace NinePointRotationCalibration
         }
     }
 
+    /// <summary>图像几何区域定义，支持矩形、旋转矩形、圆、多边形与自由手绘区域。</summary>
     [Serializable]
     public sealed class RegionDefinition
     {
@@ -77,6 +80,7 @@ namespace NinePointRotationCalibration
         }
     }
 
+    /// <summary>模板掩膜图形条目（包含保留或排除操作及对应区域）。</summary>
     [Serializable]
     public sealed class TemplateMaskShape
     {
@@ -98,6 +102,7 @@ namespace NinePointRotationCalibration
         }
     }
 
+    /// <summary>模板局部擦除或恢复笔刷轨迹。</summary>
     [Serializable]
     public sealed class TemplateEraseStroke
     {
@@ -108,10 +113,7 @@ namespace NinePointRotationCalibration
             Points = new List<ImagePoint>();
         }
 
-        /// <summary>
-        /// Exclude erases pixels from the effective domain; Include restores them.
-        /// Strokes are applied in list order.
-        /// </summary>
+        /// <summary>Exclude 从有效区域中擦除像素，Include 恢复像素；所有笔刷按列表顺序依次应用。</summary>
         public MaskOperation Operation { get; set; }
         public double Radius { get; set; }
         public List<ImagePoint> Points { get; set; }
@@ -127,6 +129,7 @@ namespace NinePointRotationCalibration
         }
     }
 
+    /// <summary>HALCON 形状模板创建参数。</summary>
     [Serializable]
     public sealed class ShapeModelParameters
     {
@@ -163,6 +166,7 @@ namespace NinePointRotationCalibration
         }
     }
 
+    /// <summary>HALCON 归一化互相关（NCC）模板创建参数。</summary>
     [Serializable]
     public sealed class NccModelParameters
     {
@@ -184,13 +188,13 @@ namespace NinePointRotationCalibration
         public NccModelParameters DeepClone() { return (NccModelParameters)MemberwiseClone(); }
     }
 
+    /// <summary>运行时模板匹配搜索参数。</summary>
     [Serializable]
     public sealed class MatchParameters
     {
         public MatchParameters()
         {
-            // Keep the runtime search window narrow so normal board rotation does
-            // not turn template matching into an unnecessarily expensive scan.
+            // 保持运行时搜索角度窗口较窄，避免正常板件偏转引发过大的全角度搜索耗时。
             AngleStartRad = -5.0 * Math.PI / 180.0;
             AngleExtentRad = 10.0 * Math.PI / 180.0;
             MinScore = 0.5;
@@ -217,6 +221,7 @@ namespace NinePointRotationCalibration
         public MatchParameters DeepClone() { return (MatchParameters)MemberwiseClone(); }
     }
 
+    /// <summary>模板完整定义，包含 ROI、掩膜笔刷、模型参数、序列化模型字节及版本脏标记。</summary>
     [Serializable]
     public sealed class TemplateDefinition
     {
@@ -243,6 +248,7 @@ namespace NinePointRotationCalibration
         public ShapeModelParameters ShapeParameters { get; set; }
         public NccModelParameters NccParameters { get; set; }
         public MatchParameters MatchParameters { get; set; }
+        /// <summary>用户指定的模板参考锚点像素坐标，匹配结果将折算到该锚点。</summary>
         public ImagePoint ReferenceAnchor { get; set; }
         public bool IsReferenceAnchorLocked { get; set; }
         public bool IsMaskInverted { get; set; }
@@ -256,12 +262,14 @@ namespace NinePointRotationCalibration
         public long Revision { get; set; }
         public bool IsModelDirty { get; set; }
 
+        /// <summary>递增模板修订号，并按需将模型标记为待重建。</summary>
         public void MarkChanged(bool requiresModelRebuild = true)
         {
             Revision = Revision < 1 ? 1 : Revision + 1;
             if (requiresModelRebuild) IsModelDirty = true;
         }
 
+        /// <summary>写入序列化模型数据、计算 SHA-256 哈希并清除脏标记。</summary>
         public void SetModelData(byte[] modelData, string halconVersion = null)
         {
             ModelData = modelData == null ? null : (byte[])modelData.Clone();
@@ -270,11 +278,13 @@ namespace NinePointRotationCalibration
             IsModelDirty = ModelData == null || ModelData.Length == 0;
         }
 
+        /// <summary>指示模板是否已构建有效且未过期的二进制模型。</summary>
         public bool HasUsableModel
         {
             get { return !IsModelDirty && ModelData != null && ModelData.Length > 0; }
         }
 
+        /// <summary>计算二进制模型数据的小写 SHA-256 十六进制摘要。</summary>
         public static string ComputeModelHash(byte[] data)
         {
             if (data == null || data.Length == 0) return null;
@@ -285,6 +295,7 @@ namespace NinePointRotationCalibration
             }
         }
 
+        /// <summary>创建模板定义的深拷贝。</summary>
         public TemplateDefinition DeepClone()
         {
             TemplateDefinition clone = (TemplateDefinition)MemberwiseClone();

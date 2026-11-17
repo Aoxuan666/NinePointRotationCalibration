@@ -8,8 +8,8 @@ using HalconDotNet;
 namespace NinePointRotationCalibration.Halcon
 {
     /// <summary>
-    /// Uses ordered, filtered XLD edge contours for newly-created shape templates.
-    /// Existing image-domain shape templates and NCC templates retain the legacy engine behavior.
+    /// 使用有序、过滤后的 XLD 边缘轮廓构建新形状模板；
+    /// 既有图像域形状模板与 NCC 模板仍委托给传统引擎保持兼容。
     /// </summary>
     public sealed class XldTemplateMatchingEngine : ITemplateMatchingEngine, IGrayImageTemplateMatchingEngine
     {
@@ -17,6 +17,7 @@ namespace NinePointRotationCalibration.Halcon
         private readonly HalconTemplateEngine _legacyEngine = new HalconTemplateEngine();
         private bool _disposed;
 
+        /// <summary>根据特征提取模式构建 XLD 轮廓模板或回退到传统图像域模板。</summary>
         public TemplateBuildResult BuildTemplate(Bitmap referenceImage, TemplateDefinition definition)
         {
             ThrowIfDisposed();
@@ -43,24 +44,28 @@ namespace NinePointRotationCalibration.Halcon
             return BuildXldShapeTemplate(referenceImage, definition);
         }
 
+        /// <summary>在图像中定位得分最高的单个模板匹配目标。</summary>
         public TemplateMatchResult Locate(Bitmap image, TemplateDefinition definition, bool includeContour = true)
         {
             ThrowIfDisposed();
             return _legacyEngine.Locate(image, definition, includeContour);
         }
 
+        /// <summary>在 Bitmap 图像中定位所有满足条件的匹配目标。</summary>
         public TemplateMatchCollectionResult LocateAll(Bitmap image, TemplateDefinition definition, bool includeContour = true)
         {
             ThrowIfDisposed();
             return _legacyEngine.LocateAll(image, definition, includeContour);
         }
 
+        /// <summary>复用已转换的 HALCON 灰度图定位所有满足条件的匹配目标。</summary>
         public TemplateMatchCollectionResult LocateAll(HalconGrayImage image, TemplateDefinition definition, bool includeContour = true)
         {
             ThrowIfDisposed();
             return _legacyEngine.LocateAll(image, definition, includeContour);
         }
 
+        /// <summary>生成模板有效区域的质心、面积与边界轮廓预览。</summary>
         public TemplateRegionPreviewResult PreviewEffectiveRegion(
             TemplateDefinition definition,
             int imageWidth,
@@ -70,12 +75,14 @@ namespace NinePointRotationCalibration.Halcon
             return _legacyEngine.PreviewEffectiveRegion(definition, imageWidth, imageHeight);
         }
 
+        /// <summary>清除底层引擎缓存的 HALCON 模板句柄。</summary>
         public void ClearCache()
         {
             ThrowIfDisposed();
             _legacyEngine.ClearCache();
         }
 
+        /// <summary>释放引擎持有的 HALCON 模型资源。</summary>
         public void Dispose()
         {
             if (_disposed) return;
@@ -141,10 +148,8 @@ namespace NinePointRotationCalibration.Halcon
                     output.ReferenceImageWidth = referenceImage.Width;
                     output.ReferenceImageHeight = referenceImage.Height;
                     output.DomainCenter = new ImagePoint(domainRow, domainColumn);
-                    // The model pose must use the user-defined ROI center.
-                    // The effective-domain centroid changes when a rotated
-                    // ROI is clipped or contains mask holes, which otherwise
-                    // makes the feature overlay drift away from the ROI.
+                    // 模型参考中心必须固定为用户定义的 ROI 中心；
+                    // 旋转 ROI 被图像边缘裁剪或存在掩膜挖孔时，有效域质心会发生偏移，导致特征预览漂移。
                     ImagePoint templateCenter = new ImagePoint(
                         output.TemplateRoi.CenterRow,
                         output.TemplateRoi.CenterColumn);
@@ -185,11 +190,7 @@ namespace NinePointRotationCalibration.Halcon
                             sampledContours.Count),
                         Template = output,
                         EffectiveArea = effectiveArea,
-                        // Keep the exact sampled image-space points for the
-                        // editor preview. GetShapeModelContours() returns
-                        // model-space contours after HALCON has applied the
-                        // shape-model origin, so using those contours here can
-                        // make the visible features drift from the ROI.
+                        // 编辑器预览保留图像坐标下的原始采样点；GetShapeModelContours() 返回的是应用模型原点后的局部坐标，直接显示会偏移。
                         ContourSegments = sampledContours
                     }, stopwatch);
                 }
@@ -269,6 +270,7 @@ namespace NinePointRotationCalibration.Halcon
 
             double defaultOriginRow = (minRow + maxRow) * 0.5;
             double defaultOriginColumn = (minColumn + maxColumn) * 0.5;
+            // CreateShapeModelXld 默认以轮廓外接框中心为原点，此处偏移使其对齐到模板 ROI 中心。
             model.SetShapeModelOrigin(
                 targetRow - defaultOriginRow,
                 targetColumn - defaultOriginColumn);
@@ -396,8 +398,10 @@ namespace NinePointRotationCalibration.Halcon
         }
     }
 
+    /// <summary>从有效模板区域提取、筛选并按比例抽样有序 XLD 边缘轮廓。</summary>
     internal static class XldFeatureExtractor
     {
+        /// <summary>使用 Canny 亚像素边缘提取并对轮廓进行长度过滤、评分排序与比例抽样。</summary>
         public static List<List<ImagePoint>> Extract(
             HImage reducedImage,
             ShapeFeatureExtractionSettings settings,
@@ -407,6 +411,7 @@ namespace NinePointRotationCalibration.Halcon
             if (settings == null) throw new ArgumentNullException(nameof(settings));
             if (templateRoi == null) throw new ArgumentNullException(nameof(templateRoi));
 
+            // 通过 Canny 亚像素边缘提取并剔除过短碎段，再按长度与局部覆盖面积综合评分降序筛选。
             double contourSelectionLength = Math.Max(
                 settings.MinimumContourLengthPixels,
                 Math.Max(6.0, settings.PointSpacingPixels * 1.5));
@@ -471,10 +476,8 @@ namespace NinePointRotationCalibration.Halcon
                     }
                 }
 
-                // HALCON's reduced domain normally clips the contour already.
-                // Keep one ordered candidate when a few samples lie just outside
-                // the ROI; splitting at every boundary point can discard the
-                // board edge in exactly the cases this extractor is meant to keep.
+                // HALCON 的缩减定义域通常已裁剪掉外部边缘；
+                // 当少数采样点略超出 ROI 时仍保留整条有序候选轮廓，避免在边界处切碎导致板边丢失。
                 if (inside.Count >= 2)
                 {
                     yield return inside;
@@ -484,6 +487,7 @@ namespace NinePointRotationCalibration.Halcon
 
         private static bool IsInsideRoi(ImagePoint point, RegionDefinition roi)
         {
+            // 转换到 ROI 局部坐标系（PhiRadians 为 HALCON 逆时针弧度角）判断点是否落在容差范围内。
             double deltaRow = point.Row - roi.CenterRow;
             double deltaColumn = point.Column - roi.CenterColumn;
             double cosine = Math.Cos(roi.PhiRadians);
@@ -545,6 +549,7 @@ namespace NinePointRotationCalibration.Halcon
             return source;
         }
 
+        /// <summary>将有序点段集合拼接构造为单个 HALCON HXLDCont 多对象容器。</summary>
         public static HXLDCont CreateXld(IList<List<ImagePoint>> segments)
         {
             HXLDCont combined = null;
@@ -587,6 +592,7 @@ namespace NinePointRotationCalibration.Halcon
             }
         }
 
+        /// <summary>按最小点距与最大点数上限对单条有序轮廓进行等距重采样。</summary>
         internal static List<ImagePoint> ResampleOrderedContour(
             IList<ImagePoint> points,
             double spacing,
@@ -734,6 +740,7 @@ namespace NinePointRotationCalibration.Halcon
         }
     }
 
+    /// <summary>XLD 特征提取或轮廓过滤失败异常。</summary>
     internal sealed class XldFeatureExtractionException : InvalidOperationException
     {
         public XldFeatureExtractionException(string message)

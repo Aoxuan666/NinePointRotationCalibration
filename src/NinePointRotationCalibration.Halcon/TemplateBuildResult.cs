@@ -3,6 +3,7 @@ using System.Collections.Generic;
 
 namespace NinePointRotationCalibration.Halcon
 {
+    /// <summary>模板创建结果，包含生成的模板定义、有效面积和参考轮廓。</summary>
     [Serializable]
     public sealed class TemplateBuildResult
     {
@@ -19,6 +20,7 @@ namespace NinePointRotationCalibration.Halcon
         public List<List<ImagePoint>> ContourSegments { get; set; }
         public double ElapsedMilliseconds { get; set; }
 
+        /// <summary>创建模板构建失败结果。</summary>
         public static TemplateBuildResult Failure(CalibrationErrorCode code, string message)
         {
             return new TemplateBuildResult
@@ -30,6 +32,7 @@ namespace NinePointRotationCalibration.Halcon
         }
     }
 
+    /// <summary>模板有效区域（ROI 应用掩膜和擦除笔迹后）的预览结果。</summary>
     [Serializable]
     public sealed class TemplateRegionPreviewResult
     {
@@ -46,6 +49,7 @@ namespace NinePointRotationCalibration.Halcon
         public List<List<ImagePoint>> ContourSegments { get; set; }
     }
 
+    /// <summary>多目标模板匹配结果集合。</summary>
     [Serializable]
     public sealed class TemplateMatchCollectionResult
     {
@@ -60,6 +64,7 @@ namespace NinePointRotationCalibration.Halcon
         public List<TemplateMatchResult> Matches { get; set; }
         public double ElapsedMilliseconds { get; set; }
 
+        /// <summary>创建模板匹配失败结果。</summary>
         public static TemplateMatchCollectionResult Failure(CalibrationErrorCode code, string message)
         {
             return new TemplateMatchCollectionResult

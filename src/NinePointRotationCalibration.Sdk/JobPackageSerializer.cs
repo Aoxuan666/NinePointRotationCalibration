@@ -7,13 +7,14 @@ using System.Text;
 namespace NinePointRotationCalibration
 {
     /// <summary>
-    /// Stores readable job metadata and the HALCON model as separate entries in one package.
+    /// 将可读的 Job 元数据（job.json）与 HALCON 二进制模型（model.bin）打包保存到同一 ZIP 文件，并在加载时校验完整性。
     /// </summary>
     public static class JobPackageSerializer
     {
         private const string JobEntryName = "job.json";
         private const string ModelEntryName = "model.bin";
 
+        /// <summary>将 Job 元数据与 HALCON 模型二进制打包保存为标定文件；失败时抛出异常。</summary>
         public static void Save(string path, CalibrationJob job)
         {
             if (string.IsNullOrWhiteSpace(path)) throw new ArgumentException("保存路径为空。", "path");
@@ -38,6 +39,7 @@ namespace NinePointRotationCalibration
 
                 if (hasModelData)
                 {
+                    // 保存前计算并核对模型数据的 SHA-256 哈希，确保元数据与二进制一致。
                     string actualHash = TemplateDefinition.ComputeModelHash(modelData);
                     if (!string.IsNullOrWhiteSpace(metadata.Template.ModelHash) &&
                         !string.Equals(metadata.Template.ModelHash, actualHash, StringComparison.OrdinalIgnoreCase))
@@ -46,7 +48,7 @@ namespace NinePointRotationCalibration
                         metadata.Template.ModelHash = actualHash;
                 }
 
-                // The binary is stored in model.bin; never duplicate it in JSON.
+                // 模型二进制单独写入 model.bin，避免在 job.json 中重复存储。
                 metadata.Template.ModelData = null;
             }
 
@@ -73,6 +75,7 @@ namespace NinePointRotationCalibration
 
                 if (File.Exists(fullPath))
                 {
+                    // 先写临时包再原子替换目标文件，防止保存中断损坏已有 Job 文件。
                     string backupPath = fullPath + ".bak";
                     File.Replace(tempPath, fullPath, backupPath, true);
                     try { File.Delete(backupPath); } catch { }
@@ -88,6 +91,7 @@ namespace NinePointRotationCalibration
             }
         }
 
+        /// <summary>从标定文件包加载 Job 并校验模型 SHA-256 哈希；失败时抛出异常。</summary>
         public static CalibrationJob Load(string path)
         {
             if (string.IsNullOrWhiteSpace(path)) throw new ArgumentException("加载路径为空。", "path");
@@ -134,6 +138,7 @@ namespace NinePointRotationCalibration
                     bool hadTemplateMetadata = job.Template != null;
                     if (job.Template == null) job.Template = new TemplateDefinition();
                     string expectedHash = job.Template.ModelHash;
+                    // 校验 model.bin 的实际 SHA-256 哈希是否与 job.json 中声明一致。
                     string actualHash = TemplateDefinition.ComputeModelHash(modelData);
                     if (string.IsNullOrWhiteSpace(expectedHash))
                         throw new InvalidDataException("Job 元数据缺少 HALCON 模型哈希，无法验证 model.bin 完整性。 ");
@@ -143,9 +148,7 @@ namespace NinePointRotationCalibration
                     string halconVersion = job.Template.HalconVersion;
                     bool metadataWasDirty = hadTemplateMetadata && job.Template.IsModelDirty;
                     job.Template.SetModelData(modelData, halconVersion);
-                    // SetModelData marks a template clean. Preserve an explicit
-                    // dirty flag when the package intentionally carries an old
-                    // model alongside changed settings.
+                    // SetModelData 默认会清除脏标记；若包内特意携带了变更后的参数与旧模型，需保留原 IsModelDirty 状态。
                     if (metadataWasDirty) job.Template.IsModelDirty = true;
                 }
 
@@ -154,6 +157,7 @@ namespace NinePointRotationCalibration
             }
         }
 
+        /// <summary>尝试保存 Job 到指定路径，并以结构化结果返回成功或失败信息。</summary>
         public static JobPersistenceResult TrySave(string path, CalibrationJob job)
         {
             try
@@ -180,6 +184,7 @@ namespace NinePointRotationCalibration
             }
         }
 
+        /// <summary>尝试从指定路径加载并校验 Job，并以结构化结果返回状态。</summary>
         public static JobPersistenceResult TryLoad(string path)
         {
             try

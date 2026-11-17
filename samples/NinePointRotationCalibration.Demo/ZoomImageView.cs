@@ -6,6 +6,7 @@ using System.Windows.Forms;
 
 namespace NinePointRotationCalibration.Demo
 {
+    /// <summary>支持滚轮缩放、自适应窗口及匹配结果叠加绘制的图像浏览控件。</summary>
     internal sealed class ZoomImageView : ScrollableControl
     {
         private const int ImageMargin = 24;
@@ -40,6 +41,7 @@ namespace NinePointRotationCalibration.Demo
             get { return _fitToWindow; }
         }
 
+        /// <summary>设置待显示图像并重置为适应窗口显示。</summary>
         public void SetImage(Bitmap image)
         {
             _image = image;
@@ -47,6 +49,7 @@ namespace NinePointRotationCalibration.Demo
             FitToWindow();
         }
 
+        /// <summary>设置或清除当前模板匹配结果的叠加层。</summary>
         public void SetMatch(TemplateMatchResult match)
         {
             _match = match == null ? null : match.DeepClone();
@@ -172,6 +175,7 @@ namespace NinePointRotationCalibration.Demo
         {
             if (_match == null || !_match.Success) return;
 
+            // 绘制绿色模板轮廓、黄色十字锚点及坐标/角度/匹配分数提示框
             graphics.SmoothingMode = SmoothingMode.AntiAlias;
             using (Pen contourPen = new Pen(Color.FromArgb(80, 230, 135), 1.5f))
             using (Pen markerPen = new Pen(Color.FromArgb(255, 205, 55), 2.0f))

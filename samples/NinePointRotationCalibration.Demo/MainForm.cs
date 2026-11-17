@@ -10,6 +10,7 @@ using NinePointRotationCalibration;
 
 namespace NinePointRotationCalibration.Demo
 {
+    /// <summary>九点加旋转标定 SDK 上位机演示主窗体。</summary>
     internal sealed class MainForm : Form
     {
         private readonly NinePointRotationCalibrationSdk _sdk = new NinePointRotationCalibrationSdk();
@@ -236,8 +237,7 @@ namespace NinePointRotationCalibration.Demo
                 return;
             }
 
-            // DPI scaling is complete by Shown. Clamp the scaled minimum and
-            // requested size together so the result panel remains reachable.
+            // Shown 时 DPI 缩放已完成，将缩放后的最小尺寸与窗口边界一并限制在屏幕工作区内，保证底部结果面板可见
             MinimumSize = new Size(
                 Math.Max(1, Math.Min(MinimumSize.Width, workingArea.Width)),
                 Math.Max(1, Math.Min(MinimumSize.Height, workingArea.Height)));
@@ -382,6 +382,7 @@ namespace NinePointRotationCalibration.Demo
             }
         }
 
+        // 打开 SDK 完整配置向导并同步更新当前 Job
         private void OpenFullSetup(object sender, EventArgs eventArgs)
         {
             if (!EnsureImage()) return;
@@ -431,6 +432,7 @@ namespace NinePointRotationCalibration.Demo
                 result.Score), false);
         }
 
+        // 调用 SDK 采集并追加平移或旋转标定样本
         private async void CaptureSample(object sender, EventArgs eventArgs)
         {
             if (!EnsureReadyForMatching()) return;
@@ -552,6 +554,7 @@ namespace NinePointRotationCalibration.Demo
             }
         }
 
+        // 后台执行耗时 SDK 操作并统一维护忙状态、进度条与按钮禁用态
         private async Task<T> RunBusyAsync<T>(string message, Func<T> operation) where T : class
         {
             _busy = true;
@@ -831,6 +834,7 @@ namespace NinePointRotationCalibration.Demo
 
         private static Bitmap LoadBitmapWithoutLock(string path)
         {
+            // 通过流读取并转换为独立 24bpp 位图，避免 Image.FromFile 长期占用源文件句柄
             using (FileStream stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
             using (Image source = Image.FromStream(stream, true, true))
             {

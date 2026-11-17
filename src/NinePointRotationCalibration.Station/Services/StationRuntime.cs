@@ -250,6 +250,7 @@ namespace NinePointRotationCalibration.Station.Services
             return _camera.EnumerateAsync(cancellationToken);
         }
 
+        /// <summary>断开预览并连接指定相机，下发采集参数后启动实时预览循环。</summary>
         public async Task ConnectCameraAsync(string deviceId, CancellationToken cancellationToken)
         {
             EnsureCameraEnabled();
@@ -264,8 +265,7 @@ namespace NinePointRotationCalibration.Station.Services
                 Features = ParseCameraFeatures(options.CameraFeatures),
                 TriggerMode = options.CameraTriggerMode
             }, cancellationToken).ConfigureAwait(false);
-            // Start the acquisition loop for both startup auto-connect and manual
-            // camera switching. Single captures do not start this loop themselves.
+            // 启动自动连接与手动切换后的预览取图循环（单次拍照本身不会开启该循环）
             _camera.StartPreview();
             OnStateChanged("camera", true, _camera.ProviderName + " / " + _camera.ConnectedDeviceId);
         }
@@ -295,6 +295,7 @@ namespace NinePointRotationCalibration.Station.Services
             return _camera.GetParametersAsync(cancellationToken);
         }
 
+        /// <summary>向相机下发采集参数，并将最新参数快照保存至配置文件。</summary>
         public async Task SetCameraParametersAsync(CameraParameterSet parameters, CancellationToken cancellationToken)
         {
             EnsureCameraEnabled();
@@ -408,6 +409,7 @@ namespace NinePointRotationCalibration.Station.Services
                 cancellationToken);
         }
 
+        /// <summary>在独占工作流下打开标定模板编辑器；更新模板后会自动清空旧标定采样。</summary>
         public TemplateSetupResult EditCalibrationTemplate(Bitmap referenceImage, IWin32Window owner)
         {
             ThrowIfDisposed();
@@ -439,6 +441,7 @@ namespace NinePointRotationCalibration.Station.Services
             }
         }
 
+        /// <summary>在独占工作流下打开 PCB 定位模板编辑器并保存定位模板。</summary>
         public TemplateSetupResult EditPositioningTemplate(Bitmap referenceImage, IWin32Window owner)
         {
             ThrowIfDisposed();
@@ -465,6 +468,7 @@ namespace NinePointRotationCalibration.Station.Services
             }
         }
 
+        /// <summary>从文件加载标定 Job 并立即重新计算标定结果。</summary>
         public JobPersistenceResult LoadCalibrationJob(string path)
         {
             ThrowIfDisposed();
@@ -496,6 +500,7 @@ namespace NinePointRotationCalibration.Station.Services
             }
         }
 
+        /// <summary>从文件加载定位 Job，并在必要时兼容迁移旧版检测 ROI 配置。</summary>
         public JobPersistenceResult LoadPositioningJob(string path)
         {
             ThrowIfDisposed();
@@ -600,6 +605,7 @@ namespace NinePointRotationCalibration.Station.Services
                 cancellationToken);
         }
 
+        /// <summary>切换相机或标定功能开关并持久化；关闭相机时立即断开，开启且已启动时自动重连。</summary>
         public async Task ApplyEnablementAsync(
             bool cameraEnabled,
             bool calibrationEnabled,
@@ -683,6 +689,7 @@ namespace NinePointRotationCalibration.Station.Services
             SaveDetectionProfile(copy);
         }
 
+        /// <summary>校验并保存工作站配置（相机/标定开关变更须通过 ApplyEnablementAsync 执行）。</summary>
         public void UpdateOptions(StationOptions options)
         {
             if (options == null) throw new ArgumentNullException(nameof(options));
@@ -759,8 +766,8 @@ namespace NinePointRotationCalibration.Station.Services
         }
 
         /// <summary>
-        /// Records a messageId for duplicate detection. The window is a bounded FIFO:
-        /// only the oldest ids are evicted, so duplicate detection never lapses all at once.
+        /// 记录已处理的 messageId 以实现去重。使用定长 FIFO 窗口仅淘汰最早的消息 ID，
+        /// 避免整批清空导致防重出现空窗期。
         /// </summary>
         private bool RememberMessage(string messageId)
         {
@@ -921,9 +928,7 @@ namespace NinePointRotationCalibration.Station.Services
                         false).ConfigureAwait(false);
                     return;
                 }
-                // The response is sent as soon as the vision result exists; frame
-                // display, archiving and UI result events run afterwards in the
-                // background so they never add to the host's cycle time.
+                // 视觉结果一经算出立即回传上位机；图像显示、归档和 UI 事件延后到后台线程串行执行，不占用生产 CT
                 await ExecuteInspectionAsync(
                     expected,
                     currentR,
@@ -1119,6 +1124,7 @@ namespace NinePointRotationCalibration.Station.Services
                 return false;
             }
 
+            // 校验 motion.arrived 是否来自发起 move.request 的同一 TCP 连接，忽略其他并发连接的误报
             string expectedConnectionId;
             if (!string.IsNullOrWhiteSpace(envelope.CorrelationId) &&
                 _calibrationRequestConnections.TryGetValue(
@@ -1150,6 +1156,7 @@ namespace NinePointRotationCalibration.Station.Services
                 if (string.IsNullOrWhiteSpace(connectionId))
                     throw new InvalidOperationException("No upper-computer client is connected for calibration motion.");
 
+                // 绑定本次 move.request 的 MessageId 与来源 TCP 连接，确保后续结果精确路由回原连接
                 if (!_calibrationRequestConnections.TryAdd(message.MessageId, connectionId))
                     throw new InvalidOperationException("Calibration request connection is already registered.");
 
@@ -1232,8 +1239,7 @@ namespace NinePointRotationCalibration.Station.Services
         }
 
         /// <summary>
-        /// Runs post-response work strictly in order on a background thread, so
-        /// frames and results reach the UI in trigger order without blocking TCP.
+        /// 在后台线程严格按触发顺序执行回包后的收尾任务，确保 UI 展示与归档有序且不阻塞 TCP 响应。
         /// </summary>
         private void QueuePostProcessing(Action action)
         {
@@ -1266,7 +1272,7 @@ namespace NinePointRotationCalibration.Station.Services
             try
             {
                 EventHandler<FrameEventArgs> handler = FrameReady;
-                // Handlers copy what they keep, so the image stays ours for archiving.
+                // 事件订阅方会自行克隆所需图像，因此 ownedImage 所有权留在本方法内供后续归档并释放
                 if (handler != null) handler(this, new FrameEventArgs(ownedImage, "inspection"));
                 OnInspectionCompleted(result);
                 if (archive) ArchiveFrame(ownedImage, capturedAtUtc);
@@ -1459,6 +1465,7 @@ namespace NinePointRotationCalibration.Station.Services
             };
         }
 
+        // 兼容旧版配置文件：若定位模板尚未包含 DetectionRoi，则从 DetectionProfile.Roi 自动迁移
         private static bool MigrateLegacyDetectionRoi(
             CalibrationJob positioningJob,
             DetectionProfile profile)
@@ -1551,10 +1558,12 @@ namespace NinePointRotationCalibration.Station.Services
             if (_disposed) throw new ObjectDisposedException(nameof(StationRuntime));
         }
 
+        /// <summary>停止运行并等待在途工作流及后台归档队列收尾后释放所有服务资源。</summary>
         public void Dispose()
         {
             if (_disposed) return;
             try { StopAsync().GetAwaiter().GetResult(); } catch { }
+            // 等待当前独占工作流和串行后处理队列退出后再销毁信号量与底层设备
             _workflowGate.Wait();
             _workflowGate.Release();
             Task postProcessing;

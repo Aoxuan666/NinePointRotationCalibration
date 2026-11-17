@@ -12,6 +12,9 @@ using NinePointRotationCalibration.WinForms.Services;
 
 namespace NinePointRotationCalibration.WinForms.Forms
 {
+    /// <summary>
+    /// 模板匹配编辑器窗体，支持模板/搜索/检测 ROI 绘制、掩膜涂抹、特征提取、模型创建及匹配测试。
+    /// </summary>
     public sealed class TemplateEditorForm : Form
     {
         private const string DefaultMetric = "use_polarity";
@@ -235,6 +238,9 @@ namespace NinePointRotationCalibration.WinForms.Forms
             get { return _state.DeepClone(); }
         }
 
+        /// <summary>
+        /// 替换当前编辑的模板状态并重置撤销/重做历史。
+        /// </summary>
         public void SetState(TemplateEditorState state)
         {
             if (state == null)
@@ -251,6 +257,9 @@ namespace NinePointRotationCalibration.WinForms.Forms
             LoadStateToControls(true);
         }
 
+        /// <summary>
+        /// 更新模板示教参考图像（内部持有深拷贝），并按需自适应画布视图。
+        /// </summary>
         public void SetReferenceImage(Bitmap image, bool resetView = true)
         {
             if (image == null)
@@ -316,8 +325,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 return;
             }
 
-            // DPI scaling is complete by Shown. Clamp the scaled minimum and
-            // requested size together so the footer remains above the taskbar.
+            // Shown 阶段已完成 DPI 缩放；联合钳位最小尺寸与窗体尺寸，防止底部操作栏被任务栏遮挡。
             MinimumSize = new Size(
                 Math.Max(1, Math.Min(MinimumSize.Width, workingArea.Width)),
                 Math.Max(1, Math.Min(MinimumSize.Height, workingArea.Height)));
@@ -632,12 +640,8 @@ namespace NinePointRotationCalibration.WinForms.Forms
             if (eventArgs.Target == CanvasRoiTarget.Template)
             {
                 _state.TemplateRoi = eventArgs.Roi;
-                // Feature contours belong to the exact image ROI used to
-                // build the model.  Once that ROI moves, keeping the old
-                // contours on screen is misleading (and is especially
-                // visible after rotating a non-symmetric ROI).  Invalidate
-                // the overlay immediately while the user is still dragging;
-                // the final event below marks the model for rebuilding.
+                // 特征轮廓绑定于建模时的模板区域；拖动或旋转模板 ROI 时（尤其非对称矩形）需立即清空旧轮廓叠加，
+                // 并在拖拽结束（IsFinal）时标记需要重新创建模型。
                 if ((_state.ModelContours != null && _state.ModelContours.Count > 0) ||
                     (_state.FeaturePoints != null && _state.FeaturePoints.Count > 0))
                 {
@@ -992,7 +996,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
             }
 
             ReadParametersFromControls();
-            // Test view should contain only the current match result, never the previous feature overlay.
+            // 测试匹配视图仅展示本次定位结果，需先清空之前的特征提取叠加层
             _canvas.EditorOverlay = new CanvasRuntimeOverlay();
             _canvas.ClearRuntimeOverlay();
             TemplateTestResult result = null;
@@ -1119,6 +1123,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
         private void UpdateEditorOverlay()
         {
             CanvasRuntimeOverlay overlay = new CanvasRuntimeOverlay();
+            // 优先将已建模型或特征提取得到的轮廓采样点叠加到画布，无轮廓数据时回退到离散特征点集合
             IEnumerable<List<ImageCoordinate>> contours = _state.ModelContours;
             if (contours == null || !_state.ModelContours.Any(item => item != null && item.Count > 0))
             {
@@ -1298,6 +1303,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 return;
             }
 
+            // 保留最近 HistoryLimit(30) 步历史；产生新编辑分支时清空重做栈
             _undoStack.Push(_state.DeepClone());
             while (_undoStack.Count > HistoryLimit)
             {
@@ -1422,6 +1428,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
             TemplateEditorParameters parameters = _state.Parameters ?? new TemplateEditorParameters();
             _state.Parameters = parameters;
             NormalizeStoredMetrics(parameters);
+            // 外轮廓 XLD 模式固定采用 ignore_local_polarity；其他模式恢复对应模型类型的独立极性配置
             parameters.Metric = edgeContoursEnabled
                 ? EdgeContourMetric
                 : isShapeModel ? parameters.ShapeMetric : parameters.NccMetric;
@@ -1737,6 +1744,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
 
         private static void NumericInput_MouseWheel(object sender, MouseEventArgs eventArgs)
         {
+            // 拦截系统默认 3 倍滚轮跳跃，按单倍 Increment 步进并钳位到合法上下限
             HandledMouseEventArgs handled = eventArgs as HandledMouseEventArgs;
             if (handled != null) handled.Handled = true;
 
@@ -1898,6 +1906,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
 
             public void SetVisible(bool visible)
             {
+                // 折叠高级选项时将 TableLayoutPanel 行高置为绝对 0，避免残留空白占位
                 _rowStyle.SizeType = visible ? SizeType.AutoSize : SizeType.Absolute;
                 _rowStyle.Height = 0.0f;
                 foreach (Control control in _controls)
@@ -1911,6 +1920,9 @@ namespace NinePointRotationCalibration.WinForms.Forms
         }
     }
 
+    /// <summary>
+    /// 模板测试匹配完成事件参数。
+    /// </summary>
     public sealed class TemplateTestCompletedEventArgs : EventArgs
     {
         public TemplateTestCompletedEventArgs(TemplateTestResult result)

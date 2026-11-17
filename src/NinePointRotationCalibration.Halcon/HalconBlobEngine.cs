@@ -8,16 +8,19 @@ using HalconDotNet;
 
 namespace NinePointRotationCalibration.Halcon
 {
+    /// <summary>Blob 检测使用的旋转矩形 ROI 及其所在图像裁剪范围。</summary>
     public sealed class HalconBlobRegion
     {
         public double Row { get; set; }
         public double Column { get; set; }
+        /// <summary>屏幕坐标系下的旋转角度（度，行向下坐标中顺时针为正）。</summary>
         public double PhiDegrees { get; set; }
         public double HalfWidth { get; set; }
         public double HalfHeight { get; set; }
         public Rectangle ImageBounds { get; set; }
     }
 
+    /// <summary>Blob 分割、形态学与形状过滤参数。</summary>
     public sealed class HalconBlobParameters
     {
         public bool AutoThreshold { get; set; }
@@ -31,6 +34,7 @@ namespace NinePointRotationCalibration.Halcon
         public int MorphologyRadius { get; set; }
     }
 
+    /// <summary>单个 ROI 的 Blob 检测结果及各阶段耗时。</summary>
     public sealed class HalconBlobResult : IDisposable
     {
         public HalconBlobResult()
@@ -44,7 +48,9 @@ namespace NinePointRotationCalibration.Halcon
         public double Row { get; set; }
         public double Column { get; set; }
         public double Area { get; set; }
+        /// <summary>最大连通域的矩形度（面积与最小外接矩形面积之比）。</summary>
         public double Rectangularity { get; set; }
+        /// <summary>是否因矩形度达到阈值而被判定为矩形干扰并拒识。</summary>
         public bool RejectedAsRectangle { get; set; }
         public List<ImagePoint> Contour { get; private set; }
         public int ActivePixelCount { get; set; }
@@ -57,6 +63,7 @@ namespace NinePointRotationCalibration.Halcon
         public double ComponentElapsedMilliseconds { get; set; }
         public double ElapsedMilliseconds { get; set; }
 
+        /// <summary>释放结果持有的二值预览 Bitmap。</summary>
         public void Dispose()
         {
             Bitmap image = BinaryImage;
@@ -65,6 +72,7 @@ namespace NinePointRotationCalibration.Halcon
         }
     }
 
+    /// <summary>基于 HALCON 的 Blob 区域检测引擎。</summary>
     public static class HalconBlobEngine
     {
         /// <summary>使用 HALCON 对每个 ROI 执行阈值、形态学、连通域和轮廓分析。</summary>
@@ -78,6 +86,7 @@ namespace NinePointRotationCalibration.Halcon
             return Analyze(source, regions, parameters, includeBinary, cancellationToken, true);
         }
 
+        /// <summary>执行 Blob 分析，并支持在取消时选择抛出异常或提前返回。</summary>
         // 预览调用方可以取消过期任务，避免正常刷新被误报为未处理的 HALCON 异常。
         public static List<HalconBlobResult> Analyze(
             Bitmap source,
@@ -173,6 +182,7 @@ namespace NinePointRotationCalibration.Halcon
 
                 using (HRegion roi = new HRegion())
                 {
+                    // PhiDegrees 在行向下屏幕坐标系中顺时针为正，HALCON GenRectangle2 以逆时针为正，需取反。
                     roi.GenRectangle2(
                         input.Row,
                         input.Column,
@@ -225,6 +235,7 @@ namespace NinePointRotationCalibration.Halcon
                     return null;
                 Stopwatch componentWatch = Stopwatch.StartNew();
                 connected = filled.Connection();
+                // 仅保留面积最大的单个连通域作为候选目标，再判断面积与矩形度筛选条件。
                 selected = connected.CountObj() > 0
                     ? connected.SelectShapeStd("max_area", 70.0)
                     : new HRegion(connected);
@@ -255,6 +266,7 @@ namespace NinePointRotationCalibration.Halcon
                         if (largest != null)
                         {
                             result.Contour.AddRange(largest);
+                            // 确保边界轮廓首尾闭合以供绘制。
                             if (largest.Count > 0)
                             {
                                 ImagePoint first = largest[0];
@@ -315,6 +327,7 @@ namespace NinePointRotationCalibration.Halcon
                     background = detectDarkForeground
                         ? black.ScaleImage(0.0, 255.0)
                         : black.CopyImage();
+                    // 将整图坐标下的前景区域平移到 ROI 局部裁剪坐标系后再填充绘制二值图。
                     using (HRegion local = foreground.MoveRegion(-bounds.Top, -bounds.Left))
                     {
                         painted = local.PaintRegion(

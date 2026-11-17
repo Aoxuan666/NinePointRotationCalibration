@@ -18,11 +18,12 @@ using NinePointRotationCalibration.Station.Services.Inspection;
 namespace NinePointRotationCalibration.Station.Views
 {
     /// <summary>
-    /// Connects the design-time-safe form to the runtime composition root.
-    /// MainForm intentionally has no service dependency so the WinForms designer can instantiate it.
+    /// 连接设计器友好的 MainForm 窗体与 StationRuntime 运行时协调器。
+    /// MainForm 本身不持有业务服务依赖，从而保证 WinForms 设计器可正常实例化。
     /// </summary>
     public sealed partial class MainFormRuntimeBinder : IDisposable
     {
+        // LivePreview 接收实时相机预览帧；LockedFrame 锁定拍照、导入或检测帧以便标定/调试
         private enum DisplayMode
         {
             LivePreview = 0,
@@ -217,6 +218,7 @@ namespace NinePointRotationCalibration.Station.Views
                 string.Equals(_view.WorkTabs.SelectedTab.Name, "tabDetection", StringComparison.Ordinal))
                 return;
 
+            // 切离检测页时退出主画面二值预览，并递增显示代次使在途异步预览结果失效
             try
             {
                 CancelBinaryPreview();
@@ -261,7 +263,7 @@ namespace NinePointRotationCalibration.Station.Views
                 switch (action)
                 {
                     case "camera.snapshot":
-                        // SnapshotRequested owns this action to avoid issuing two camera triggers.
+                        // 拍照动作统一由 SnapshotRequested 事件处理，避免同一次点击触发两次采集
                         return;
                     case "calibration.manual":
                         ApplyCalibrationStepOptions();
@@ -426,6 +428,7 @@ namespace NinePointRotationCalibration.Station.Views
             }
         }
 
+        /// <summary>执行界面触发的异步任务，统一管理按钮禁用、操作状态栏及异常日志。</summary>
         private async Task RunOperationAsync(
             string description,
             Control source,
@@ -586,6 +589,7 @@ namespace NinePointRotationCalibration.Station.Views
             }
         }
 
+        /// <summary>解除界面与运行时事件订阅，取消在途任务并释放锁定帧。</summary>
         public void Dispose()
         {
             if (_disposed) return;

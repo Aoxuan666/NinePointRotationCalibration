@@ -2,6 +2,7 @@ using System;
 
 namespace NinePointRotationCalibration
 {
+    /// <summary>机械平台位姿，包含 X、Y 位置与机械轴角度（度）。</summary>
     [Serializable]
     public sealed class MachinePose
     {
@@ -19,6 +20,7 @@ namespace NinePointRotationCalibration
         public double X { get; set; }
         public double Y { get; set; }
         public double ThetaDegrees { get; set; }
+        /// <summary>以弧度表示的机械轴角度（内部与 ThetaDegrees 同步换算）。</summary>
         public double ThetaRadians
         {
             get { return AngleMath.DegreesToRadians(ThetaDegrees); }
@@ -31,9 +33,11 @@ namespace NinePointRotationCalibration
         }
 
         public StagePoint Position { get { return new StagePoint(X, Y); } }
+        /// <summary>创建机械位姿的深拷贝。</summary>
         public MachinePose DeepClone() { return new MachinePose(X, Y, ThetaDegrees); }
     }
 
+    /// <summary>图像空间位姿，包含像素行列位置与模板角度（度）。</summary>
     [Serializable]
     public sealed class ImagePose
     {
@@ -51,6 +55,7 @@ namespace NinePointRotationCalibration
         public double Row { get; set; }
         public double Column { get; set; }
         public double AngleDegrees { get; set; }
+        /// <summary>以弧度表示的图像角度（内部与 AngleDegrees 同步换算）。</summary>
         public double AngleRadians
         {
             get { return AngleMath.DegreesToRadians(AngleDegrees); }
@@ -63,6 +68,7 @@ namespace NinePointRotationCalibration
         }
 
         public ImagePoint Position { get { return new ImagePoint(Row, Column); } }
+        /// <summary>创建图像位姿的深拷贝。</summary>
         public ImagePose DeepClone() { return new ImagePose(Row, Column, AngleDegrees); }
     }
 }

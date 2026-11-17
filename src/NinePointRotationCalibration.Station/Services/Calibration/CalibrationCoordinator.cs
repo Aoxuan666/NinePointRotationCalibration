@@ -185,6 +185,7 @@ namespace NinePointRotationCalibration.Station.Services.Calibration
                 request.Data["sharedOrigin"] = point.IsSharedOrigin;
                 request.Data["replyType"] = ProtocolMessageTypes.MotionArrived;
 
+                // 按请求 MessageId 注册挂起等待项，用于与上位机返回的 motion.arrived.CorrelationId 配对
                 PendingMove pending = new PendingMove(request.MessageId, point.PointNumber);
                 if (!_pendingMoves.TryAdd(request.MessageId, pending))
                     throw new InvalidOperationException("A move request with the same message ID already exists.");
@@ -207,6 +208,7 @@ namespace NinePointRotationCalibration.Station.Services.Calibration
                     PublishFrame(frame.Image, "calibration." + point.PointNumber);
                     UpdateRecord(point, CalibrationPointStatus.Locating, "Locating calibration template.");
 
+                    // 同一标定点重采前先剔除旧样本，确保该点位仅保留最新一次有效采图
                     CalibrationJob baseline;
                     lock (_sync)
                     {
@@ -378,6 +380,7 @@ namespace NinePointRotationCalibration.Station.Services.Calibration
                 return true;
             }
 
+            // 必须同时匹配 CorrelationId、点号且三轴坐标为有限实数，才唤醒对应等待点位
             int pointNumber = ProtocolValue.Integer(envelope.Data, "pointNumber", int.MinValue);
             double x;
             double y;
@@ -520,6 +523,7 @@ namespace NinePointRotationCalibration.Station.Services.Calibration
             return !double.IsNaN(value) && !double.IsInfinity(value);
         }
 
+        /// <summary>取消进行中的自动标定与挂起等待，并释放同步资源。</summary>
         public void Dispose()
         {
             if (_disposed) return;

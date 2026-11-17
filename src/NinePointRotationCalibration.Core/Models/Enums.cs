@@ -1,5 +1,6 @@
 namespace NinePointRotationCalibration
 {
+    /// <summary>标定、模板匹配及运行时流程的错误码。</summary>
     public enum CalibrationErrorCode
     {
         None = 0,
@@ -20,19 +21,24 @@ namespace NinePointRotationCalibration
         InternalError = 9000
     }
 
+    /// <summary>标定样本类型（平移九点样本或旋转中心样本）。</summary>
     public enum CalibrationSampleKind
     {
         Translation = 0,
         Rotation = 1
     }
 
+    /// <summary>图像角度相对机械轴角度的旋转方向关系。</summary>
     public enum RotationDirection
     {
         Unknown = 0,
+        /// <summary>同向旋转（乘子为 +1）。</summary>
         Same = 1,
+        /// <summary>反向旋转（乘子为 -1）。</summary>
         Opposite = -1
     }
 
+    /// <summary>旋转运动的物理参考约定。</summary>
     public enum RotationConvention
     {
         Unknown = 0,
@@ -41,6 +47,7 @@ namespace NinePointRotationCalibration
         StageRotates = 3
     }
 
+    /// <summary>机械坐标线性单位。</summary>
     public enum LinearUnit
     {
         Millimeter = 0,
@@ -49,27 +56,33 @@ namespace NinePointRotationCalibration
         Custom = 99
     }
 
+    /// <summary>HALCON 模板匹配算法类型（形状轮廓或 NCC 灰度相关性）。</summary>
     public enum TemplateModelType
     {
         Shape = 0,
         Ncc = 1
     }
 
+    /// <summary>模板 ROI 或掩膜区域几何形状。</summary>
     public enum RegionKind
     {
+        /// <summary>轴对齐矩形。</summary>
         Rectangle1 = 0,
+        /// <summary>带旋转角度的矩形。</summary>
         Rectangle2 = 1,
         Circle = 2,
         Polygon = 3,
         Freehand = 4
     }
 
+    /// <summary>掩膜或笔刷对模板有效区域的布尔操作方式。</summary>
     public enum MaskOperation
     {
         Include = 0,
         Exclude = 1
     }
 
+    /// <summary>任务校验问题的严重级别。</summary>
     public enum ValidationSeverity
     {
         Information = 0,
@@ -77,6 +90,7 @@ namespace NinePointRotationCalibration
         Error = 2
     }
 
+    /// <summary>标定任务校验的覆盖范围。</summary>
     public enum CalibrationValidationScope
     {
         Configuration = 0,

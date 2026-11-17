@@ -9,13 +9,16 @@ using NinePointRotationCalibration.Station.Models;
 
 namespace NinePointRotationCalibration.Station.Services.Communication
 {
+    /// <summary>TCP 协议 JSON 编解码、长度分帧及连接隔离重连的自检工具。</summary>
     public static class CommunicationSelfTest
     {
+        /// <summary>同步执行全部通信链路自检。</summary>
         public static void Run()
         {
             RunAsync(CancellationToken.None).GetAwaiter().GetResult();
         }
 
+        /// <summary>依次验证协议编解码、拆包/粘包分帧及断线重连后的连接隔离。</summary>
         public static async Task RunAsync(CancellationToken cancellationToken)
         {
             ProtocolJsonCodec codec = new ProtocolJsonCodec();
@@ -26,6 +29,7 @@ namespace NinePointRotationCalibration.Station.Services.Communication
 
         private static void VerifyCodec(ProtocolJsonCodec codec)
         {
+            // 验证驼峰字段输出、大小写不敏感字典访问及非法自定义 CLR 对象拦截
             ProtocolEnvelope outgoing = CreateMessage("self-test-roundtrip", 17);
             outgoing.Data["items"] = new List<object>
             {
@@ -69,6 +73,7 @@ namespace NinePointRotationCalibration.Station.Services.Communication
             ProtocolJsonCodec codec,
             CancellationToken cancellationToken)
         {
+            // 测试 TCP 分片拆包写入与多帧合并粘包写入下的 4 字节大端长度分帧解析
             int port = ReserveLoopbackPort();
             StationOptions options = new StationOptions
             {
@@ -150,6 +155,7 @@ namespace NinePointRotationCalibration.Station.Services.Communication
             ProtocolJsonCodec codec,
             CancellationToken cancellationToken)
         {
+            // 测试断线重连后按 ConnectionId 路由发送：发往已断开旧连接的消息必须被拒绝且不能串发到新连接
             int port = ReserveLoopbackPort();
             StationOptions options = new StationOptions
             {

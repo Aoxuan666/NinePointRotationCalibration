@@ -12,6 +12,7 @@ using NinePointRotationCalibration.Station.Models;
 
 namespace NinePointRotationCalibration.Station.Devices
 {
+    /// <summary>大华 IMV 相机 SDK 调用失败异常，包含失败操作名及 SDK 错误码。</summary>
     public sealed class CameraDeviceException : Exception
     {
         public CameraDeviceException(string operation, int errorCode)
@@ -64,6 +65,7 @@ namespace NinePointRotationCalibration.Station.Devices
         }
     }
 
+    /// <summary>基于大华 MVSDK_Net（IMV）的工业相机驱动，通过信号量串行化全部 SDK 调用。</summary>
     public sealed class DahuaCameraDevice : ICameraDevice, ICameraParameterDevice
     {
         private const uint DriverBufferCount = 8;
@@ -123,6 +125,7 @@ namespace NinePointRotationCalibration.Station.Devices
             }
         }
 
+        /// <summary>串行枚举当前在线的大华相机设备。</summary>
         public Task<IReadOnlyList<CameraDescriptor>> EnumerateAsync(CancellationToken cancellationToken)
         {
             return RunSerializedAsync(
@@ -130,6 +133,7 @@ namespace NinePointRotationCalibration.Station.Devices
                 cancellationToken);
         }
 
+        /// <summary>按指定 ID（或默认首台相机）打开句柄、配置软触发并开启取流。</summary>
         public Task ConnectAsync(string deviceId, CancellationToken cancellationToken)
         {
             return RunSerializedAsync(
@@ -141,6 +145,7 @@ namespace NinePointRotationCalibration.Station.Devices
                 cancellationToken);
         }
 
+        /// <summary>停止取流、关闭相机并销毁底层 SDK 句柄与转换缓存。</summary>
         public Task DisconnectAsync()
         {
             return RunSerializedAsync(
@@ -154,6 +159,7 @@ namespace NinePointRotationCalibration.Station.Devices
                 CancellationToken.None);
         }
 
+        /// <summary>关闭自动曝光并在相机允许范围内设置曝光时间（微秒）。</summary>
         public Task SetExposureAsync(double exposureMicroseconds, CancellationToken cancellationToken)
         {
             if (double.IsNaN(exposureMicroseconds) || double.IsInfinity(exposureMicroseconds) || exposureMicroseconds <= 0.0)
@@ -193,6 +199,7 @@ namespace NinePointRotationCalibration.Station.Devices
                 cancellationToken);
         }
 
+        /// <summary>读取当前相机核心参数与常用可写 GenICam 特性。</summary>
         public Task<CameraParameterSet> GetParametersAsync(CancellationToken cancellationToken)
         {
             return RunSerializedAsync(
@@ -216,6 +223,7 @@ namespace NinePointRotationCalibration.Station.Devices
                 cancellationToken);
         }
 
+        /// <summary>按节点可用性与范围校验后批量下发相机参数。</summary>
         public Task SetParametersAsync(CameraParameterSet parameters, CancellationToken cancellationToken)
         {
             if (parameters == null) throw new ArgumentNullException(nameof(parameters));
@@ -439,8 +447,7 @@ namespace NinePointRotationCalibration.Station.Devices
                 if (!hasMinimum || !hasMaximum || value < minimum || value > maximum) return;
             }
 
-            // Some Dahua models expose GainRaw but do not provide a usable floating
-            // point range. Keep the camera's factory/current value in that case.
+            // 部分大华相机型号虽暴露 GainRaw 节点但未提供可用浮点取值范围，此时保留相机当前/出厂增益值。
             if (string.Equals(name, "GainRaw", StringComparison.OrdinalIgnoreCase))
             {
                 double current = 0.0;
@@ -498,6 +505,7 @@ namespace NinePointRotationCalibration.Station.Devices
                 CheckResult(_camera.IMV_SetEnumFeatureSymbol("TriggerSource", source), "Set trigger source");
         }
 
+        /// <summary>触发并采集一帧图像，转换为托管 Bitmap。</summary>
         public Task<CameraFrame> CaptureAsync(CancellationToken cancellationToken)
         {
             return RunSerializedAsync(
@@ -505,6 +513,7 @@ namespace NinePointRotationCalibration.Station.Devices
                 cancellationToken);
         }
 
+        /// <summary>等待正在执行的 SDK 操作结束后释放相机句柄与转换缓冲区。</summary>
         public void Dispose()
         {
             lock (_stateSync)
@@ -529,6 +538,7 @@ namespace NinePointRotationCalibration.Station.Devices
             }
         }
 
+        // 所有 IMV SDK 调用统一经 _sdkGate 串行执行，避免多线程并发访问非线程安全句柄
         private async Task<T> RunSerializedAsync<T>(Func<T> operation, CancellationToken cancellationToken)
         {
             ThrowIfDisposed();
@@ -625,6 +635,7 @@ namespace NinePointRotationCalibration.Station.Devices
             cancellationToken.ThrowIfCancellationRequested();
             EnsureConnectedCore();
 
+            // 抓拍前清空驱动残留帧缓存，保证获取本次触发的最新帧
             int clearResult = _camera.IMV_ClearFrameBuffer();
             if (clearResult != IMVDefine.IMV_OK && clearResult != IMVDefine.IMV_NOT_SUPPORT)
                 throw new CameraDeviceException("Clear frame buffer", clearResult);
@@ -654,7 +665,7 @@ namespace NinePointRotationCalibration.Station.Devices
             }
             finally
             {
-                // A successful GetFrame must always be paired with ReleaseFrame.
+                // IMV_GetFrame 成功后无论转换成功与否，都必须成对调用 IMV_ReleaseFrame 归还驱动帧缓冲。
                 try
                 {
                     releaseResult = _camera.IMV_ReleaseFrame(ref frame);
@@ -700,7 +711,7 @@ namespace NinePointRotationCalibration.Station.Devices
             if (width <= 0 || height <= 0 || frame.pData == IntPtr.Zero)
                 throw new CameraDeviceException("Validate frame data", IMVDefine.IMV_INVALID_FRAME);
 
-            // Let the SDK handle all pixel conversion, including Bayer demosaicing.
+            // 统一由 SDK 执行 Bayer 去马赛克及像素格式转换，输出 Mono8 或 BGR8 供 Bitmap 拷贝。
             bool monochrome = IsMonoPixelFormat(frame.frameInfo.pixelFormat);
             int channels = monochrome ? 1 : 3;
             IMVDefine.IMV_EPixelType targetFormat = monochrome
@@ -755,8 +766,7 @@ namespace NinePointRotationCalibration.Station.Devices
                 try
                 {
                     int rowBytes = checked(width * channelCount);
-                    // Bitmap rows are aligned to four bytes. Copy the SDK output
-                    // directly, without allocating an intermediate managed row.
+                    // GDI+ Bitmap 每行按 4 字节对齐，直接按行拷贝 SDK 输出以省去中间托管行缓冲区。
                     for (int y = 0; y < height; y++)
                     {
                         Buffer.MemoryCopy(
@@ -805,6 +815,7 @@ namespace NinePointRotationCalibration.Station.Devices
             _conversionBufferSize = requiredSize;
         }
 
+        // 按“停止取流 -> 关闭相机 -> 销毁句柄 -> 释放转换缓冲”逆序清理底层资源
         private int ReleaseCameraCore()
         {
             int firstError = IMVDefine.IMV_OK;

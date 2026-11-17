@@ -63,7 +63,7 @@ namespace NinePointRotationCalibration.Halcon
                 HImage image = new HImage();
                 try
                 {
-                    // gen_image1 copies the buffer, so the bitmap can be unlocked afterwards.
+                    // gen_image1 会复制像素缓冲区，因此随后即可安全释放 Bitmap 锁；若存在行对齐填充则裁剪为精确宽度。
                     image.GenImage1("byte", data.Stride, height, data.Scan0);
                     if (data.Stride == width) return image;
                     HImage cropped = image.CropPart(0, 0, width, height);
@@ -95,6 +95,7 @@ namespace NinePointRotationCalibration.Halcon
             {
                 int packed = width * bytesPerPixel;
                 int alignment;
+                // HALCON 要求指定紧致(-1)或 4 字节对齐的扫描行步长，不匹配则回退到 GDI+ 重绘。
                 if (data.Stride == packed) alignment = -1;
                 else if (data.Stride == ((packed + 3) / 4) * 4) alignment = 4;
                 else return null;
@@ -114,8 +115,7 @@ namespace NinePointRotationCalibration.Halcon
                     -1,
                     0);
 
-                // rgb1_to_gray creates an independently owned HALCON image before
-                // the Bitmap buffer is unlocked.
+                // rgb1_to_gray 会生成独立内存的 HALCON 灰度图，确保在解锁 Bitmap 前不悬空指针。
                 return interleaved.Rgb1ToGray();
             }
             finally
@@ -168,6 +168,7 @@ namespace NinePointRotationCalibration.Halcon
                 data = bitmap.LockBits(new Rectangle(0, 0, width, height),
                     ImageLockMode.WriteOnly, PixelFormat.Format8bppIndexed);
                 int stride = Math.Abs(data.Stride);
+                // 兼容自下而上存储（Stride 为负）与带行填充的 Bitmap 扫描行写入。
                 for (int y = 0; y < height; y++)
                 {
                     IntPtr destination = data.Stride >= 0

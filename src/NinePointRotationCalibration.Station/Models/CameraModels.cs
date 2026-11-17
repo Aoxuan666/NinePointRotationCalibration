@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 
 namespace NinePointRotationCalibration.Station.Models
 {
+    /// <summary>相机可调属性的数据类型。</summary>
     public enum CameraFeatureKind
     {
         Number,
@@ -16,6 +17,7 @@ namespace NinePointRotationCalibration.Station.Models
         String
     }
 
+    /// <summary>描述单个通用相机参数及其取值范围、单位和读写属性。</summary>
     public sealed class CameraFeatureValue
     {
         public CameraFeatureValue()
@@ -37,6 +39,7 @@ namespace NinePointRotationCalibration.Station.Models
         public string Unit { get; set; }
         public List<string> EnumValues { get; private set; }
 
+        /// <summary>创建当前参数项及枚举值列表的独立副本。</summary>
         public CameraFeatureValue Clone()
         {
             CameraFeatureValue clone = (CameraFeatureValue)MemberwiseClone();
@@ -45,6 +48,7 @@ namespace NinePointRotationCalibration.Station.Models
         }
     }
 
+    /// <summary>已枚举相机设备的标识与界面显示名称。</summary>
     public sealed class CameraDescriptor
     {
         public string Id { get; set; }
@@ -56,6 +60,7 @@ namespace NinePointRotationCalibration.Station.Models
         }
     }
 
+    /// <summary>相机核心采集参数及扩展属性集合。</summary>
     public sealed class CameraParameterSet
     {
         public CameraParameterSet()
@@ -82,6 +87,7 @@ namespace NinePointRotationCalibration.Station.Models
         public bool ReverseY { get; set; }
         public List<CameraFeatureValue> Features { get; set; }
 
+        /// <summary>用指定特性集合替换当前扩展属性列表（逐项深拷贝）。</summary>
         public void ReplaceFeatures(IEnumerable<CameraFeatureValue> features)
         {
             Features = features == null
@@ -89,6 +95,7 @@ namespace NinePointRotationCalibration.Station.Models
                 : features.Where(item => item != null).Select(item => item.Clone()).ToList();
         }
 
+        /// <summary>按属性名（忽略大小写）查找扩展属性。</summary>
         public CameraFeatureValue FindFeature(string name)
         {
             return Features == null || string.IsNullOrWhiteSpace(name)
@@ -96,6 +103,7 @@ namespace NinePointRotationCalibration.Station.Models
                 : Features.Find(item => string.Equals(item.Name, name, StringComparison.OrdinalIgnoreCase));
         }
 
+        /// <summary>创建当前参数集的深拷贝。</summary>
         public CameraParameterSet Clone()
         {
             CameraParameterSet clone = (CameraParameterSet)MemberwiseClone();
@@ -107,12 +115,16 @@ namespace NinePointRotationCalibration.Station.Models
         }
     }
 
+    /// <summary>支持读取与批量下发相机参数的设备扩展接口。</summary>
     public interface ICameraParameterDevice
     {
+        /// <summary>从相机读取当前参数及可写扩展属性。</summary>
         Task<CameraParameterSet> GetParametersAsync(CancellationToken cancellationToken);
+        /// <summary>将给定参数集下发至已连接的相机。</summary>
         Task SetParametersAsync(CameraParameterSet parameters, CancellationToken cancellationToken);
     }
 
+    /// <summary>封装单帧采集图像及帧序号、UTC 采集时间（持有位图资源）。</summary>
     public sealed class CameraFrame : IDisposable
     {
         public CameraFrame(Bitmap image, long sequence, DateTime capturedAtUtc)
@@ -126,6 +138,7 @@ namespace NinePointRotationCalibration.Station.Models
         public long Sequence { get; private set; }
         public DateTime CapturedAtUtc { get; private set; }
 
+        /// <summary>释放底层位图内存。</summary>
         public void Dispose()
         {
             Bitmap image = Image;
@@ -134,15 +147,21 @@ namespace NinePointRotationCalibration.Station.Models
         }
     }
 
+    /// <summary>相机硬件驱动与模拟相机的统一控制接口。</summary>
     public interface ICameraDevice : IDisposable
     {
         string ProviderName { get; }
         bool IsConnected { get; }
         string ConnectedDeviceId { get; }
+        /// <summary>枚举当前可用的相机设备列表。</summary>
         Task<IReadOnlyList<CameraDescriptor>> EnumerateAsync(CancellationToken cancellationToken);
+        /// <summary>按设备标识连接相机并开启取流。</summary>
         Task ConnectAsync(string deviceId, CancellationToken cancellationToken);
+        /// <summary>断开相机连接并释放底层流句柄。</summary>
         Task DisconnectAsync();
+        /// <summary>设置相机曝光时间（微秒）。</summary>
         Task SetExposureAsync(double exposureMicroseconds, CancellationToken cancellationToken);
+        /// <summary>触发并采集一帧图像。</summary>
         Task<CameraFrame> CaptureAsync(CancellationToken cancellationToken);
     }
 }

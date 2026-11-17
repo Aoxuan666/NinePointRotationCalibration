@@ -3,6 +3,7 @@ using System.Collections.Generic;
 
 namespace NinePointRotationCalibration
 {
+    /// <summary>单个标定样本的求解诊断明细，包含内点状态、预测值与残差。</summary>
     [Serializable]
     public sealed class CalibrationSampleDiagnostic
     {
@@ -31,6 +32,7 @@ namespace NinePointRotationCalibration
         public double AngleResidualDegrees { get; set; }
         public double RotationCenterResidualPixels { get; set; }
 
+        /// <summary>创建样本诊断信息的深拷贝。</summary>
         public CalibrationSampleDiagnostic DeepClone()
         {
             CalibrationSampleDiagnostic clone = (CalibrationSampleDiagnostic)MemberwiseClone();
@@ -39,6 +41,7 @@ namespace NinePointRotationCalibration
         }
     }
 
+    /// <summary>旋转标定求解结果，包含角度方向、零偏与图像/机械坐标中的旋转中心。</summary>
     [Serializable]
     public sealed class RotationCalibrationResult
     {
@@ -52,14 +55,18 @@ namespace NinePointRotationCalibration
         public CalibrationErrorCode ErrorCode { get; set; }
         public string Message { get; set; }
         public RotationDirection Direction { get; set; }
+        /// <summary>旋转方向乘子（Same 为 +1，Opposite 为 -1，Unknown 为 0）。</summary>
         public double DirectionMultiplier { get { return (double)(int)Direction; } }
+        /// <summary>图像角与机械角关系式中的零偏常数（度）。</summary>
         public double AngleOffsetDegrees { get; set; }
+        /// <summary>未约束方向的线性斜率诊断值，正常应接近 +1 或 -1。</summary>
         public double UnconstrainedSlope { get; set; }
         public double AngleRmsDegrees { get; set; }
         public double MaxAngleResidualDegrees { get; set; }
         public double MachineAngleSpanDegrees { get; set; }
         public ImagePoint RotationCenterImage { get; set; }
         public StagePoint RotationCenterStage { get; set; }
+        /// <summary>旋转中心归一化所使用的参考机械台面坐标。</summary>
         public StagePoint ReferenceStage { get; set; }
         public double RadiusPixels { get; set; }
         public double CenterRmsResidualPixels { get; set; }
@@ -68,9 +75,11 @@ namespace NinePointRotationCalibration
         public int InlierCount { get; set; }
         public int RejectedCount { get; set; }
 
+        /// <summary>创建旋转结果的深拷贝。</summary>
         public RotationCalibrationResult DeepClone() { return (RotationCalibrationResult)MemberwiseClone(); }
     }
 
+    /// <summary>九点仿射与旋转标定的汇总输出结果。</summary>
     [Serializable]
     public sealed class CalibrationResult
     {
@@ -85,13 +94,15 @@ namespace NinePointRotationCalibration
         public bool TranslationSuccess { get; set; }
         public CalibrationErrorCode ErrorCode { get; set; }
         public string Message { get; set; }
+        /// <summary>机械平台坐标到图像像素坐标（Column, Row）的二维仿射矩阵。</summary>
         public AffineMatrix2D StageToPixelMatrix { get; set; }
+        /// <summary>图像像素坐标到机械平台坐标的逆仿射矩阵。</summary>
         public AffineMatrix2D PixelToStageMatrix { get; set; }
 
-        /// <summary>Stage units per pixel measured while moving the machine X axis.</summary>
+        /// <summary>沿机械 X 轴移动时测得的像素当量（每像素对应的机械单位）。</summary>
         public double ResolutionX { get; set; }
 
-        /// <summary>Stage units per pixel measured while moving the machine Y axis.</summary>
+        /// <summary>沿机械 Y 轴移动时测得的像素当量（每像素对应的机械单位）。</summary>
         public double ResolutionY { get; set; }
 
         public Vector2D StageXAxisInImage { get; set; }
@@ -99,6 +110,7 @@ namespace NinePointRotationCalibration
         public double AxisAngleDegrees { get; set; }
         public double Determinant { get; set; }
         public double ConditionNumber { get; set; }
+        /// <summary>行列式为负时为 true，表示像素与机械坐标系存在镜像翻转。</summary>
         public bool IsMirrored { get; set; }
         public double RmsResidualPixels { get; set; }
         public double MaxResidualPixels { get; set; }
@@ -113,12 +125,14 @@ namespace NinePointRotationCalibration
         public List<CalibrationSampleDiagnostic> Diagnostics { get; set; }
         public List<string> Warnings { get; set; }
 
+        /// <summary>使用标定结果将机械坐标点映射到图像像素坐标。</summary>
         public ImagePoint TransformStageToImage(StagePoint point)
         {
             Point2D transformed = StageToPixelMatrix.Transform(point.ToCartesian());
             return ImagePoint.FromCartesian(transformed);
         }
 
+        /// <summary>使用标定结果将图像像素坐标映射到机械坐标点。</summary>
         public StagePoint TransformImageToStage(ImagePoint point)
         {
             Point2D transformed = PixelToStageMatrix.Transform(point.ToCartesian());
@@ -145,6 +159,7 @@ namespace NinePointRotationCalibration
             get { return Rotation == null ? default(StagePoint) : Rotation.RotationCenterStage; }
         }
 
+        /// <summary>创建标定结果的完整深拷贝。</summary>
         public CalibrationResult DeepClone()
         {
             CalibrationResult clone = (CalibrationResult)MemberwiseClone();
@@ -160,6 +175,7 @@ namespace NinePointRotationCalibration
             return clone;
         }
 
+        /// <summary>构造失败的标定结果。</summary>
         public static CalibrationResult Failure(CalibrationErrorCode errorCode, string message)
         {
             return new CalibrationResult { Success = false, TranslationSuccess = false, ErrorCode = errorCode, Message = message };

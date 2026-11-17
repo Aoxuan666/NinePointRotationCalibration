@@ -24,6 +24,7 @@ namespace NinePointRotationCalibration
                     string.Format("Need at least {0} eligible rotation samples; got {1}.", options.MinimumRotationSamples, observations.Count));
             }
 
+            // 分别按同向 (+1) 与反向 (-1) 拟合图像角与机械角关系并择优。
             RotationAngleFit same = FitAngleDirection(observations, 1, options);
             RotationAngleFit opposite = FitAngleDirection(observations, -1, options);
             RotationAngleFit angleFit = ChooseAngleFit(same, opposite, options.MinimumRotationInliers);
@@ -41,6 +42,7 @@ namespace NinePointRotationCalibration
                         angleFit.Span, options.MinimumRotationSpanDegrees));
             }
 
+            // 将旋转样本按已知平移矩阵折算到同一参考台面位置，剥离台面 XY 移动带来的像素位移。
             StagePoint referenceStage = ComputeReferenceStage(observations, angleFit.Inliers);
             NormalizeForStageTranslation(observations, result.StageToPixelMatrix, referenceStage, geometryBackend);
 
@@ -56,6 +58,7 @@ namespace NinePointRotationCalibration
                     "Rotation samples do not define a stable rotation center.");
             }
 
+            // 取角度内点与旋转中心内点的交集进行最终联合精化拟合。
             bool[] combined = new bool[observations.Count];
             int combinedCount = 0;
             for (int i = 0; i < observations.Count; i++)
@@ -228,6 +231,7 @@ namespace NinePointRotationCalibration
             return observations;
         }
 
+        /// <summary>在固定方向乘子（+1 或 -1）下，通过圆均值与 MAD 迭代拟合角度零偏并剔除角度外点。</summary>
         private static RotationAngleFit FitAngleDirection(
             IList<RotationObservation> observations,
             int direction,
@@ -304,6 +308,7 @@ namespace NinePointRotationCalibration
                     reference = observations[i].MachineAngle;
                     hasReference = true;
                 }
+                // 相对于首个样本解包裹机械角与图像角，用于统计旋转跨度及无约束诊断斜率。
                 double x = reference + AngleMath.NormalizeDegrees(observations[i].MachineAngle - reference);
                 double y = (direction * x) + offset + residuals[i];
                 double weight = observations[i].Weight;
@@ -385,6 +390,7 @@ namespace NinePointRotationCalibration
             return new StagePoint(x / totalWeight, y / totalWeight);
         }
 
+        /// <summary>利用平移仿射矩阵扣除台面相对于参考位置的平动像素偏移，提取纯旋转轨迹。</summary>
         private static void NormalizeForStageTranslation(
             IList<RotationObservation> observations,
             AffineMatrix2D stageToPixel,
@@ -404,6 +410,7 @@ namespace NinePointRotationCalibration
             }
         }
 
+        /// <summary>通过两两配对 RANSAC 结合 MAD 迭代精化，鲁棒估计旋转中心像素坐标。</summary>
         private static bool FindRobustCenter(
             IList<RotationObservation> observations,
             RotationAngleFit angleFit,
@@ -420,6 +427,7 @@ namespace NinePointRotationCalibration
             int bestCount = -1;
             double bestError = double.PositiveInfinity;
 
+            // 任意两个不同角度样本即可唯一求解 4 未知量刚体旋转模型，以此作为 RANSAC 种子。
             for (int first = 0; first < observations.Count - 1; first++)
             {
                 if (!angleFit.Inliers[first]) continue;
@@ -506,6 +514,7 @@ namespace NinePointRotationCalibration
                 out centerColumn, out centerRow, out localX, out localY);
         }
 
+        /// <summary>求解刚体圆周运动方程 p_norm = C + R(phi)*local 的加权线性最小二乘解。</summary>
         private static bool FitRigidCenter(
             IList<RotationObservation> observations,
             bool[] included,
@@ -517,6 +526,7 @@ namespace NinePointRotationCalibration
             out double localY)
         {
             centerColumn = centerRow = localX = localY = 0.0;
+            // 未知向量为 [centerColumn, centerRow, localX, localY]^T，每个观测提供 X/Y 两条线性方程。
             double[,] normal = new double[4, 4];
             double[] right = new double[4];
             int count = 0;

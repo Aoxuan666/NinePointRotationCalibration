@@ -9,6 +9,7 @@ using NinePointRotationCalibration.Station.Models;
 
 namespace NinePointRotationCalibration.Station.Services.Inspection
 {
+    /// <summary>负责 PCB 多板模板定位、ROI Blob 标记检测及双吸嘴目标位姿映射的检测服务。</summary>
     public sealed class BoardInspectionService
     {
         private readonly NinePointRotationCalibrationSdk _sdk;
@@ -154,15 +155,13 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
                 }
                 else
                 {
-                    // Only the template is needed; the private snapshot lets NumMatches
-                    // change without touching the caller's job.
+                    // 仅需修改模板匹配上限；使用深拷贝以避免污染外部持有的定位 Job
                     TemplateDefinition locateTemplate = positioningJob.Template.DeepClone();
-                    // Keep one extra candidate so an over-count still reports NG while
-                    // avoiding an unbounded HALCON result set.
+                    // 多允许 1 个匹配候选，以检测超板数 NG 并避免 HALCON 返回无界结果集
                     locateTemplate.MatchParameters.NumMatches = expectedCount == int.MaxValue
                         ? expectedCount
                         : expectedCount + 1;
-                    // Convert the frame once and share it between matching and blob analysis.
+                    // 整帧仅转换一次灰度图，供模板匹配与后续多 ROI Blob 分析共享
                     gray = HalconGrayImage.FromBitmap(image);
                     result.ImageConversionElapsedMilliseconds += gray.ConversionElapsedMilliseconds;
                     Stopwatch matchWatch = Stopwatch.StartNew();
@@ -228,6 +227,7 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
                     }
                 }
 
+                // Success 表示实际板数与预期一致，Pass 还要求全板均无人工白标/不良标记
                 result.CountMatchesExpected = result.ActualCount == result.ExpectedCount;
                 result.HasManualMarks = result.Items.Exists(item => item.HasManualMark);
                 result.Success = result.CountMatchesExpected;
@@ -308,6 +308,7 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
             }
         }
 
+        /// <summary>按行高容差聚类后从上到下、从左到右稳定排序多板匹配结果，保证板号与基准一致。</summary>
         internal static List<TemplateMatchResult> OrderMatches(
             IEnumerable<TemplateMatchResult> matches,
             TemplateDefinition template,

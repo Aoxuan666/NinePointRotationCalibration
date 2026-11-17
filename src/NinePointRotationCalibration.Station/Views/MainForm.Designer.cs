@@ -5,6 +5,7 @@ using NinePointRotationCalibration.Station.Controls;
 
 namespace NinePointRotationCalibration.Station.Views
 {
+    // MainForm 界面控件声明与布局构建
     partial class MainForm
     {
         private IContainer components;
@@ -95,6 +96,7 @@ namespace NinePointRotationCalibration.Station.Views
             ResumeLayout(false);
         }
 
+        // 构建顶部状态指示与全局快捷命令栏
         private Control BuildHeader()
         {
             TableLayoutPanel header = new TableLayoutPanel();
@@ -210,6 +212,7 @@ namespace NinePointRotationCalibration.Station.Views
             return header;
         }
 
+        // 构建中央左右分栏工作区：左侧为图像视口与 HUD，右侧为功能标签页
         private Control BuildWorkspace()
         {
             SplitContainer workspace = new SplitContainer();
@@ -303,6 +306,7 @@ namespace NinePointRotationCalibration.Station.Views
             return workspace;
         }
 
+        // 构建 9+5 标定页（1-9 平移点 + 10-14 旋转点及采样表）
         private TabPage BuildCalibrationTab()
         {
             tabCalibration = CreateTabPage("tabCalibration", "9+5 标定");
@@ -446,6 +450,7 @@ namespace NinePointRotationCalibration.Station.Views
             return page;
         }
 
+        // 构建双吸嘴左右示教页与盲摆策略摘要卡片
         private TabPage BuildTeachingTab()
         {
             TabPage page = CreateTabPage("tabTeaching", "左右示教");
@@ -483,6 +488,7 @@ namespace NinePointRotationCalibration.Station.Views
             return page;
         }
 
+        // 构建标定模板与定位模板管理页
         private TabPage BuildTemplateTab()
         {
             TabPage page = CreateTabPage("tabTemplates", "模板");
@@ -510,6 +516,7 @@ namespace NinePointRotationCalibration.Station.Views
             return page;
         }
 
+        // 构建板件与标记检测参数页、调试入口及检测结果表
         private TabPage BuildDetectionTab()
         {
             TabPage page = CreateTabPage("tabDetection", "检测");
@@ -665,6 +672,7 @@ namespace NinePointRotationCalibration.Station.Views
             return page;
         }
 
+        // 构建相机开关、驱动连接与采集参数页
         private TabPage BuildCameraTab()
         {
             TabPage page = CreateTabPage("tabCamera", "相机");
@@ -787,6 +795,7 @@ namespace NinePointRotationCalibration.Station.Views
             return page;
         }
 
+        // 构建 TCP 通信监听与配置/数据文件路径页
         private TabPage BuildCommunicationTab()
         {
             TabPage page = CreateTabPage("tabCommunication", "通信 / 文件");
@@ -850,6 +859,7 @@ namespace NinePointRotationCalibration.Station.Views
             return page;
         }
 
+        // 构建底部运行日志输出面板
         private Control BuildLogPanel()
         {
             TableLayoutPanel layout = new TableLayoutPanel();
@@ -1000,6 +1010,7 @@ namespace NinePointRotationCalibration.Station.Views
             return group;
         }
 
+        // 通用 UI 控件创建与表格样式辅助方法
         private static TableLayoutPanel CreateScrollableStack(TabPage page)
         {
             page.AutoScroll = true;

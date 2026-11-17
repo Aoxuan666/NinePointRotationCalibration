@@ -17,7 +17,7 @@ using NinePointRotationCalibration.Station.Services.Inspection;
 
 namespace NinePointRotationCalibration.Station.Views
 {
-    /// <summary>User-triggered operations: camera, templates, teaching, inspection, settings and paths.</summary>
+    /// <summary>界面用户操作处理：相机连接与高级参数、模板编辑/测试、左右示教、检测及路径浏览。</summary>
     public sealed partial class MainFormRuntimeBinder
     {
         private async Task EnumerateCamerasAsync(CancellationToken cancellationToken)
@@ -228,6 +228,7 @@ namespace NinePointRotationCalibration.Station.Views
             }
         }
 
+        // 将大华/海康/模拟相机上报的差异化特征统一映射到固定中文表单行，设备不支持项置为只读
         private static List<CameraFeatureValue> CreateFixedCameraFeatures(CameraParameterSet parameters, Dictionary<string, CameraFeatureValue> supported)
         {
             string[] names =
@@ -435,9 +436,7 @@ namespace NinePointRotationCalibration.Station.Views
 
                 if (!result.Accepted)
                 {
-                    // ErrorCode.None is the SDK's explicit user-cancel contract. Any
-                    // other code means the editor failed before/while opening and the
-                    // actual reason must be visible instead of being reported as cancel.
+                    // ErrorCode.None 是 SDK 约定的用户主动取消标识；其它错误码表示打开或校验失败，需向用户展示原因
                     if (result.ErrorCode == CalibrationErrorCode.None)
                     {
                         _view.AppendLog("模板编辑已取消。", false);
@@ -617,9 +616,7 @@ namespace NinePointRotationCalibration.Station.Views
             int expectedCount = Decimal.ToInt32(_view.ExpectedBoardCountInput.Value);
             double currentR = ReadNumeric("nudInspectionCurrentR");
 
-            // The detection-page test remains useful with camera/calibration disabled:
-            // reuse the locked/imported frame through the same offline workflow as the
-            // top-level "检测当前图" command.
+            // 相机或标定功能关闭时，“测试检测”回退复用当前锁定/导入图像走离线检测路径
             if (!_runtime.IsCameraEnabled || !_runtime.IsCalibrationEnabled)
             {
                 using (Bitmap image = SnapshotAndLockCurrentImage())
@@ -653,6 +650,7 @@ namespace NinePointRotationCalibration.Station.Views
             }
         }
 
+        // 锁定当前显示图像打开 Blob 调试弹窗，确认后同步参数至界面和运行时配置
         private void OpenBlobDebugWindow()
         {
             using (Bitmap image = SnapshotAndLockCurrentImage())
@@ -695,6 +693,7 @@ namespace NinePointRotationCalibration.Station.Views
                     using (Image source = Image.FromFile(dialog.FileName))
                         imported = new Bitmap(source);
 
+                    // 交由 PinOwnedDisplayImage 接管位图所有权并锁定显示，imported 置空避免 finally 误释放
                     PinOwnedDisplayImage(
                         imported,
                         "本地图   " + Path.GetFileName(dialog.FileName),

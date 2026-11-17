@@ -10,6 +10,7 @@ using NinePointRotationCalibration.Station.Models;
 
 namespace NinePointRotationCalibration.Station.Services.Communication
 {
+    /// <summary>TCP 协议 JSON 编解码或信封校验失败异常。</summary>
     [Serializable]
     public sealed class ProtocolSerializationException : SerializationException
     {
@@ -29,11 +30,13 @@ namespace NinePointRotationCalibration.Station.Services.Communication
         }
     }
 
+    /// <summary>协议信封的严格 UTF-8 与扁平 JSON 编解码器（禁止非基础 CLR 对象及循环引用）。</summary>
     public sealed class ProtocolJsonCodec
     {
         private const int JsonRecursionLimit = 128;
         private static readonly Encoding StrictUtf8 = new UTF8Encoding(false, true);
 
+        /// <summary>校验并将协议信封序列化为严格 UTF-8 字节数组。</summary>
         public byte[] Serialize(ProtocolEnvelope envelope)
         {
             ValidateEnvelope(envelope);
@@ -71,11 +74,13 @@ namespace NinePointRotationCalibration.Station.Services.Communication
             }
         }
 
+        /// <summary>将协议信封序列化为 JSON 字符串。</summary>
         public string SerializeToString(ProtocolEnvelope envelope)
         {
             return StrictUtf8.GetString(Serialize(envelope));
         }
 
+        /// <summary>将严格 UTF-8 JSON 字节负载反序列化并校验为协议信封。</summary>
         public ProtocolEnvelope Deserialize(byte[] payload)
         {
             if (payload == null) throw new ArgumentNullException(nameof(payload));
@@ -94,6 +99,8 @@ namespace NinePointRotationCalibration.Station.Services.Communication
             return DeserializeJson(json);
         }
 
+        /// <summary>将 JSON 字符串反序列化并校验为协议信封。</summary>
+        /// <summary>将 JSON 字符串反序列化并校验为协议信封。</summary>
         public ProtocolEnvelope Deserialize(string json)
         {
             if (json == null) throw new ArgumentNullException(nameof(json));
@@ -211,6 +218,7 @@ namespace NinePointRotationCalibration.Station.Services.Communication
         {
             if (value == null) return null;
 
+            // 仅接受基础标量、一维数组/列表和字符串键字典；NaN/Infinity、多维数组与自定义对象一律显式拒绝
             Type valueType = value.GetType();
             if (valueType == typeof(string) || valueType == typeof(bool)) return value;
             if (valueType == typeof(char)) return value.ToString();

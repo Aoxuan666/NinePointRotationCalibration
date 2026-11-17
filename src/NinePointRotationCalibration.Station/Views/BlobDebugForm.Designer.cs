@@ -6,6 +6,7 @@ using NinePointRotationCalibration.Station.Controls;
 
 namespace NinePointRotationCalibration.Station.Views
 {
+    // BlobDebugForm 界面控件声明与布局构建
     partial class BlobDebugForm
     {
         private IContainer components;
@@ -38,6 +39,7 @@ namespace NinePointRotationCalibration.Station.Views
         private Timer previewTimer;
         private ToolTip toolTip;
 
+        /// <summary>释放后台分析资源及窗体组件。</summary>
         protected override void Dispose(bool disposing)
         {
             if (disposing)
@@ -103,6 +105,7 @@ namespace NinePointRotationCalibration.Station.Views
             ResumeLayout(false);
         }
 
+        // 构建左侧 Blob 参数调试面板
         private void BuildParameterPanel(Control parent)
         {
             TableLayoutPanel layout = new TableLayoutPanel();
@@ -201,6 +204,7 @@ namespace NinePointRotationCalibration.Station.Views
             parent.Controls.Add(layout);
         }
 
+        // 构建右侧原图/局部二值图对比视口及 Blob 结果表格
         private void BuildPreviewPanel(Control parent)
         {
             TableLayoutPanel layout = new TableLayoutPanel();
@@ -279,6 +283,7 @@ namespace NinePointRotationCalibration.Station.Views
             parent.Controls.Add(layout);
         }
 
+        // 构建底部说明文字与应用/取消按钮栏
         private Control BuildFooter()
         {
             TableLayoutPanel footer = new TableLayoutPanel();
@@ -314,6 +319,7 @@ namespace NinePointRotationCalibration.Station.Views
             return footer;
         }
 
+        // 控件构建与网格样式辅助方法
         private static GroupBox CreateGroupBox(string text)
         {
             GroupBox group = new GroupBox();

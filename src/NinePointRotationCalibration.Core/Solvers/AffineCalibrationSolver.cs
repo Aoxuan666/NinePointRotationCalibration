@@ -50,6 +50,7 @@ namespace NinePointRotationCalibration
                     "Translation samples are collinear, duplicated, or do not form a stable affine model.");
             }
 
+            // 基于初值执行最多 3 轮 MAD 自适应重加权内点精化，逐步剔除漂移外点。
             for (int iteration = 0; iteration < 3; iteration++)
             {
                 if (!FitAffine(observations, inliers, geometryBackend, out matrix))
@@ -108,6 +109,7 @@ namespace NinePointRotationCalibration
             result.InlierCount = inlierCount;
             result.RejectedCount = observations.Count - inlierCount;
 
+            // 从仿射矩阵两列提取机械 X/Y 轴在图像中的基向量，换算像素当量与轴正交夹角。
             Vector2D xAxis = new Vector2D(matrix.M11, matrix.M21);
             Vector2D yAxis = new Vector2D(matrix.M12, matrix.M22);
             result.StageXAxisInImage = xAxis;
@@ -241,6 +243,7 @@ namespace NinePointRotationCalibration
             return observations;
         }
 
+        /// <summary>通过 RANSAC（三点全枚举或随机采样）寻找抗外点的初始仿射模型。</summary>
         private static bool FindInitialModel(
             IList<AffineObservation> observations,
             CalibrationSolverOptions options,
@@ -262,6 +265,7 @@ namespace NinePointRotationCalibration
             long combinations = ((long)observations.Count * (observations.Count - 1) * (observations.Count - 2)) / 6;
             int limit = Math.Max(1, options.RansacIterations);
 
+            // 组合总数不超过迭代上限时枚举全部三点子集；否则使用固定种子随机抽样。
             if (combinations <= limit)
             {
                 int tested = 0;
@@ -339,6 +343,7 @@ namespace NinePointRotationCalibration
                 }
             }
 
+            // 优选内点数最多、权重支持度最高、加权误差最小的候选模型。
             bool better = count > bestCount
                 || (count == bestCount && support > bestSupport + 1e-12)
                 || (count == bestCount && Math.Abs(support - bestSupport) <= 1e-12 && error < bestError);
@@ -350,6 +355,7 @@ namespace NinePointRotationCalibration
             bestInliers = inliers;
         }
 
+        /// <summary>基于指定内点集合拟合二维仿射矩阵（优先调用几何后端，否则使用加权最小二乘）。</summary>
         private static bool FitAffine(
             IList<AffineObservation> observations,
             bool[] included,
@@ -375,6 +381,7 @@ namespace NinePointRotationCalibration
                 return geometryBackend.TryFitAffine(sourceX, sourceY, targetX, targetY, out matrix);
             }
 
+            // 先求加权质心并中心化坐标，避免机械/像素绝对坐标偏大导致正规方程病态。
             int count = 0;
             double totalWeight = 0.0;
             double meanX = 0.0;
@@ -429,6 +436,7 @@ namespace NinePointRotationCalibration
             double covarianceScale = Math.Max(1.0, sxx + syy);
             if (Math.Abs(determinant) <= covarianceScale * covarianceScale * 1e-12) return false;
 
+            // 克莱姆法则求解中心化后的 2x2 线性部分，再由质心映射反推平移项。
             double m11 = ((txColumn * syy) - (tyColumn * sxy)) / determinant;
             double m12 = ((tyColumn * sxx) - (txColumn * sxy)) / determinant;
             double m21 = ((txRow * syy) - (tyRow * sxy)) / determinant;

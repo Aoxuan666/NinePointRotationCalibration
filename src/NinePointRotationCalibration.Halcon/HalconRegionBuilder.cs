@@ -4,8 +4,10 @@ using HalconDotNet;
 
 namespace NinePointRotationCalibration.Halcon
 {
+    /// <summary>将核心区域的几何定义（ROI、掩膜、擦除笔迹、搜索区）构造为 HALCON HRegion。</summary>
     internal static class HalconRegionBuilder
     {
+        /// <summary>生成模板有效区域：主 ROI 裁剪至图像边界后依次应用掩膜、笔迹与反选。</summary>
         public static HRegion BuildEffectiveRegion(TemplateDefinition definition, int imageWidth, int imageHeight)
         {
             if (definition == null)
@@ -48,6 +50,7 @@ namespace NinePointRotationCalibration.Halcon
                             HRegion next;
                             if (mask.Operation == MaskOperation.Include)
                             {
+                                // 恢复区域时与主模板域求交，保证掩膜不会扩展到主 ROI 外部。
                                 using (HRegion restored = current.Union2(clippedMask))
                                 {
                                     next = restored.Intersection(templateDomain);
@@ -116,6 +119,7 @@ namespace NinePointRotationCalibration.Halcon
             }
         }
 
+        /// <summary>构造并裁剪搜索区域；未指定时默认使用整幅图像范围。</summary>
         public static HRegion BuildSearchRegion(RegionDefinition definition, int imageWidth, int imageHeight)
         {
             ValidateImageSize(imageWidth, imageHeight);
@@ -150,6 +154,7 @@ namespace NinePointRotationCalibration.Halcon
             }
         }
 
+        /// <summary>计算区域的面积和质心位置，并校验区域非空且有限。</summary>
         public static void GetAreaCenter(HRegion region, out double area, out double row, out double column)
         {
             if (region == null) throw new ArgumentNullException(nameof(region));
@@ -160,10 +165,12 @@ namespace NinePointRotationCalibration.Halcon
             }
         }
 
+        /// <summary>提取区域内外边界的有序 XLD 轮廓点段。</summary>
         public static List<List<ImagePoint>> ExtractRegionContours(HRegion region)
         {
             if (region == null) throw new ArgumentNullException(nameof(region));
             List<List<ImagePoint>> result = new List<List<ImagePoint>>();
+            // 先求内边界并拆分连通域再转 XLD 中心轮廓，确保含孔洞或分离区域各自独立成段。
             using (HRegion boundary = region.Boundary("inner"))
             using (HRegion components = boundary.Connection())
             {
@@ -202,6 +209,7 @@ namespace NinePointRotationCalibration.Halcon
                     case RegionKind.Rectangle2:
                         ValidateCenterAndLengths(definition, name);
                         if (!IsFinite(definition.PhiRadians)) throw Invalid(name, "angle");
+                        // RegionDefinition.PhiRadians 已采用 HALCON 逆时针弧度约定，直接传入。
                         region.GenRectangle2(
                             definition.CenterRow,
                             definition.CenterColumn,
@@ -273,6 +281,7 @@ namespace NinePointRotationCalibration.Halcon
             ValidatePositive(radius, name + " radius");
             ValidatePoints(points, name);
 
+            // 单点退化为圆；多点折线逐段生成像素线段并按画笔半径做圆形膨胀后合并。
             if (points.Count == 1)
             {
                 HRegion circle = new HRegion();
@@ -383,6 +392,7 @@ namespace NinePointRotationCalibration.Halcon
 
         private static void Replace(ref HRegion current, HRegion next)
         {
+            // 切换区域引用时立即释放旧的 HALCON 区域句柄。
             HRegion previous = current;
             current = next;
             if (previous != null) previous.Dispose();

@@ -5,6 +5,7 @@ using System.Threading;
 
 namespace NinePointRotationCalibration.Station.Services
 {
+    /// <summary>进程级滚动文件日志服务，并统一记录全局未捕获异常与退出事件。</summary>
     public static class StationLog
     {
         private const long MaximumFileBytes = 10 * 1024 * 1024;
@@ -13,11 +14,13 @@ namespace NinePointRotationCalibration.Station.Services
         private static int _initialized;
         private static string _logDirectory;
 
+        /// <summary>本地日志目录路径（访问时自动完成初始化）。</summary>
         public static string LogDirectory
         {
             get { EnsureInitialized(); return _logDirectory; }
         }
 
+        /// <summary>幂等初始化日志目录并挂载进程级异常与退出监听。</summary>
         public static void EnsureInitialized()
         {
             if (Interlocked.CompareExchange(ref _initialized, 1, 0) != 0) return;
@@ -41,6 +44,7 @@ namespace NinePointRotationCalibration.Station.Services
             }
         }
 
+        /// <summary>线程安全地写入一条格式化文本日志并在超限时自动轮转。</summary>
         public static void Write(string level, string source, string message)
         {
             try
@@ -70,6 +74,7 @@ namespace NinePointRotationCalibration.Station.Services
             catch { }
         }
 
+        /// <summary>记录异常的完整堆栈信息。</summary>
         public static void WriteException(string level, string source, Exception exception)
         {
             if (exception != null) Write(level, source, exception.ToString());
@@ -78,6 +83,7 @@ namespace NinePointRotationCalibration.Station.Services
         private static void RotateIfNeeded(string path, int incomingBytes)
         {
             if (!File.Exists(path) || new FileInfo(path).Length + incomingBytes <= MaximumFileBytes) return;
+            // 超出单文件上限时按 .1 ~ .BackupCount 依次顺延归档旧日志文件
             string oldest = path + "." + BackupCount;
             if (File.Exists(oldest)) File.Delete(oldest);
             for (int index = BackupCount - 1; index >= 1; index--)

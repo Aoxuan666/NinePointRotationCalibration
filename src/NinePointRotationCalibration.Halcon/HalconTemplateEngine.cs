@@ -7,8 +7,8 @@ using HalconDotNet;
 namespace NinePointRotationCalibration.Halcon
 {
     /// <summary>
-    /// Owns the HALCON model lifecycle. Calls on one instance are serialized because
-    /// HALCON model handles are mutable native resources.
+    /// 负责 HALCON 模板句柄的生命周期管理与匹配计算。
+    /// 由于原生模型句柄非线程安全，单实例调用通过锁串行化。
     /// </summary>
     public sealed class HalconTemplateEngine : ITemplateMatchingEngine, IGrayImageTemplateMatchingEngine
     {
@@ -20,6 +20,7 @@ namespace NinePointRotationCalibration.Halcon
         private List<List<ImagePoint>> _cachedRelativeContours = new List<List<ImagePoint>>();
         private bool _disposed;
 
+        /// <summary>基于图像域（Shape 或 NCC）创建 HALCON 模板并更新缓存。</summary>
         public TemplateBuildResult BuildTemplate(Bitmap referenceImage, TemplateDefinition definition)
         {
             Stopwatch stopwatch = Stopwatch.StartNew();
@@ -62,6 +63,7 @@ namespace NinePointRotationCalibration.Halcon
                         output.ReferenceImageHeight = referenceImage.Height;
                         output.DomainCenter = new ImagePoint(domainRow, domainColumn);
                         output.ModelReference = new ImagePose(domainRow, domainColumn, 0.0);
+                        // 首次建模且参考锚点未锁定/初始化时，默认以有效区域质心作为锚点。
                         if (anchorWasUninitialized)
                         {
                             output.ReferenceAnchor = output.DomainCenter;
@@ -127,11 +129,13 @@ namespace NinePointRotationCalibration.Halcon
             }
         }
 
+        /// <summary>示教创建模板的兼容别名，内部直接转调 BuildTemplate。</summary>
         public TemplateBuildResult Teach(Bitmap referenceImage, TemplateDefinition definition)
         {
             return BuildTemplate(referenceImage, definition);
         }
 
+        /// <summary>在图像中定位得分最高的单个模板匹配目标。</summary>
         public TemplateMatchResult Locate(Bitmap image, TemplateDefinition definition, bool includeContour = true)
         {
             TemplateMatchCollectionResult collection = LocateAll(image, definition, includeContour);
@@ -145,6 +149,7 @@ namespace NinePointRotationCalibration.Halcon
             return collection.Matches[0];
         }
 
+        /// <summary>在 Bitmap 图像中定位所有满足条件的匹配目标。</summary>
         public TemplateMatchCollectionResult LocateAll(Bitmap image, TemplateDefinition definition, bool includeContour = true)
         {
             if (image == null)
@@ -168,6 +173,7 @@ namespace NinePointRotationCalibration.Halcon
             }
         }
 
+        /// <summary>复用已转换的 HALCON 灰度图定位所有满足条件的匹配目标。</summary>
         public TemplateMatchCollectionResult LocateAll(HalconGrayImage image, TemplateDefinition definition, bool includeContour = true)
         {
             Stopwatch stopwatch = Stopwatch.StartNew();
@@ -181,7 +187,7 @@ namespace NinePointRotationCalibration.Halcon
                 return Complete(TemplateMatchCollectionResult.Failure(CalibrationErrorCode.ParameterInvalid, "Template definition is null."), stopwatch);
             }
 
-            // Callers pass their own snapshot; the definition is only read here.
+            // 调用方传入私有模板快照，本方法仅做只读访问。
             TemplateDefinition snapshot = definition;
             lock (_syncRoot)
             {
@@ -301,6 +307,7 @@ namespace NinePointRotationCalibration.Halcon
             }
         }
 
+        /// <summary>生成模板有效区域的质心、面积与边界轮廓预览。</summary>
         public TemplateRegionPreviewResult PreviewEffectiveRegion(TemplateDefinition definition, int imageWidth, int imageHeight)
         {
             if (definition == null)
@@ -347,6 +354,7 @@ namespace NinePointRotationCalibration.Halcon
             }
         }
 
+        /// <summary>清除并释放当前缓存的 HALCON 模板句柄。</summary>
         public void ClearCache()
         {
             lock (_syncRoot)
@@ -356,6 +364,7 @@ namespace NinePointRotationCalibration.Halcon
             }
         }
 
+        /// <summary>释放缓存的原生模板资源并标记引擎已销毁。</summary>
         public void Dispose()
         {
             lock (_syncRoot)
@@ -370,8 +379,7 @@ namespace NinePointRotationCalibration.Halcon
 
         private void EnsureModelLoaded(TemplateDefinition definition)
         {
-            // Production triggers hit the cache: the declared hash was verified
-            // when this model was loaded, so skip re-hashing the model bytes.
+            // 生产节拍高频命中缓存：模型在首次加载时已做过 SHA-256 校验，此处按键和字节长度快速复用以省去重复哈希。
             int modelLength = definition.ModelData == null ? 0 : definition.ModelData.Length;
             if (!string.IsNullOrWhiteSpace(definition.ModelHash) && modelLength == _cachedModelLength)
             {
@@ -398,9 +406,7 @@ namespace NinePointRotationCalibration.Halcon
                 && ((definition.ModelType == TemplateModelType.Shape && _shapeModel != null)
                     || (definition.ModelType == TemplateModelType.Ncc && _nccModel != null)))
             {
-                // NCC overlay contours are derived from the current effective
-                // region and model reference, not from model.bin alone. Rebuild
-                // them when metadata changes while retaining the native handle.
+                // NCC 叠加轮廓取决于当前有效区域与模型参考点，而非仅由 model.bin 决定；保留原生句柄同时刷新相对轮廓。
                 if (definition.ModelType == TemplateModelType.Ncc)
                     _cachedRelativeContours = GetRelativeContours(definition, null);
                 return;
@@ -565,6 +571,7 @@ namespace NinePointRotationCalibration.Halcon
 
         private static List<List<ImagePoint>> ToRelative(IList<List<ImagePoint>> absolute, ImagePose reference)
         {
+            // 将图像绝对坐标先平移再逆旋转 -referenceAngle，转换到以 ModelReference 为原点的局部坐标系。
             List<List<ImagePoint>> result = new List<List<ImagePoint>>();
             if (absolute == null) return result;
             double referenceRow = reference == null ? 0.0 : reference.Row;
@@ -594,6 +601,7 @@ namespace NinePointRotationCalibration.Halcon
 
         private static ImagePoint TransformAnchor(TemplateDefinition definition, double row, double column, double angle)
         {
+            // 先求参考锚点相对于 ModelReference 的局部偏移，再按匹配位姿 (row, column, angle) 刚体变换到当前图像。
             ImagePose reference = definition.ModelReference ?? new ImagePose(definition.DomainCenter.Row, definition.DomainCenter.Column, 0.0);
             double deltaRow = definition.ReferenceAnchor.Row - reference.Row;
             double deltaColumn = definition.ReferenceAnchor.Column - reference.Column;
@@ -675,8 +683,7 @@ namespace NinePointRotationCalibration.Halcon
             }
             catch (HOperatorException)
             {
-                // Some 19.11 builds do not expose a native per-model timeout.
-                // Elapsed time is still enforced as a soft timeout by the caller.
+                // 部分 HALCON 19.11 构建未开放原生单模型 timeout 参数；调用方仍会按已用时间执行软超时判定。
             }
         }
 
