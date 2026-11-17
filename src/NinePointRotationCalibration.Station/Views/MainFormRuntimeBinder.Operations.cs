@@ -66,6 +66,52 @@ namespace NinePointRotationCalibration.Station.Views
             StationLog.Write("INFO", "camera.switch", "Live preview resumed for " + deviceId + ".");
         }
 
+        private void ToggleArchiveImages()
+        {
+            bool enabled = _view.ArchiveImagesInput != null && _view.ArchiveImagesInput.Checked;
+            _runtime.SetArchiveImages(enabled);
+            _view.SetOperationStatus(enabled ? "已开启保存生产原图" : "已关闭保存生产原图", false, false);
+            _view.AppendLog(enabled ? "已开启保存生产原图。" : "已关闭保存生产原图。", false);
+        }
+
+        private async Task RefreshConnectedCameraUiAsync(CancellationToken cancellationToken)
+        {
+            if (!_runtime.IsCameraEnabled || !_runtime.IsCameraConnected) return;
+
+            StationOptions options = _runtime.GetOptionsSnapshot();
+            string activeId = options.CameraSerialNumber;
+            if (!string.IsNullOrWhiteSpace(activeId))
+            {
+                ComboBox input = _view.CameraDeviceInput;
+                CameraDescriptor existing = input.Items
+                    .OfType<CameraDescriptor>()
+                    .FirstOrDefault(item => string.Equals(item.Id, activeId, StringComparison.OrdinalIgnoreCase));
+                if (existing == null)
+                {
+                    existing = new CameraDescriptor { Id = activeId, DisplayName = activeId };
+                    input.Items.Add(existing);
+                }
+                if (!ReferenceEquals(input.SelectedItem, existing))
+                    input.SelectedItem = existing;
+            }
+
+            try
+            {
+                CameraParameterSet connectedParameters = await _runtime
+                    .GetCameraParametersAsync(cancellationToken)
+                    .ConfigureAwait(true);
+                RenderCameraFeatures(connectedParameters);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                StationLog.WriteException("WARN", "camera.refreshFeatures", exception);
+            }
+        }
+
         private async Task ApplyCameraSettingsAsync(CancellationToken cancellationToken)
         {
             StationOptions before = _runtime.GetOptionsSnapshot();
@@ -129,10 +175,17 @@ namespace NinePointRotationCalibration.Station.Views
         {
             _cameraParameterSnapshot = parameters == null ? null : parameters.Clone();
             FlowLayoutPanel panel = FindControl<FlowLayoutPanel>("flpCameraAdvancedParameters");
+            if (!_cameraFeatureResizeHooked)
+            {
+                _cameraFeatureResizeHooked = true;
+                panel.SizeChanged += delegate { ResizeCameraFeatureRows(panel); };
+            }
+
             panel.SuspendLayout();
             try
             {
                 panel.Controls.Clear();
+                int rowWidth = GetCameraFeatureRowWidth(panel);
                 Dictionary<string, CameraFeatureValue> supported = (parameters == null || parameters.Features == null)
                     ? new Dictionary<string, CameraFeatureValue>(StringComparer.OrdinalIgnoreCase)
                     : parameters.Features.Where(item => item != null && !string.IsNullOrWhiteSpace(item.Name))
@@ -143,12 +196,36 @@ namespace NinePointRotationCalibration.Station.Views
                     if (input == null) continue;
                     input.Tag = feature.Clone();
                     if (input.Controls.Count > 1) input.Controls[1].Tag = feature.Clone();
-                    input.Margin = new Padding(3, 3, 3, 3);
-                    input.Width = Math.Max(260, panel.ClientSize.Width - 28);
+                    input.Margin = new Padding(0, 2, 0, 2);
+                    input.Width = rowWidth;
                     panel.Controls.Add(input);
                 }
             }
             finally { panel.ResumeLayout(true); }
+        }
+
+        private static int GetCameraFeatureRowWidth(FlowLayoutPanel panel)
+        {
+            int available = panel.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - panel.Padding.Horizontal - 6;
+            return Math.Max(260, available);
+        }
+
+        private static void ResizeCameraFeatureRows(FlowLayoutPanel panel)
+        {
+            if (panel == null || panel.IsDisposed || panel.Controls.Count == 0) return;
+            int rowWidth = GetCameraFeatureRowWidth(panel);
+            panel.SuspendLayout();
+            try
+            {
+                foreach (Control child in panel.Controls)
+                {
+                    if (child.Width != rowWidth) child.Width = rowWidth;
+                }
+            }
+            finally
+            {
+                panel.ResumeLayout(true);
+            }
         }
 
         private static List<CameraFeatureValue> CreateFixedCameraFeatures(CameraParameterSet parameters, Dictionary<string, CameraFeatureValue> supported)
@@ -162,23 +239,65 @@ namespace NinePointRotationCalibration.Station.Views
             List<CameraFeatureValue> result = new List<CameraFeatureValue>();
             foreach (string name in names)
             {
-                CameraFeatureValue feature;
-                if (!supported.TryGetValue(name, out feature))
+                CameraFeatureValue defaults = CreateDefaultFixedFeature(name, parameters);
+                CameraFeatureValue raw;
+                if (!supported.TryGetValue(name, out raw))
                 {
                     string alias = name == "Gain" ? "GainRaw" : name == "BlackLevel" ? "BlackLevelRaw" : null;
-                    if (!string.IsNullOrWhiteSpace(alias) && supported.TryGetValue(alias, out feature))
-                        feature = feature.Clone();
-                    else
-                    {
-                        feature = CreateDefaultFixedFeature(name, parameters);
-                        feature.IsWritable = false;
-                    }
+                    if (!string.IsNullOrWhiteSpace(alias)) supported.TryGetValue(alias, out raw);
+                }
+
+                CameraFeatureValue feature = defaults.Clone();
+                if (raw == null)
+                {
+                    feature.IsWritable = false;
                 }
                 else
                 {
-                    feature = feature.Clone();
-                    feature.IsWritable = true;
+                    bool hasTypedMetadata = raw.HasRange || raw.Minimum < raw.Maximum ||
+                        (raw.EnumValues != null && raw.EnumValues.Count > 0) ||
+                        raw.Kind != CameraFeatureKind.Number;
+                    if (hasTypedMetadata)
+                    {
+                        feature.Kind = raw.Kind;
+                        feature.Minimum = raw.Minimum;
+                        feature.Maximum = raw.Maximum;
+                        feature.Increment = raw.Increment;
+                        feature.HasRange = raw.HasRange;
+                        if (raw.EnumValues != null)
+                        {
+                            foreach (string enumItem in raw.EnumValues)
+                            {
+                                if (!string.IsNullOrWhiteSpace(enumItem) && !feature.EnumValues.Contains(enumItem))
+                                    feature.EnumValues.Add(enumItem);
+                            }
+                        }
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(raw.DisplayName) &&
+                        !string.Equals(raw.DisplayName, name, StringComparison.OrdinalIgnoreCase) &&
+                        !string.Equals(raw.DisplayName, raw.Name, StringComparison.OrdinalIgnoreCase))
+                    {
+                        feature.DisplayName = raw.DisplayName;
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(raw.Unit))
+                        feature.Unit = raw.Unit;
+
+                    if (!string.IsNullOrWhiteSpace(raw.Value))
+                    {
+                        decimal unusedNumeric;
+                        bool looksNumericForEnum = feature.Kind == CameraFeatureKind.Enumeration &&
+                            (feature.EnumValues == null || feature.EnumValues.Count == 0 ||
+                             !feature.EnumValues.Contains(raw.Value)) &&
+                            decimal.TryParse(raw.Value, NumberStyles.Float, CultureInfo.InvariantCulture, out unusedNumeric);
+                        if (!looksNumericForEnum)
+                            feature.Value = raw.Value;
+                    }
+
+                    feature.IsWritable = raw.IsWritable;
                 }
+
                 result.Add(feature);
             }
             return result;
@@ -220,7 +339,17 @@ namespace NinePointRotationCalibration.Station.Views
         {
             string label = string.IsNullOrWhiteSpace(feature.DisplayName) ? feature.Name : feature.DisplayName;
             if (feature.Kind == CameraFeatureKind.Boolean)
-                return new CheckBox { AutoSize = true, Text = label, Enabled = feature.IsWritable, Checked = string.Equals(feature.Value, "true", StringComparison.OrdinalIgnoreCase) };
+            {
+                return new CheckBox
+                {
+                    AutoSize = false,
+                    Height = 26,
+                    Padding = new Padding(2, 0, 0, 0),
+                    Text = label,
+                    Enabled = feature.IsWritable,
+                    Checked = string.Equals(feature.Value, "true", StringComparison.OrdinalIgnoreCase)
+                };
+            }
             if (feature.Kind == CameraFeatureKind.Enumeration)
             {
                 ComboBox combo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList };
@@ -244,6 +373,7 @@ namespace NinePointRotationCalibration.Station.Views
                 Increment = feature.Increment > 0.0 ? ToDecimal(feature.Increment, 0.0001M) : (feature.Kind == CameraFeatureKind.Integer ? 1M : 0.01M),
                 Minimum = minimum,
                 Maximum = maximum,
+                TextAlign = HorizontalAlignment.Right,
                 Value = Math.Min(maximum, Math.Max(minimum, current))
             };
             numeric.Enabled = feature.IsWritable;
@@ -252,9 +382,28 @@ namespace NinePointRotationCalibration.Station.Views
 
         private static Control WrapFeatureControl(string label, Control input)
         {
-            FlowLayoutPanel row = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = Padding.Empty };
-            row.Controls.Add(new Label { AutoSize = true, Text = label, Width = 125, TextAlign = ContentAlignment.MiddleLeft, Margin = new Padding(0, 4, 6, 0) });
-            row.Controls.Add(input);
+            TableLayoutPanel row = new TableLayoutPanel();
+            row.ColumnCount = 2;
+            row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 118.0F));
+            row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100.0F));
+            row.RowCount = 1;
+            row.RowStyles.Add(new RowStyle(SizeType.Percent, 100.0F));
+            row.Height = 28;
+            row.Margin = Padding.Empty;
+
+            Label title = new Label
+            {
+                AutoEllipsis = true,
+                AutoSize = false,
+                Dock = DockStyle.Fill,
+                Margin = new Padding(0, 0, 6, 0),
+                Text = label,
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+            input.Dock = DockStyle.Fill;
+            input.Margin = new Padding(0, 2, 0, 2);
+            row.Controls.Add(title, 0, 0);
+            row.Controls.Add(input, 1, 0);
             return row;
         }
 

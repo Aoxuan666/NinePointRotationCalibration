@@ -140,6 +140,7 @@ namespace NinePointRotationCalibration.Station.Services
         public bool IsCameraConnected { get { return _camera.IsConnected; } }
         public bool IsCameraEnabled { get { lock (_stateSync) return _options.CameraEnabled; } }
         public bool IsCalibrationEnabled { get { lock (_stateSync) return _options.CalibrationEnabled; } }
+        public bool IsArchiveImagesEnabled { get { lock (_stateSync) return _options.ArchiveImages; } }
 
         public StationOptions GetOptionsSnapshot()
         {
@@ -657,6 +658,21 @@ namespace NinePointRotationCalibration.Station.Services
             {
                 _workflowGate.Release();
             }
+        }
+
+        public void SetArchiveImages(bool enabled)
+        {
+            ThrowIfDisposed();
+            StationOptions snapshot;
+            lock (_stateSync)
+            {
+                if (_options.ArchiveImages == enabled) return;
+                _options.ArchiveImages = enabled;
+                _options.ConfigurationVersion = StationOptions.CurrentConfigurationVersion;
+                snapshot = _options.DeepClone();
+            }
+            _jsonStore.Save(_optionsPath, snapshot);
+            OnLog("INFO", "Image archiving " + (enabled ? "enabled" : "disabled") + ".");
         }
 
         public void UpdateDetectionProfile(DetectionProfile profile)

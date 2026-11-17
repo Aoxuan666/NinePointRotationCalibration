@@ -22,6 +22,7 @@ namespace NinePointRotationCalibration.Station.Views
         private ComboBox cmbCameraDevice;
         private CheckBox chkCameraEnabled;
         private CheckBox chkCalibrationEnabled;
+        private CheckBox chkArchiveImages;
         private TextBox txtTcpBindAddress;
         private NumericUpDown nudTcpPort;
         private Label lblCameraIndicator;
@@ -326,7 +327,7 @@ namespace NinePointRotationCalibration.Station.Views
             editor.RowStyles.Add(new RowStyle(SizeType.Percent, 100.0F));
 
             GroupBox pointsGroup = CreateGroupBox("标定点位");
-            pointsGroup.Padding = new Padding(8, 23, 8, 8);
+            pointsGroup.Padding = new Padding(8, 6, 8, 8);
             TableLayoutPanel pointLayout = new TableLayoutPanel();
             pointLayout.ColumnCount = 3;
             pointLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.333F));
@@ -448,12 +449,12 @@ namespace NinePointRotationCalibration.Station.Views
         private TabPage BuildTeachingTab()
         {
             TabPage page = CreateTabPage("tabTeaching", "左右示教");
-            TableLayoutPanel layout = CreateScrollableStack();
+            TableLayoutPanel layout = CreateScrollableStack(page);
             layout.RowCount = 4;
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 232.0F));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 232.0F));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 62.0F));
-            layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100.0F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 216.0F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 216.0F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 58.0F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 52.0F));
 
             TextBox[] leftValues;
             TextBox[] rightValues;
@@ -479,18 +480,17 @@ namespace NinePointRotationCalibration.Station.Views
             layout.Controls.Add(rightGroup, 0, 1);
             layout.Controls.Add(lblDualNozzleSummary, 0, 2);
             layout.Controls.Add(hint, 0, 3);
-            page.Controls.Add(layout);
             return page;
         }
 
         private TabPage BuildTemplateTab()
         {
             TabPage page = CreateTabPage("tabTemplates", "模板");
-            TableLayoutPanel layout = CreateScrollableStack();
+            TableLayoutPanel layout = CreateScrollableStack(page);
             layout.RowCount = 3;
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 238.0F));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 238.0F));
-            layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100.0F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 214.0F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 214.0F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48.0F));
 
             GroupBox calibration = BuildTemplateGroup(
                 "标定模板",
@@ -507,7 +507,6 @@ namespace NinePointRotationCalibration.Station.Views
             layout.Controls.Add(calibration, 0, 0);
             layout.Controls.Add(positioning, 0, 1);
             layout.Controls.Add(hint, 0, 2);
-            page.Controls.Add(layout);
             return page;
         }
 
@@ -520,7 +519,7 @@ namespace NinePointRotationCalibration.Station.Views
             layout.Dock = DockStyle.Fill;
             layout.Padding = new Padding(8);
             layout.RowCount = 4;
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 272.0F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 290.0F));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 40.0F));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 26.0F));
             layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100.0F));
@@ -669,26 +668,26 @@ namespace NinePointRotationCalibration.Station.Views
         private TabPage BuildCameraTab()
         {
             TabPage page = CreateTabPage("tabCamera", "相机");
-            TableLayoutPanel layout = CreateScrollableStack();
+            TableLayoutPanel layout = CreateScrollableStack(page);
             layout.RowCount = 6;
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 74.0F));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 148.0F));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 228.0F));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 220.0F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 94.0F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 158.0F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 254.0F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 210.0F));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42.0F));
-            layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100.0F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48.0F));
 
             GroupBox mode = CreateGroupBox("运行开关");
             FlowLayoutPanel modeOptions = new FlowLayoutPanel();
             modeOptions.Dock = DockStyle.Fill;
             modeOptions.FlowDirection = FlowDirection.LeftToRight;
-            modeOptions.Padding = new Padding(8, 8, 8, 4);
-            modeOptions.WrapContents = false;
+            modeOptions.Padding = new Padding(6, 2, 6, 2);
+            modeOptions.WrapContents = true;
 
             chkCameraEnabled = new CheckBox();
             chkCameraEnabled.AutoSize = true;
             chkCameraEnabled.Checked = true;
-            chkCameraEnabled.Margin = new Padding(0, 4, 24, 0);
+            chkCameraEnabled.Margin = new Padding(0, 3, 14, 3);
             chkCameraEnabled.Name = "chkCameraEnabled";
             chkCameraEnabled.Text = "启用相机";
             chkCameraEnabled.UseVisualStyleBackColor = true;
@@ -696,36 +695,42 @@ namespace NinePointRotationCalibration.Station.Views
             chkCalibrationEnabled = new CheckBox();
             chkCalibrationEnabled.AutoSize = true;
             chkCalibrationEnabled.Checked = true;
-            chkCalibrationEnabled.Margin = new Padding(0, 4, 0, 0);
+            chkCalibrationEnabled.Margin = new Padding(0, 3, 14, 3);
             chkCalibrationEnabled.Name = "chkCalibrationEnabled";
             chkCalibrationEnabled.Text = "启用标定与坐标换算";
             chkCalibrationEnabled.UseVisualStyleBackColor = true;
 
-            CheckBox archiveImages = new CheckBox();
-            archiveImages.AutoSize = true;
-            archiveImages.Checked = false;
-            archiveImages.Margin = new Padding(0, 4, 0, 0);
-            archiveImages.Name = "chkArchiveImages";
-            archiveImages.Text = "保存生产原图（默认关闭）";
-            archiveImages.UseVisualStyleBackColor = true;
+            chkArchiveImages = new CheckBox();
+            chkArchiveImages.AutoSize = true;
+            chkArchiveImages.Checked = false;
+            chkArchiveImages.Margin = new Padding(0, 3, 0, 3);
+            chkArchiveImages.Name = "chkArchiveImages";
+            chkArchiveImages.Tag = "camera.archiveImages";
+            chkArchiveImages.Text = "保存生产原图（默认关闭）";
+            chkArchiveImages.UseVisualStyleBackColor = true;
 
             modeOptions.Controls.Add(chkCameraEnabled);
             modeOptions.Controls.Add(chkCalibrationEnabled);
-            modeOptions.Controls.Add(archiveImages);
+            modeOptions.Controls.Add(chkArchiveImages);
             mode.Controls.Add(modeOptions);
 
             GroupBox connection = CreateGroupBox("相机连接");
             TableLayoutPanel connectionFields = CreateFieldTable(2);
+            connectionFields.AutoScroll = false;
+            connectionFields.Padding = new Padding(8, 5, 8, 5);
             cmbCameraProvider = CreateComboBox("cmbCameraProvider");
             cmbCameraProvider.Items.AddRange(new object[] { "大华 (CameraDH)", "海康 (MVS)", "模拟相机" });
             cmbCameraProvider.SelectedIndex = 0;
             cmbCameraDevice = CreateComboBox("cmbCameraDevice");
             AddField(connectionFields, 0, "相机驱动", cmbCameraProvider);
             AddField(connectionFields, 1, "设备", cmbCameraDevice);
+            connectionFields.RowCount = 3;
+            connectionFields.RowStyles.Add(new RowStyle(SizeType.Absolute, 38.0F));
             FlowLayoutPanel cameraCommands = new FlowLayoutPanel();
-            cameraCommands.AutoSize = true;
+            cameraCommands.AutoSize = false;
             cameraCommands.Dock = DockStyle.Fill;
             cameraCommands.Margin = Padding.Empty;
+            cameraCommands.Padding = new Padding(0, 3, 0, 2);
             cameraCommands.WrapContents = false;
             cameraCommands.Controls.Add(CreateButton("btnEnumerateCamera", "枚举", 68, 30, false, "camera.enumerate"));
             cameraCommands.Controls.Add(CreateButton("btnConnectCamera", "连接", 68, 30, true, "camera.connect"));
@@ -736,6 +741,8 @@ namespace NinePointRotationCalibration.Station.Views
 
             GroupBox acquisition = CreateGroupBox("采集参数");
             TableLayoutPanel acquisitionFields = CreateFieldTable(2);
+            acquisitionFields.AutoScroll = false;
+            acquisitionFields.Padding = new Padding(8, 5, 8, 5);
             acquisitionFields.RowCount = 6;
             acquisitionFields.RowStyles.Add(new RowStyle(SizeType.Absolute, 34.0F));
             acquisitionFields.RowStyles.Add(new RowStyle(SizeType.Absolute, 34.0F));
@@ -777,29 +784,33 @@ namespace NinePointRotationCalibration.Station.Views
             layout.Controls.Add(advanced, 0, 3);
             layout.Controls.Add(actions, 0, 4);
             layout.Controls.Add(hint, 0, 5);
-            page.Controls.Add(layout);
             return page;
         }
 
         private TabPage BuildCommunicationTab()
         {
             TabPage page = CreateTabPage("tabCommunication", "通信 / 文件");
-            TableLayoutPanel layout = CreateScrollableStack();
+            TableLayoutPanel layout = CreateScrollableStack(page);
             layout.RowCount = 3;
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 174.0F));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 292.0F));
-            layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100.0F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 158.0F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 272.0F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48.0F));
 
             GroupBox tcp = CreateGroupBox("TCP 服务端");
             TableLayoutPanel tcpFields = CreateFieldTable(2);
+            tcpFields.AutoScroll = false;
+            tcpFields.Padding = new Padding(8, 5, 8, 5);
             txtTcpBindAddress = CreateTextBox("txtTcpBindAddress", "0.0.0.0");
             nudTcpPort = CreateDecimalInput("nudTcpPort", 9100.0M, 1.0M, 65535.0M, 0);
             AddField(tcpFields, 0, "监听地址", txtTcpBindAddress);
             AddField(tcpFields, 1, "监听端口", nudTcpPort);
+            tcpFields.RowCount = 3;
+            tcpFields.RowStyles.Add(new RowStyle(SizeType.Absolute, 38.0F));
             FlowLayoutPanel tcpCommands = new FlowLayoutPanel();
-            tcpCommands.AutoSize = true;
+            tcpCommands.AutoSize = false;
             tcpCommands.Dock = DockStyle.Fill;
             tcpCommands.Margin = Padding.Empty;
+            tcpCommands.Padding = new Padding(0, 3, 0, 2);
             tcpCommands.Controls.Add(CreateButton("btnStartTcp", "启动监听", 88, 30, true, "tcp.start"));
             tcpCommands.Controls.Add(CreateButton("btnStopTcp", "停止监听", 88, 30, false, "tcp.stop"));
             tcpFields.Controls.Add(tcpCommands, 0, 2);
@@ -808,19 +819,19 @@ namespace NinePointRotationCalibration.Station.Views
 
             GroupBox files = CreateGroupBox("配置与数据文件");
             TableLayoutPanel fileFields = new TableLayoutPanel();
-            fileFields.AutoScroll = true;
+            fileFields.AutoScroll = false;
             fileFields.ColumnCount = 3;
             fileFields.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 96.0F));
             fileFields.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100.0F));
             fileFields.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 62.0F));
             fileFields.Dock = DockStyle.Fill;
-            fileFields.Padding = new Padding(8, 6, 8, 6);
+            fileFields.Padding = new Padding(8, 5, 8, 5);
             fileFields.RowCount = 5;
-            fileFields.RowStyles.Add(new RowStyle(SizeType.Absolute, 46.0F));
-            fileFields.RowStyles.Add(new RowStyle(SizeType.Absolute, 46.0F));
-            fileFields.RowStyles.Add(new RowStyle(SizeType.Absolute, 46.0F));
-            fileFields.RowStyles.Add(new RowStyle(SizeType.Absolute, 46.0F));
-            fileFields.RowStyles.Add(new RowStyle(SizeType.Absolute, 46.0F));
+            fileFields.RowStyles.Add(new RowStyle(SizeType.Absolute, 44.0F));
+            fileFields.RowStyles.Add(new RowStyle(SizeType.Absolute, 44.0F));
+            fileFields.RowStyles.Add(new RowStyle(SizeType.Absolute, 44.0F));
+            fileFields.RowStyles.Add(new RowStyle(SizeType.Absolute, 44.0F));
+            fileFields.RowStyles.Add(new RowStyle(SizeType.Absolute, 44.0F));
             AddPathField(fileFields, 0, "标定文件", "txtCalibrationFile", "files.calibration.browse");
             AddPathField(fileFields, 1, "定位文件", "txtPositioningFile", "files.positioning.browse");
             AddPathField(fileFields, 2, "示教文件", "txtTeachingFile", "files.teaching.browse");
@@ -836,7 +847,6 @@ namespace NinePointRotationCalibration.Station.Views
             layout.Controls.Add(tcp, 0, 0);
             layout.Controls.Add(files, 0, 1);
             layout.Controls.Add(savePanel, 0, 2);
-            page.Controls.Add(layout);
             return page;
         }
 
@@ -990,14 +1000,17 @@ namespace NinePointRotationCalibration.Station.Views
             return group;
         }
 
-        private static TableLayoutPanel CreateScrollableStack()
+        private static TableLayoutPanel CreateScrollableStack(TabPage page)
         {
+            page.AutoScroll = true;
             TableLayoutPanel layout = new TableLayoutPanel();
-            layout.AutoScroll = true;
+            layout.AutoSize = true;
+            layout.AutoSizeMode = AutoSizeMode.GrowAndShrink;
             layout.ColumnCount = 1;
             layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100.0F));
-            layout.Dock = DockStyle.Fill;
+            layout.Dock = DockStyle.Top;
             layout.Padding = new Padding(8);
+            page.Controls.Add(layout);
             return layout;
         }
 
@@ -1018,7 +1031,7 @@ namespace NinePointRotationCalibration.Station.Views
             group.Dock = DockStyle.Fill;
             group.Font = new Font("Microsoft YaHei UI", 9.0F, FontStyle.Bold, GraphicsUnit.Point, 134);
             group.Margin = new Padding(3, 3, 3, 7);
-            group.Padding = new Padding(6, 21, 6, 6);
+            group.Padding = new Padding(6, 4, 6, 6);
             group.Text = text;
             return group;
         }
@@ -1079,11 +1092,11 @@ namespace NinePointRotationCalibration.Station.Views
             Label label = new Label();
             label.AutoEllipsis = true;
             label.Dock = DockStyle.Fill;
-            label.Margin = new Padding(0, 3, 5, 3);
+            label.Margin = new Padding(0, 2, 5, 2);
             label.Text = labelText;
             label.TextAlign = ContentAlignment.MiddleLeft;
             editor.Dock = DockStyle.Fill;
-            editor.Margin = new Padding(0, 5, 8, 5);
+            editor.Margin = new Padding(0, 3, 8, 3);
             table.Controls.Add(label, column, row);
             table.Controls.Add(editor, column + 1, row);
         }

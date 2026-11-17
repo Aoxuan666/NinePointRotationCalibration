@@ -46,6 +46,7 @@ namespace NinePointRotationCalibration.Station.Views
         private long _displayGeneration;
         private long _inspectionFrameGeneration = -1;
         private bool _disposed;
+        private bool _cameraFeatureResizeHooked;
         private CameraParameterSet _cameraParameterSnapshot;
 
         public MainFormRuntimeBinder(MainForm view, StationRuntime runtime)
@@ -103,9 +104,8 @@ namespace NinePointRotationCalibration.Station.Views
                     : options.CameraFeatures.Select(item => new CameraFeatureValue
                     {
                         Name = item.Key,
-                        DisplayName = item.Key,
                         Value = item.Value,
-                        IsWritable = true
+                        IsWritable = false
                     }).ToList()
             });
             ComboBox triggerMode = FindControl<ComboBox>("cmbCameraTriggerMode");
@@ -114,9 +114,12 @@ namespace NinePointRotationCalibration.Station.Views
                 : string.Equals(options.CameraTriggerMode, "Continuous", StringComparison.OrdinalIgnoreCase)
                     ? "连续采集"
                     : "软件触发";
-            FindControl<CheckBox>("chkArchiveImages").Checked = options.ArchiveImages;
             SelectCameraProvider(options.CameraProvider);
-            _view.RefreshFeatureAvailability(options.CameraEnabled, options.CalibrationEnabled, false);
+            _view.RefreshFeatureAvailability(
+                options.CameraEnabled,
+                options.CalibrationEnabled,
+                options.ArchiveImages,
+                false);
 
             SetPathPair("txtCalibrationTemplatePath", "txtCalibrationFile", options.CalibrationJobPath);
             SetPathPair("txtPositioningTemplatePath", "txtPositioningFile", options.PositioningJobPath);
@@ -171,7 +174,10 @@ namespace NinePointRotationCalibration.Station.Views
                     if (!_runtime.IsCameraEnabled)
                         _view.SetCameraStatus(CameraUiState.Disabled, string.Empty);
                     else if (_runtime.IsCameraConnected)
+                    {
                         _view.SetCameraStatus(CameraUiState.Connected, "已就绪");
+                        await RefreshConnectedCameraUiAsync(token).ConfigureAwait(true);
+                    }
                 }).ConfigureAwait(true);
         }
 
@@ -181,8 +187,9 @@ namespace NinePointRotationCalibration.Station.Views
 
             bool cameraEnabled = _view.CameraEnabledInput.Checked;
             bool calibrationEnabled = _view.CalibrationEnabledInput.Checked;
+            bool shouldAttemptConnect = cameraEnabled && _runtime.IsStarted && !_runtime.IsCameraConnected;
             bool resumePreview = cameraEnabled && !_runtime.IsCameraEnabled;
-            if (cameraEnabled && !_runtime.IsCameraConnected)
+            if (shouldAttemptConnect)
                 _view.SetCameraStatus(CameraUiState.Connecting, "正在自动连接");
 
             await RunOperationAsync(
@@ -193,6 +200,8 @@ namespace NinePointRotationCalibration.Station.Views
                     await _runtime.ApplyEnablementAsync(cameraEnabled, calibrationEnabled, token)
                         .ConfigureAwait(true);
                     if (resumePreview) ResumeLivePreview();
+                    if (_runtime.IsCameraEnabled && _runtime.IsCameraConnected)
+                        await RefreshConnectedCameraUiAsync(token).ConfigureAwait(true);
                 })
                 .ConfigureAwait(true);
         }
@@ -291,6 +300,9 @@ namespace NinePointRotationCalibration.Station.Views
                         return;
                     case "camera.apply":
                         await RunOperationAsync("应用相机参数", e.Source, ApplyCameraSettingsAsync).ConfigureAwait(true);
+                        return;
+                    case "camera.archiveImages":
+                        ToggleArchiveImages();
                         return;
                     case "camera.test":
                         await RunOperationAsync(
@@ -426,6 +438,7 @@ namespace NinePointRotationCalibration.Station.Views
             _view.RefreshFeatureAvailability(
                 _view.CameraEnabledInput.Checked,
                 _view.CalibrationEnabledInput.Checked,
+                _view.ArchiveImagesInput != null && _view.ArchiveImagesInput.Checked,
                 true);
             _view.SetOperationStatus(description + "...", true, false);
             try
@@ -457,6 +470,7 @@ namespace NinePointRotationCalibration.Station.Views
                     _view.RefreshFeatureAvailability(
                         _runtime.IsCameraEnabled,
                         _runtime.IsCalibrationEnabled,
+                        _runtime.IsArchiveImagesEnabled,
                         false);
                 }
             }

@@ -163,6 +163,12 @@ namespace NinePointRotationCalibration.Station.Views
         }
 
         [Browsable(false)]
+        public CheckBox ArchiveImagesInput
+        {
+            get { return chkArchiveImages; }
+        }
+
+        [Browsable(false)]
         public Button ImportImageButton
         {
             get { return btnImportImage; }
@@ -265,6 +271,19 @@ namespace NinePointRotationCalibration.Station.Views
 
         public void RefreshFeatureAvailability(bool cameraEnabled, bool calibrationEnabled, bool workflowBusy)
         {
+            RefreshFeatureAvailability(
+                cameraEnabled,
+                calibrationEnabled,
+                chkArchiveImages != null && chkArchiveImages.Checked,
+                workflowBusy);
+        }
+
+        public void RefreshFeatureAvailability(
+            bool cameraEnabled,
+            bool calibrationEnabled,
+            bool archiveImages,
+            bool workflowBusy)
+        {
             RunOnUiThread(delegate
             {
                 _suppressFeatureEvents = true;
@@ -272,6 +291,7 @@ namespace NinePointRotationCalibration.Station.Views
                 {
                     chkCameraEnabled.Checked = cameraEnabled;
                     chkCalibrationEnabled.Checked = calibrationEnabled;
+                    if (chkArchiveImages != null) chkArchiveImages.Checked = archiveImages;
                 }
                 finally
                 {
@@ -756,6 +776,7 @@ namespace NinePointRotationCalibration.Station.Views
 
         private void CommandValue_Changed(object sender, EventArgs e)
         {
+            if (_suppressFeatureEvents) return;
             Control source = sender as Control;
             RaiseUiAction(source == null ? string.Empty : Convert.ToString(source.Tag), source);
         }
@@ -807,6 +828,7 @@ namespace NinePointRotationCalibration.Station.Views
 
             chkCameraEnabled.Enabled = !workflowBusy;
             chkCalibrationEnabled.Enabled = !workflowBusy;
+            if (chkArchiveImages != null) chkArchiveImages.Enabled = !workflowBusy;
             cmbCameraProvider.Enabled = cameraEnabled && !workflowBusy;
             cmbCameraDevice.Enabled = cameraEnabled && !workflowBusy;
             string[] cameraParameterControls =
@@ -816,7 +838,8 @@ namespace NinePointRotationCalibration.Station.Views
                 "nudCameraGamma",
                 "cmbCameraTriggerMode",
                 "nudCameraTimeout",
-                "nudPreviewInterval"
+                "nudPreviewInterval",
+                "flpCameraAdvancedParameters"
             };
             foreach (string controlName in cameraParameterControls)
                 SetControlEnabled(controlName, cameraEnabled && !workflowBusy);

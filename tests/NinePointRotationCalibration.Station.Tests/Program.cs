@@ -129,6 +129,7 @@ namespace NinePointRotationCalibration.Station.Tests
             Run("Locked inspection frames reject preview and stale overlays", TestLockedFrameDisplay);
             Run("Empty image viewport is a plain black surface", TestEmptyViewportIsBlack);
             Run("Positioning template owns and migrates detection ROI", TestPositioningJobLoadRoi);
+            Run("Camera tab layout prevents clipping and wires switches cleanly", TestCameraTabLayoutAndSwitches);
 
             Console.WriteLine();
             Console.WriteLine("Passed: {0}; Failed: {1}", _passed, _failed);
@@ -2041,6 +2042,9 @@ namespace NinePointRotationCalibration.Station.Tests
                 True(form.CalibrationEnabledInput != null &&
                     form.CalibrationEnabledInput.Name == "chkCalibrationEnabled",
                     "calibration enable switch must be exposed");
+                True(form.ArchiveImagesInput != null &&
+                    form.ArchiveImagesInput.Name == "chkArchiveImages",
+                    "archive images switch must be exposed");
                 True(form.ImportImageButton != null && form.ImportImageButton.Name == "btnImportImage",
                     "local image import command must be exposed");
                 True(form.DetectCurrentImageButton != null &&
@@ -2137,6 +2141,95 @@ namespace NinePointRotationCalibration.Station.Tests
                     True(!form.FindActionControl(action).Enabled,
                         "template action must be disabled while a workflow is busy: " + action);
                 }
+            }
+        }
+
+        private static void TestCameraTabLayoutAndSwitches()
+        {
+            string directory = Path.Combine(
+                Path.GetTempPath(),
+                "NinePointRotationCalibration.Station.Tests",
+                Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+            try
+            {
+                string optionsPath = Path.Combine(directory, "station.json");
+                StationOptions options = CreateTestOptions(
+                    directory,
+                    Path.Combine(directory, "detection.json"),
+                    Path.Combine(directory, "positioning.nprcal"));
+                options.CameraEnabled = false;
+                options.ArchiveImages = false;
+                options.CameraFeatures["ExposureAuto"] = "0.0000";
+                options.CameraFeatures["GainAuto"] = "Off";
+                new AtomicJsonStore().Save(optionsPath, options);
+
+                using (StationRuntime runtime = CreateRuntime(optionsPath, options))
+                using (MainForm form = new MainForm())
+                using (MainFormRuntimeBinder binder = new MainFormRuntimeBinder(form, runtime))
+                {
+                    int actionEvents = 0;
+                    form.UiActionRequested += delegate { actionEvents++; };
+                    form.RefreshFeatureAvailability(false, true, false, false);
+                    True(actionEvents == 0, "RefreshFeatureAvailability must suppress archive toggle events");
+
+                    form.ArchiveImagesInput.Checked = true;
+                    True(runtime.IsArchiveImagesEnabled,
+                        "toggling chkArchiveImages must immediately enable image archiving on runtime");
+                    StationOptions reloaded = new AtomicJsonStore().Load<StationOptions>(optionsPath);
+                    True(reloaded.ArchiveImages,
+                        "toggling chkArchiveImages must immediately persist ArchiveImages to station.json");
+
+                    Control advPanel = form.Controls.Find("flpCameraAdvancedParameters", true).Single();
+                    True(!advPanel.Enabled,
+                        "advanced camera parameters panel must be disabled when camera is disabled");
+                    TableLayoutPanel firstRow = advPanel.Controls.OfType<TableLayoutPanel>().First();
+                    Label firstLabel = firstRow.Controls.OfType<Label>().Single();
+                    ComboBox firstCombo = firstRow.Controls.OfType<ComboBox>().Single();
+                    True(firstLabel.Text == "自动曝光" && Equals(firstCombo.SelectedItem, "Off"),
+                        "ExposureAuto must keep localized ComboBox metadata instead of stale 0.0000 numeric fallback");
+
+                    form.StartPosition = FormStartPosition.Manual;
+                    form.Location = new Point(-32000, -32000);
+                    form.ShowInTaskbar = false;
+                    form.Show();
+                    try
+                    {
+                        TabPage tabCamera = form.WorkTabs.TabPages["tabCamera"];
+                        form.WorkTabs.SelectedTab = tabCamera;
+                        form.PerformLayout();
+                        tabCamera.PerformLayout();
+
+                        True(tabCamera.VerticalScroll.Visible,
+                            "camera tab must expose a vertical scrollbar when stacked content exceeds viewport height");
+                        foreach (string name in new[]
+                        {
+                            "chkCameraEnabled",
+                            "chkCalibrationEnabled",
+                            "chkArchiveImages",
+                            "btnEnumerateCamera",
+                            "btnConnectCamera",
+                            "btnDisconnectCamera",
+                            "nudPreviewInterval"
+                        })
+                        {
+                            Control control = form.Controls.Find(name, true).Single();
+                            Control parent = control.Parent;
+                            True(control.Bottom <= parent.ClientSize.Height,
+                                name + " must not be vertically clipped (" + control.Bottom + " > " + parent.ClientSize.Height + ")");
+                            True(control.Right <= parent.ClientSize.Width,
+                                name + " must not be horizontally clipped (" + control.Right + " > " + parent.ClientSize.Width + ")");
+                        }
+                    }
+                    finally
+                    {
+                        form.Close();
+                    }
+                }
+            }
+            finally
+            {
+                if (Directory.Exists(directory)) Directory.Delete(directory, true);
             }
         }
 
