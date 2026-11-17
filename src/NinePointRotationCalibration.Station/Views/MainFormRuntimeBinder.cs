@@ -145,6 +145,9 @@ namespace NinePointRotationCalibration.Station.Views
 
             foreach (CalibrationPointRecord record in _runtime.GetCalibrationRecordsSnapshot())
                 ApplyCalibrationRecord(record);
+            CalibrationResult initialCalibration = _runtime.GetCalibrationResultSnapshot();
+            _view.SetCalibrationRmsSummary(initialCalibration);
+            _view.ApplyCalibrationDiagnostics(initialCalibration);
 
             if (!options.CameraEnabled)
                 _view.SetCameraStatus(CameraUiState.Disabled, string.Empty);

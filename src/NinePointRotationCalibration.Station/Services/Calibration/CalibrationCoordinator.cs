@@ -339,6 +339,7 @@ namespace NinePointRotationCalibration.Station.Services.Calibration
             CalibrationJob job;
             lock (_sync) job = _job.DeepClone();
             CalibrationResult result = await Task.Run(() => _sdk.Calculate(job), cancellationToken).ConfigureAwait(false);
+            CalibrationRmsAssessment rms = result.EvaluateRms(job.SolverOptions);
             OnCalculationCompleted(result);
 
             ProtocolEnvelope response = ProtocolEnvelope.Create(ProtocolMessageTypes.CalibrationCompleted);
@@ -346,7 +347,14 @@ namespace NinePointRotationCalibration.Station.Services.Calibration
             response.Data["errorCode"] = result.ErrorCode.ToString();
             response.Data["message"] = result.Message ?? string.Empty;
             response.Data["rmsResidualPixels"] = result.RmsResidualPixels;
+            response.Data["rmsResidualStage"] = result.RmsResidualStage;
             response.Data["maxResidualPixels"] = result.MaxResidualPixels;
+            response.Data["rotationCenterRmsPixels"] = result.Rotation == null ? 0.0 : result.Rotation.CenterRmsResidualPixels;
+            response.Data["rotationAngleRmsDegrees"] = result.Rotation == null ? 0.0 : result.Rotation.AngleRmsDegrees;
+            response.Data["rmsScore"] = rms.Score;
+            response.Data["rmsGrade"] = rms.GradeLabel ?? string.Empty;
+            response.Data["rmsReasonable"] = rms.IsReasonable;
+            response.Data["rmsSummary"] = rms.Summary ?? string.Empty;
             response.Data["resolutionX"] = result.ResolutionX;
             response.Data["resolutionY"] = result.ResolutionY;
             try

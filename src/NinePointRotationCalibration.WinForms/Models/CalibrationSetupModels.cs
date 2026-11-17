@@ -101,7 +101,21 @@ namespace NinePointRotationCalibration.WinForms.Models
 
         public double RmsResidualPixels { get; set; }
 
+        public double RmsResidualStage { get; set; }
+
         public double MaximumResidualPixels { get; set; }
+
+        public int RmsScore { get; set; }
+
+        public bool IsRmsReasonable { get; set; }
+
+        public string RmsGradeLabel { get; set; }
+
+        public string RmsSummary { get; set; }
+
+        public string RmsRecommendation { get; set; }
+
+        public string RmsCriteriaText { get; set; }
 
         public int InlierCount { get; set; }
 

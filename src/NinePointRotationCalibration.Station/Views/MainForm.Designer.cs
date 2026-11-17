@@ -47,6 +47,7 @@ namespace NinePointRotationCalibration.Station.Views
         private Label lblLeftTeachingStatus;
         private Label lblRightTeachingStatus;
         private Label lblDualNozzleSummary;
+        private Label lblCalibrationRmsSummary;
         private TabPage tabCalibration;
         private ToolTip toolTip;
 
@@ -311,15 +312,19 @@ namespace NinePointRotationCalibration.Station.Views
         {
             tabCalibration = CreateTabPage("tabCalibration", "9+5 标定");
             TabPage page = tabCalibration;
+            page.AutoScroll = true;
+            page.AutoScrollMinSize = new Size(0, 520);
 
             TableLayoutPanel layout = new TableLayoutPanel();
             layout.ColumnCount = 1;
             layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100.0F));
             layout.Dock = DockStyle.Fill;
+            layout.MinimumSize = new Size(0, 495);
             layout.Padding = new Padding(8);
-            layout.RowCount = 3;
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 238.0F));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 43.0F));
+            layout.RowCount = 4;
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 224.0F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42.0F));
+            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100.0F));
 
             TableLayoutPanel editor = new TableLayoutPanel();
@@ -429,23 +434,41 @@ namespace NinePointRotationCalibration.Station.Views
             actions.Controls.Add(CreateButton("btnCancelCalibration", "取消", 70, 32, false, "calibration.cancel"));
             actions.Controls.Add(CreateButton("btnCalculateCalibration", "计算并保存", 104, 32, false, "calibration.calculate"));
 
+            lblCalibrationRmsSummary = new Label();
+            lblCalibrationRmsSummary.AutoSize = true;
+            lblCalibrationRmsSummary.BackColor = Color.FromArgb(226, 232, 240);
+            lblCalibrationRmsSummary.Dock = DockStyle.Fill;
+            lblCalibrationRmsSummary.Font = new Font("Microsoft YaHei UI", 8.25F, FontStyle.Regular, GraphicsUnit.Point, 134);
+            lblCalibrationRmsSummary.ForeColor = Color.FromArgb(30, 41, 59);
+            lblCalibrationRmsSummary.Margin = new Padding(0, 2, 0, 5);
+            lblCalibrationRmsSummary.Name = "lblCalibrationRmsSummary";
+            lblCalibrationRmsSummary.Padding = new Padding(9, 6, 9, 6);
+            lblCalibrationRmsSummary.Text =
+                "RMS 评估：待计算（采点后点击「计算并保存」）\r\n" +
+                "合理标准：≤0.20 px 优(90-100) | ≤0.50 良(75-89) | ≤1.00 合格(60-74)\r\n" +
+                "旋转参考：旋中 RMS ≤ 1.00 px（≤0.30 优） | 角度 RMS ≤ 0.50°（≤0.05° 优）";
+            lblCalibrationRmsSummary.TextAlign = ContentAlignment.MiddleLeft;
+
             dgvCalibration = new DataGridView();
             ConfigureGrid(dgvCalibration, "dgvCalibration");
+            dgvCalibration.MinimumSize = new Size(0, 140);
             dgvCalibration.MultiSelect = false;
             dgvCalibration.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
-            AddTextColumn(dgvCalibration, "Point", "点", 42);
-            AddTextColumn(dgvCalibration, "Kind", "类型", 48);
-            AddTextColumn(dgvCalibration, "MachineX", "机械 X", 72);
-            AddTextColumn(dgvCalibration, "MachineY", "机械 Y", 72);
-            AddTextColumn(dgvCalibration, "MachineR", "机械 R", 68);
-            AddTextColumn(dgvCalibration, "ImageRow", "图像 Row", 78);
-            AddTextColumn(dgvCalibration, "ImageColumn", "图像 Col", 78);
-            AddTextColumn(dgvCalibration, "ImageAngle", "角度", 65);
-            AddTextColumn(dgvCalibration, "Status", "状态", 60);
+            AddTextColumn(dgvCalibration, "Point", "点", 36);
+            AddTextColumn(dgvCalibration, "Kind", "类型", 42);
+            AddTextColumn(dgvCalibration, "MachineX", "机械 X", 66);
+            AddTextColumn(dgvCalibration, "MachineY", "机械 Y", 66);
+            AddTextColumn(dgvCalibration, "MachineR", "机械 R", 60);
+            AddTextColumn(dgvCalibration, "ImageRow", "图像 Row", 70);
+            AddTextColumn(dgvCalibration, "ImageColumn", "图像 Col", 70);
+            AddTextColumn(dgvCalibration, "ImageAngle", "角度", 56);
+            AddTextColumn(dgvCalibration, "Residual", "残差(px)", 64);
+            AddTextColumn(dgvCalibration, "Status", "状态", 52);
 
             layout.Controls.Add(editor, 0, 0);
             layout.Controls.Add(actions, 0, 1);
-            layout.Controls.Add(dgvCalibration, 0, 2);
+            layout.Controls.Add(lblCalibrationRmsSummary, 0, 2);
+            layout.Controls.Add(dgvCalibration, 0, 3);
             page.Controls.Add(layout);
             return page;
         }

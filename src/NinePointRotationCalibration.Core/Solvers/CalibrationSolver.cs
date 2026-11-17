@@ -21,6 +21,16 @@ namespace NinePointRotationCalibration
             CalibrationJob job,
             ICalibrationGeometryBackend geometryBackend)
         {
+            CalibrationSolverOptions options = job == null ? null : job.SolverOptions;
+            CalibrationResult result = SolveCore(job, geometryBackend);
+            result.RmsAssessment = CalibrationRmsEvaluator.Evaluate(result, options);
+            return result;
+        }
+
+        private static CalibrationResult SolveCore(
+            CalibrationJob job,
+            ICalibrationGeometryBackend geometryBackend)
+        {
             if (job == null)
                 return CalibrationResult.Failure(CalibrationErrorCode.ParameterInvalid, "Calibration job is null.");
 

@@ -391,6 +391,7 @@ namespace NinePointRotationCalibration.WinForms.Adapters
                 return null;
             }
 
+            Core.CalibrationRmsAssessment assessment = result.EvaluateRms();
             CalibrationResultView view = new CalibrationResultView
             {
                 Success = result.Success,
@@ -404,7 +405,14 @@ namespace NinePointRotationCalibration.WinForms.Adapters
                 Determinant = result.Determinant,
                 ConditionNumber = result.ConditionNumber,
                 RmsResidualPixels = result.RmsResidualPixels,
+                RmsResidualStage = result.RmsResidualStage,
                 MaximumResidualPixels = result.MaxResidualPixels,
+                RmsScore = assessment.Score,
+                IsRmsReasonable = assessment.IsReasonable,
+                RmsGradeLabel = assessment.GradeLabel,
+                RmsSummary = assessment.Summary,
+                RmsRecommendation = assessment.Recommendation,
+                RmsCriteriaText = assessment.CriteriaText,
                 InlierCount = result.InlierCount,
                 RejectedCount = result.RejectedCount
             };

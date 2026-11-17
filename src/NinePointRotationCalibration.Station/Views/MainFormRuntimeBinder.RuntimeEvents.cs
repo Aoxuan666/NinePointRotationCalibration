@@ -135,15 +135,21 @@ namespace NinePointRotationCalibration.Station.Views
                 return;
             }
 
+            CalibrationRmsAssessment rms = result.EvaluateRms();
+            _view.SetCalibrationRmsSummary(result);
+            _view.ApplyCalibrationDiagnostics(result);
             _view.AppendLog(
                 string.Format(
                     CultureInfo.InvariantCulture,
-                    "标定{0}：{1}，RMS {2:0.###} px。",
+                    "标定{0}：{1}｜{2}。",
                     result.Success ? "成功" : "失败",
                     result.Message,
-                    result.RmsResidualPixels),
+                    rms.Summary),
                 !result.Success);
-            _view.SetOperationStatus(result.Success ? "标定完成" : "标定失败", false, !result.Success);
+            _view.SetOperationStatus(
+                result.Success ? "标定完成 · " + rms.GradeLabel + "(" + rms.Score + "分)" : "标定失败",
+                false,
+                !result.Success);
         }
 
         private void Runtime_TeachingChanged(object sender, TeachingEventArgs e)

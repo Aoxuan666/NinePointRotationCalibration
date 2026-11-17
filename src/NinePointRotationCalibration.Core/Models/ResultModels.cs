@@ -1,8 +1,40 @@
 using System;
 using System.Collections.Generic;
+using System.Runtime.Serialization;
 
 namespace NinePointRotationCalibration
 {
+    /// <summary>标定 RMS 误差评估结果与合理性评级模型。</summary>
+    [Serializable]
+    public sealed class CalibrationRmsAssessment
+    {
+        public CalibrationRmsGrade Grade { get; set; }
+        public CalibrationRmsGrade TranslationGrade { get; set; }
+        public CalibrationRmsGrade RotationCenterGrade { get; set; }
+        public CalibrationRmsGrade RotationAngleGrade { get; set; }
+        /// <summary>综合质量评分（0-100 分）。</summary>
+        public int Score { get; set; }
+        /// <summary>标定误差是否处于允许投产的合理范围（优/良/合格为 true，不合格或待计算为 false）。</summary>
+        public bool IsReasonable { get; set; }
+        public string GradeLabel { get; set; }
+        public double TranslationRmsPixels { get; set; }
+        public double TranslationRmsStage { get; set; }
+        public double TranslationLimitPixels { get; set; }
+        public double RotationCenterRmsPixels { get; set; }
+        public double RotationCenterLimitPixels { get; set; }
+        public double RotationAngleRmsDegrees { get; set; }
+        public double RotationAngleLimitDegrees { get; set; }
+        public string Summary { get; set; }
+        public string Recommendation { get; set; }
+        public string CriteriaText { get; set; }
+
+        /// <summary>创建评估结果的深拷贝。</summary>
+        public CalibrationRmsAssessment DeepClone()
+        {
+            return (CalibrationRmsAssessment)MemberwiseClone();
+        }
+    }
+
     /// <summary>单个标定样本的求解诊断明细，包含内点状态、预测值与残差。</summary>
     [Serializable]
     public sealed class CalibrationSampleDiagnostic
@@ -121,9 +153,28 @@ namespace NinePointRotationCalibration
         public int CandidateCount { get; set; }
         public int InlierCount { get; set; }
         public int RejectedCount { get; set; }
+        [OptionalField]
+        private CalibrationRmsAssessment _rmsAssessment;
+
         public RotationCalibrationResult Rotation { get; set; }
         public List<CalibrationSampleDiagnostic> Diagnostics { get; set; }
         public List<string> Warnings { get; set; }
+
+        /// <summary>标定 RMS 误差综合评分与分级评估结果。</summary>
+        public CalibrationRmsAssessment RmsAssessment
+        {
+            get { return _rmsAssessment; }
+            set { _rmsAssessment = value; }
+        }
+
+        /// <summary>按指定容差配置评估（或按需刷新）当前标定结果的 RMS 质量评分。</summary>
+        public CalibrationRmsAssessment EvaluateRms(CalibrationSolverOptions options = null)
+        {
+            if (options == null && _rmsAssessment != null) return _rmsAssessment;
+            CalibrationRmsAssessment evaluated = CalibrationRmsEvaluator.Evaluate(this, options);
+            _rmsAssessment = evaluated;
+            return evaluated;
+        }
 
         /// <summary>使用标定结果将机械坐标点映射到图像像素坐标。</summary>
         public ImagePoint TransformStageToImage(StagePoint point)
@@ -164,6 +215,7 @@ namespace NinePointRotationCalibration
         {
             CalibrationResult clone = (CalibrationResult)MemberwiseClone();
             clone.Rotation = Rotation == null ? null : Rotation.DeepClone();
+            clone._rmsAssessment = _rmsAssessment == null ? null : _rmsAssessment.DeepClone();
             clone.Warnings = Warnings == null ? new List<string>() : new List<string>(Warnings);
             clone.Diagnostics = new List<CalibrationSampleDiagnostic>();
             if (Diagnostics != null)

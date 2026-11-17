@@ -405,17 +405,162 @@ namespace NinePointRotationCalibration.Station.Views
             {
                 DataGridViewRow row = FindCalibrationRow(pointNumber);
                 if (row == null) return;
-                row.Cells[2].Value = FormatNumber(machineX);
-                row.Cells[3].Value = FormatNumber(machineY);
-                row.Cells[4].Value = FormatNumber(machineR);
-                row.Cells[5].Value = FormatNumber(imageRow);
-                row.Cells[6].Value = FormatNumber(imageColumn);
-                row.Cells[7].Value = FormatNumber(imageAngle);
-                row.Cells[8].Value = status ?? string.Empty;
+                row.Cells["MachineX"].Value = FormatNumber(machineX);
+                row.Cells["MachineY"].Value = FormatNumber(machineY);
+                row.Cells["MachineR"].Value = FormatNumber(machineR);
+                row.Cells["ImageRow"].Value = FormatNumber(imageRow);
+                row.Cells["ImageColumn"].Value = FormatNumber(imageColumn);
+                row.Cells["ImageAngle"].Value = FormatNumber(imageAngle);
+                row.Cells["Residual"].Value = string.Empty;
+                row.Cells["Status"].Value = status ?? string.Empty;
+                row.DefaultCellStyle.BackColor = Color.Empty;
                 row.DefaultCellStyle.ForeColor = string.Equals(status, "NG", StringComparison.OrdinalIgnoreCase)
                     ? Color.FromArgb(190, 55, 55)
                     : Color.FromArgb(45, 49, 54);
             });
+        }
+
+        /// <summary>刷新标定页 RMS 误差评分卡片，展示等级、百分制评分、各维度 RMS 及合理区间。</summary>
+        public void SetCalibrationRmsSummary(CalibrationResult result)
+        {
+            RunOnUiThread(delegate
+            {
+                if (lblCalibrationRmsSummary == null) return;
+
+                if (result == null || (result.CandidateCount == 0 && result.InlierCount == 0 && !result.Success))
+                {
+                    lblCalibrationRmsSummary.BackColor = Color.FromArgb(226, 232, 240);
+                    lblCalibrationRmsSummary.ForeColor = Color.FromArgb(30, 41, 59);
+                    lblCalibrationRmsSummary.Text =
+                        "RMS 评估：待计算（采点后点击「计算并保存」）\r\n" +
+                        "合理标准：≤0.20 px 优(90-100) | ≤0.50 良(75-89) | ≤1.00 合格(60-74)\r\n" +
+                        "旋转参考：旋中 RMS ≤ 1.00 px（≤0.30 优） | 角度 RMS ≤ 0.50°（≤0.05° 优）";
+                    return;
+                }
+
+                CalibrationRmsAssessment assessment = result.EvaluateRms();
+                switch (assessment.Grade)
+                {
+                    case CalibrationRmsGrade.Excellent:
+                        lblCalibrationRmsSummary.BackColor = Color.FromArgb(204, 251, 241);
+                        lblCalibrationRmsSummary.ForeColor = Color.FromArgb(17, 94, 89);
+                        break;
+                    case CalibrationRmsGrade.Good:
+                        lblCalibrationRmsSummary.BackColor = Color.FromArgb(219, 234, 254);
+                        lblCalibrationRmsSummary.ForeColor = Color.FromArgb(30, 64, 175);
+                        break;
+                    case CalibrationRmsGrade.Acceptable:
+                        lblCalibrationRmsSummary.BackColor = Color.FromArgb(254, 243, 199);
+                        lblCalibrationRmsSummary.ForeColor = Color.FromArgb(146, 64, 14);
+                        break;
+                    default:
+                        lblCalibrationRmsSummary.BackColor = Color.FromArgb(254, 226, 226);
+                        lblCalibrationRmsSummary.ForeColor = Color.FromArgb(185, 28, 28);
+                        break;
+                }
+
+                string xyText = IsFinite(assessment.TranslationRmsPixels)
+                    ? string.Format(
+                        CultureInfo.InvariantCulture,
+                        "XY {0:0.###} px ({1:0.####} mm)",
+                        assessment.TranslationRmsPixels,
+                        IsFinite(assessment.TranslationRmsStage) ? assessment.TranslationRmsStage : 0.0)
+                    : "XY --";
+                string rotText = IsFinite(assessment.RotationCenterRmsPixels)
+                    ? string.Format(
+                        CultureInfo.InvariantCulture,
+                        "旋中 {0:0.###} px | 角度 {1:0.###}°",
+                        assessment.RotationCenterRmsPixels,
+                        assessment.RotationAngleRmsDegrees)
+                    : "旋中 -- | 角度 --";
+
+                lblCalibrationRmsSummary.Text = string.Format(
+                    CultureInfo.InvariantCulture,
+                    "RMS 评级：{0}（{1} 分·{2}）   {3}   {4}\r\n{5}\r\n建议：{6}",
+                    assessment.GradeLabel,
+                    assessment.Score,
+                    assessment.IsReasonable ? "合理范围" : "超差需重标",
+                    xyText,
+                    rotText,
+                    assessment.CriteriaText,
+                    assessment.Recommendation);
+            });
+        }
+
+        /// <summary>将求解输出的逐点像素残差与内点/外点标记写入 14 点标定明细表。</summary>
+        public void ApplyCalibrationDiagnostics(CalibrationResult result)
+        {
+            RunOnUiThread(delegate
+            {
+                if (result == null || result.Diagnostics == null) return;
+                Dictionary<int, CalibrationSampleDiagnostic> byPoint = new Dictionary<int, CalibrationSampleDiagnostic>();
+                foreach (CalibrationSampleDiagnostic diagnostic in result.Diagnostics)
+                {
+                    int pointNumber;
+                    if (diagnostic == null || !TryParsePointNumberFromTag(diagnostic.Tag, out pointNumber)) continue;
+                    byPoint[pointNumber] = diagnostic;
+                }
+
+                foreach (DataGridViewRow row in dgvCalibration.Rows)
+                {
+                    int pointNumber;
+                    if (!int.TryParse(Convert.ToString(row.Cells[0].Value, CultureInfo.InvariantCulture), out pointNumber))
+                        continue;
+
+                    CalibrationSampleDiagnostic diagnostic;
+                    if (!byPoint.TryGetValue(pointNumber, out diagnostic) || !diagnostic.IsEligible)
+                        continue;
+
+                    bool isRotation = pointNumber >= 10;
+                    double residual = diagnostic.ResidualPixels;
+                    row.Cells["Residual"].Value = IsFinite(residual)
+                        ? residual.ToString("0.###", CultureInfo.InvariantCulture)
+                        : "--";
+                    if (!diagnostic.IsInlier)
+                    {
+                        row.Cells["Status"].Value = "外点";
+                        row.DefaultCellStyle.ForeColor = Color.FromArgb(185, 28, 28);
+                        row.DefaultCellStyle.BackColor = Color.FromArgb(254, 242, 242);
+                    }
+                    else
+                    {
+                        bool high = isRotation
+                            ? residual > CalibrationRmsEvaluator.DefaultAcceptableCenterRms
+                            : residual > CalibrationRmsEvaluator.DefaultAcceptablePixelRms;
+                        row.Cells["Status"].Value = "OK";
+                        row.DefaultCellStyle.ForeColor = high
+                            ? Color.FromArgb(180, 83, 9)
+                            : Color.FromArgb(21, 128, 61);
+                        row.DefaultCellStyle.BackColor = Color.Empty;
+                    }
+                }
+            });
+        }
+
+        private static bool TryParsePointNumberFromTag(string tag, out int pointNumber)
+        {
+            pointNumber = 0;
+            if (string.IsNullOrWhiteSpace(tag) || tag.Length < 2) return false;
+            string trimmed = tag.Trim();
+            int index;
+            if (!int.TryParse(trimmed.Substring(1), NumberStyles.Integer, CultureInfo.InvariantCulture, out index))
+                return false;
+            if ((trimmed[0] == 'P' || trimmed[0] == 'p') && index >= 1 && index <= 9)
+            {
+                pointNumber = index;
+                return true;
+            }
+            if ((trimmed[0] == 'R' || trimmed[0] == 'r') && index >= 1 && index <= 5)
+            {
+                pointNumber = 9 + index;
+                return true;
+            }
+            return false;
+        }
+
+        private static bool IsFinite(double value)
+        {
+            return !double.IsNaN(value) && !double.IsInfinity(value);
         }
 
         public void ClearCalibrationSamples()
@@ -425,10 +570,12 @@ namespace NinePointRotationCalibration.Station.Views
                 foreach (DataGridViewRow row in dgvCalibration.Rows)
                 {
                     for (int column = 2; column < row.Cells.Count; column++) row.Cells[column].Value = string.Empty;
+                    row.DefaultCellStyle.BackColor = Color.Empty;
                     row.DefaultCellStyle.ForeColor = Color.FromArgb(45, 49, 54);
                     row.Selected = false;
                 }
                 SelectCalibrationPoint(0);
+                SetCalibrationRmsSummary(null);
             });
         }
 
@@ -639,7 +786,7 @@ namespace NinePointRotationCalibration.Station.Views
             for (int point = 1; point <= 14; point++)
             {
                 string kind = point <= 9 ? "XY" : "R";
-                dgvCalibration.Rows.Add(point, kind, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty);
+                dgvCalibration.Rows.Add(point, kind, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty);
             }
 
             _pointButtonMap.Clear();

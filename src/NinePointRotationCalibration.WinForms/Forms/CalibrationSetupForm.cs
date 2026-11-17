@@ -494,7 +494,9 @@ namespace NinePointRotationCalibration.WinForms.Forms
             AddResultRow(table, "轴夹角", "AxisAngle");
             AddResultRow(table, "行列式", "Determinant");
             AddResultRow(table, "条件数", "ConditionNumber");
-            AddResultRow(table, "RMS 残差", "RmsResidual");
+            AddResultRow(table, "RMS 评级评分", "RmsQuality");
+            AddResultRow(table, "RMS 残差 (px)", "RmsResidual");
+            AddResultRow(table, "机械 RMS 误差", "RmsResidualStage");
             AddResultRow(table, "最大残差", "MaxResidual");
             AddResultRow(table, "内点 / 剔除", "Inliers");
             AddResultRow(table, "旋转方向", "RotationDirection");
@@ -502,7 +504,9 @@ namespace NinePointRotationCalibration.WinForms.Forms
             AddResultRow(table, "图像旋转中心", "RotationCenterImage");
             AddResultRow(table, "机械旋转中心", "RotationCenterStage");
             AddResultRow(table, "旋转角 RMS", "RotationAngleRms");
-            AddResultRow(table, "旋转中心残差", "RotationCenterResidual");
+            AddResultRow(table, "旋转中心 RMS", "RotationCenterResidual");
+            AddResultRow(table, "合理范围标准", "RmsCriteria");
+            AddResultRow(table, "评估建议", "RmsRecommendation");
 
             AddSectionHeader(table, "像素 -> 机械矩阵");
             AddSpanningControl(table, _pixelToStageText, 76);
@@ -1092,7 +1096,10 @@ namespace NinePointRotationCalibration.WinForms.Forms
             {
                 overlay.IsOk = _state.Result.Success;
                 overlay.StatusText = _state.Result.Success ? "标定 OK" : "标定 NG";
-                overlay.HudLines.Add(string.Format("XY RMS: {0:0.###} px", _state.Result.RmsResidualPixels));
+                string gradeSuffix = string.IsNullOrWhiteSpace(_state.Result.RmsGradeLabel)
+                    ? string.Empty
+                    : string.Format(" [{0} {1}分]", _state.Result.RmsGradeLabel, _state.Result.RmsScore);
+                overlay.HudLines.Add(string.Format("XY RMS: {0:0.###} px{1}", _state.Result.RmsResidualPixels, gradeSuffix));
                 if (_state.Result.RotationCenterImage.HasValue)
                 {
                     overlay.RotationCenter = _state.Result.RotationCenterImage;
@@ -1112,6 +1119,12 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 foreach (Label value in _resultValues.Values)
                 {
                     value.Text = "-";
+                    value.ForeColor = SystemColors.ControlText;
+                }
+                Label resetQuality;
+                if (_resultValues.TryGetValue("RmsQuality", out resetQuality))
+                {
+                    resetQuality.Font = SystemFonts.DefaultFont;
                 }
                 _pixelToStageText.Text = string.Empty;
                 _stageToPixelText.Text = string.Empty;
@@ -1129,7 +1142,21 @@ namespace NinePointRotationCalibration.WinForms.Forms
             SetResultValue("AxisAngle", FormatValue(result.AxisAngleDegrees, "°"));
             SetResultValue("Determinant", result.Determinant.ToString("G8", CultureInfo.InvariantCulture));
             SetResultValue("ConditionNumber", result.ConditionNumber.ToString("0.###", CultureInfo.InvariantCulture));
+            string qualityText = string.IsNullOrWhiteSpace(result.RmsGradeLabel)
+                ? "-"
+                : string.Format("{0} · {1} 分（{2}）", result.RmsGradeLabel, result.RmsScore, result.IsRmsReasonable ? "合理可用" : "超差/需重标");
+            SetResultValue("RmsQuality", qualityText);
+            Label qualityLabel;
+            if (_resultValues.TryGetValue("RmsQuality", out qualityLabel))
+            {
+                qualityLabel.Font = new Font(qualityLabel.Font, FontStyle.Bold);
+                qualityLabel.ForeColor = result.RmsScore >= 90 ? Color.FromArgb(15, 118, 110)
+                    : result.RmsScore >= 75 ? Color.FromArgb(30, 64, 175)
+                    : result.RmsScore >= 60 ? Color.FromArgb(180, 83, 9)
+                    : Color.Firebrick;
+            }
             SetResultValue("RmsResidual", FormatValue(result.RmsResidualPixels, "px"));
+            SetResultValue("RmsResidualStage", FormatValue(result.RmsResidualStage, _state.LinearUnit));
             SetResultValue("MaxResidual", FormatValue(result.MaximumResidualPixels, "px"));
             SetResultValue("Inliers", string.Format("{0} / {1}", result.InlierCount, result.RejectedCount));
             SetResultValue("RotationDirection", result.RotationDirection > 0 ? "同向" : result.RotationDirection < 0 ? "反向" : "未知");
@@ -1142,6 +1169,8 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 : "-");
             SetResultValue("RotationAngleRms", FormatValue(result.RotationAngleRmsDegrees, "°"));
             SetResultValue("RotationCenterResidual", FormatValue(result.RotationCenterResidualPixels, "px"));
+            SetResultValue("RmsCriteria", string.IsNullOrWhiteSpace(result.RmsCriteriaText) ? "-" : result.RmsCriteriaText);
+            SetResultValue("RmsRecommendation", string.IsNullOrWhiteSpace(result.RmsRecommendation) ? "-" : result.RmsRecommendation);
             _pixelToStageText.Text = FormatMatrix(result.PixelToStage);
             _stageToPixelText.Text = FormatMatrix(result.StageToPixel);
             _diagnosticsText.Text = string.Join(Environment.NewLine, result.Diagnostics ?? new List<string>());
@@ -1561,6 +1590,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
             {
                 Text = "-",
                 AutoSize = true,
+                MaximumSize = new Size(210, 0),
                 Anchor = AnchorStyles.Left,
                 Margin = new Padding(3, 6, 3, 6)
             };

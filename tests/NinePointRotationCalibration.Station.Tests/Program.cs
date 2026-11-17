@@ -30,6 +30,7 @@ using UiRotatedRectangle = NinePointRotationCalibration.WinForms.Geometry.Rotate
 using UiTemplateEditorForm = NinePointRotationCalibration.WinForms.Forms.TemplateEditorForm;
 using UiTemplateEditorState = NinePointRotationCalibration.WinForms.Models.TemplateEditorState;
 using UiCanvasRoiTarget = NinePointRotationCalibration.WinForms.Models.CanvasRoiTarget;
+using UiCalibrationResultView = NinePointRotationCalibration.WinForms.Models.CalibrationResultView;
 
 namespace NinePointRotationCalibration.Station.Tests
 {
@@ -130,6 +131,7 @@ namespace NinePointRotationCalibration.Station.Tests
             Run("Empty image viewport is a plain black surface", TestEmptyViewportIsBlack);
             Run("Positioning template owns and migrates detection ROI", TestPositioningJobLoadRoi);
             Run("Camera tab layout prevents clipping and wires switches cleanly", TestCameraTabLayoutAndSwitches);
+            Run("Calibration RMS mapper and MainForm summary/diagnostics work cleanly", TestCalibrationRmsUiAndMapper);
 
             Console.WriteLine();
             Console.WriteLine("Passed: {0}; Failed: {1}", _passed, _failed);
@@ -2751,6 +2753,112 @@ namespace NinePointRotationCalibration.Station.Tests
                 return;
             }
             throw new InvalidOperationException("Expected the operation to be cancelled.");
+        }
+
+        private static void TestCalibrationRmsUiAndMapper()
+        {
+            CalibrationResult good = new CalibrationResult
+            {
+                Success = true,
+                TranslationSuccess = true,
+                CandidateCount = 14,
+                InlierCount = 9,
+                RmsResidualPixels = 0.36,
+                RmsResidualStage = 0.0072,
+                Rotation = new RotationCalibrationResult
+                {
+                    IsAvailable = true,
+                    Success = true,
+                    CandidateCount = 5,
+                    InlierCount = 5,
+                    CenterRmsResidualPixels = 0.42,
+                    AngleRmsDegrees = 0.08
+                },
+                Diagnostics = new List<CalibrationSampleDiagnostic>
+                {
+                    new CalibrationSampleDiagnostic
+                    {
+                        Tag = "P1",
+                        Kind = CalibrationSampleKind.Translation,
+                        IsEligible = true,
+                        IsInlier = true,
+                        ResidualPixels = 0.25
+                    },
+                    new CalibrationSampleDiagnostic
+                    {
+                        Tag = "P9",
+                        Kind = CalibrationSampleKind.Translation,
+                        IsEligible = true,
+                        IsInlier = false,
+                        ResidualPixels = 2.40
+                    },
+                    new CalibrationSampleDiagnostic
+                    {
+                        Tag = "R1",
+                        Kind = CalibrationSampleKind.Rotation,
+                        IsEligible = true,
+                        IsInlier = true,
+                        ResidualPixels = 0.38
+                    }
+                }
+            };
+
+            UiCalibrationResultView mapped = UiCoreUiMapper.FromCoreResult(good);
+            True(mapped != null && mapped.IsRmsReasonable, "mapped good RMS view must be reasonable");
+            True(mapped.RmsGradeLabel == "良", "mapped good RMS grade label must match");
+            True(mapped.RmsScore >= 75 && mapped.RmsScore <= 89, "mapped good RMS score must lie in 75..89");
+            Near(0.0072, mapped.RmsResidualStage, 1e-12, "mapped stage RMS");
+            True(!string.IsNullOrWhiteSpace(mapped.RmsCriteriaText), "mapped RMS criteria text must be populated");
+
+            using (MainForm form = new MainForm())
+            {
+                form.StartPosition = FormStartPosition.Manual;
+                form.Location = new Point(-32000, -32000);
+                form.Size = new Size(1500, 900);
+                form.Show();
+                try
+                {
+                    TabPage tabCalibration = form.WorkTabs.TabPages["tabCalibration"];
+                    form.WorkTabs.SelectedTab = tabCalibration;
+                    form.PerformLayout();
+                    tabCalibration.PerformLayout();
+
+                    form.SetCalibrationRmsSummary(new CalibrationResult { Success = false, CandidateCount = 0, InlierCount = 0 });
+                    Control rmsLabel = form.Controls.Find("lblCalibrationRmsSummary", true).Single();
+                    True(rmsLabel.Text.Contains("待计算"), "0-sample calibration must show neutral waiting summary");
+
+                    form.SetCalibrationRmsSummary(good);
+                    form.ApplyCalibrationDiagnostics(good);
+                    form.PerformLayout();
+                    tabCalibration.PerformLayout();
+                    True(rmsLabel.Text.Contains("良") && rmsLabel.Text.Contains("合理范围"),
+                        "calculated RMS banner must display grade and reasonableness");
+                    Size preferred = rmsLabel.GetPreferredSize(new Size(rmsLabel.Width, 0));
+                    True(preferred.Height <= rmsLabel.Height,
+                        "RMS summary banner must not vertically clip (" + preferred.Height + " > " + rmsLabel.Height + ")");
+
+                    DataGridView grid = form.Controls.Find("dgvCalibration", true).OfType<DataGridView>().Single();
+                    True(Equals(grid.Rows[0].Cells["Residual"].Value, "0.25"), "P1 residual column must match");
+                    True(Equals(grid.Rows[8].Cells["Residual"].Value, "2.4") && Equals(grid.Rows[8].Cells["Status"].Value, "外点"),
+                        "P9 rejected outlier must show residual and 外点 status");
+                    True(Equals(grid.Rows[9].Cells["Residual"].Value, "0.38"), "R1 rotation residual column must match");
+
+                    form.Size = new Size(1280, 720);
+                    form.PerformLayout();
+                    tabCalibration.PerformLayout();
+                    True(tabCalibration.VerticalScroll.Visible,
+                        "calibration tab must expose vertical scrolling when window shrinks to 1280x720");
+
+                    form.ClearCalibrationSamples();
+                    True(rmsLabel.Text.Contains("待计算"), "ClearCalibrationSamples must reset RMS banner");
+                    True(string.IsNullOrEmpty(Convert.ToString(grid.Rows[0].Cells["Residual"].Value)),
+                        "ClearCalibrationSamples must clear per-point residuals");
+                }
+                finally
+                {
+                    form.Close();
+                }
+            }
         }
 
         private static void Run(string name, Action test)

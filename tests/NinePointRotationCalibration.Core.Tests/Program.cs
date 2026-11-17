@@ -20,6 +20,7 @@ namespace NinePointRotationCalibration.Core.Tests
             Run("Deep clone and template revision invalidation", TestDeepCloneAndRevision);
             Run("Full job validation", TestValidation);
             Run("Reject unknown enum values", TestUnknownEnumValues);
+            Run("Evaluate RMS grading, score bands, and custom limits", TestRmsEvaluationAndGrades);
 
             Console.WriteLine();
             Console.WriteLine("Passed: {0}; Failed: {1}", _passed, _failed);
@@ -255,6 +256,94 @@ namespace NinePointRotationCalibration.Core.Tests
             AssertIssue(job, CalibrationValidationScope.Translation, "SAMPLE_KIND_INVALID");
             True(CalibrationSolver.Solve(job).ErrorCode == CalibrationErrorCode.ParameterInvalid,
                 "solver should reject an unknown sample kind");
+        }
+
+        private static void TestRmsEvaluationAndGrades()
+        {
+            CalibrationRmsAssessment missing = CalibrationRmsEvaluator.Evaluate(null);
+            True(missing.Grade == CalibrationRmsGrade.Unknown, "null result must map to Unknown");
+            True(missing.Score == 0 && !missing.IsReasonable, "null result score must be 0 and not reasonable");
+
+            // 理想零误差 9 点标定结果应自动附加优等（100分）RMS 评估报告
+            CalibrationResult exact = CalibrationSolver.Solve(CreateTranslationJob(TestMatrix(), false, false));
+            True(exact.RmsAssessment != null, "solver must attach RMS assessment");
+            True(exact.RmsAssessment.Grade == CalibrationRmsGrade.Excellent, "exact solve must be Excellent");
+            True(exact.RmsAssessment.Score == 100 && exact.RmsAssessment.IsReasonable, "exact solve must score 100");
+            CalibrationResult cloned = exact.DeepClone();
+            True(cloned.RmsAssessment != null && cloned.RmsAssessment.Score == 100,
+                "DeepClone must preserve RMS assessment");
+
+            // 良好区间（XY 0.35 px，旋中 0.45 px，角度 0.10°）
+            CalibrationResult good = CreateSyntheticRmsResult(true, true, 0.35, 0.45, 0.10);
+            CalibrationRmsAssessment goodEval = CalibrationRmsEvaluator.Evaluate(good);
+            True(goodEval.Grade == CalibrationRmsGrade.Good && goodEval.IsReasonable, "good RMS must be Good and reasonable");
+            True(goodEval.Score >= 75 && goodEval.Score <= 89, "Good band must be 75..89");
+
+            // 合格区间（XY 0.85 px，旋中 0.80 px，角度 0.30°）
+            CalibrationResult acceptable = CreateSyntheticRmsResult(true, true, 0.85, 0.80, 0.30);
+            CalibrationRmsAssessment acceptableEval = CalibrationRmsEvaluator.Evaluate(acceptable);
+            True(acceptableEval.Grade == CalibrationRmsGrade.Acceptable && acceptableEval.IsReasonable,
+                "acceptable RMS must be Acceptable and reasonable");
+            True(acceptableEval.Score >= 60 && acceptableEval.Score <= 74, "Acceptable band must be 60..74");
+
+            // 短板原则：XY 达优（0.05 px）但旋转中心超差（1.50 px > 1.00 px）应综合判为不合格
+            CalibrationResult shortBoard = CreateSyntheticRmsResult(true, true, 0.05, 1.50, 0.01);
+            CalibrationRmsAssessment shortEval = CalibrationRmsEvaluator.Evaluate(shortBoard);
+            True(shortEval.TranslationGrade == CalibrationRmsGrade.Excellent, "XY component should be Excellent");
+            True(shortEval.RotationCenterGrade == CalibrationRmsGrade.Unqualified, "Center component should be Unqualified");
+            True(shortEval.Grade == CalibrationRmsGrade.Unqualified && !shortEval.IsReasonable,
+                "short-board principle must clamp overall grade to Unqualified");
+            True(shortEval.Score >= 0 && shortEval.Score <= 59, "Unqualified composite score must stay in 0..59");
+
+            // 自定义严格阈值验证
+            CalibrationSolverOptions strict = new CalibrationSolverOptions
+            {
+                MaxRmsResidualPixels = 0.25,
+                MaxRotationCenterRmsPixels = 0.40,
+                MaxAngleRmsDegrees = 0.10
+            };
+            CalibrationRmsAssessment strictFail = CalibrationRmsEvaluator.Evaluate(
+                CreateSyntheticRmsResult(true, false, 0.30, 0.0, 0.0),
+                strict);
+            True(strictFail.Grade == CalibrationRmsGrade.Unqualified && !strictFail.IsReasonable,
+                "custom MaxRmsResidualPixels=0.25 must reject 0.30 px");
+
+            CalibrationRmsAssessment strictPass = CalibrationRmsEvaluator.Evaluate(
+                CreateSyntheticRmsResult(true, false, 0.05, 0.0, 0.0),
+                strict);
+            True(strictPass.Grade == CalibrationRmsGrade.Excellent && strictPass.IsReasonable,
+                "0.05 px <= 0.25*0.25 must be Excellent under strict custom options");
+        }
+
+        private static CalibrationResult CreateSyntheticRmsResult(
+            bool success,
+            bool withRotation,
+            double xyRmsPx,
+            double centerRmsPx,
+            double angleRmsDeg)
+        {
+            CalibrationResult result = new CalibrationResult
+            {
+                Success = success,
+                TranslationSuccess = success,
+                CandidateCount = withRotation ? 14 : 9,
+                InlierCount = 9,
+                RmsResidualPixels = xyRmsPx,
+                RmsResidualStage = xyRmsPx * 0.02
+            };
+            if (withRotation)
+            {
+                result.Rotation = new RotationCalibrationResult
+                {
+                    IsAvailable = true,
+                    Success = success,
+                    CandidateCount = 5,
+                    InlierCount = 5,
+                    CenterRmsResidualPixels = centerRmsPx,
+                    AngleRmsDegrees = angleRmsDeg
+                };
+            }
+            return result;
         }
 
         private static CalibrationJob CreateConfigurationFixture()

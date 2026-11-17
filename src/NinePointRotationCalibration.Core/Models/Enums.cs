@@ -97,4 +97,19 @@ namespace NinePointRotationCalibration
         Translation = 1,
         Full = 2
     }
+
+    /// <summary>标定 RMS 误差综合评级。</summary>
+    public enum CalibrationRmsGrade
+    {
+        /// <summary>尚未计算或缺少有效 RMS 数据。</summary>
+        Unknown = 0,
+        /// <summary>优（90-100 分）：亚像素精度高，推荐直接用于生产。</summary>
+        Excellent = 1,
+        /// <summary>良（75-89 分）：误差处于正常合理区间，可稳定生产。</summary>
+        Good = 2,
+        /// <summary>合格（60-74 分）：处于允许上限临界区，建议观察或微调优化。</summary>
+        Acceptable = 3,
+        /// <summary>不合格（0-59 分）：超过合理上限或求解失败，需重新标定。</summary>
+        Unqualified = 4
+    }
 }
