@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$Configuration = "Release",
     [string]$Platform = "x64",
     [string]$OutputDirectory
@@ -39,6 +39,14 @@ if (-not (Test-Path -LiteralPath (Join-Path $stationOutput "NinePointRotationCal
     throw "Station executable was not produced: $stationOutput"
 }
 Copy-Item -Path (Join-Path $stationOutput "*") -Destination $runtimeBundle -Recurse -Force
+$runtimeDataDir = Join-Path $runtimeBundle "data"
+if (Test-Path -LiteralPath $runtimeDataDir) {
+    Get-ChildItem -LiteralPath $runtimeDataDir -Filter "*.tmp" -File -ErrorAction SilentlyContinue | Remove-Item -Force
+    $stationJson = Join-Path $runtimeDataDir "station.json"
+    if (Test-Path -LiteralPath $stationJson) {
+        Remove-Item -LiteralPath $stationJson -Force
+    }
+}
 
 $guide = @'
 九点标定视觉工作站交付说明

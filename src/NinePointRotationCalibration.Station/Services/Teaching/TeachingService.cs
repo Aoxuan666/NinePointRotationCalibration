@@ -1,8 +1,11 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Threading;
 using System.Threading.Tasks;
+using NinePointRotationCalibration.Halcon;
 using NinePointRotationCalibration.Station.Models;
+using NinePointRotationCalibration.Station.Services.Inspection;
 
 namespace NinePointRotationCalibration.Station.Services.Teaching
 {
@@ -62,7 +65,7 @@ namespace NinePointRotationCalibration.Station.Services.Teaching
                 {
                     PublishFrame(frame.Image, "teaching." + side.ToString().ToLowerInvariant());
                     TemplateMatchResult match = await Task.Run(
-                        () => _sdk.Locate(frame.Image, job, false), cancellationToken).ConfigureAwait(false);
+                        () => LocateReferenceBoard(frame.Image, job), cancellationToken).ConfigureAwait(false);
                     if (match == null || !match.Success)
                         throw new InvalidOperationException(match == null ? "Template locate returned no result." : match.Message);
 
@@ -96,6 +99,31 @@ namespace NinePointRotationCalibration.Station.Services.Teaching
             {
                 _gate.Release();
             }
+        }
+
+        /// <summary>
+        /// 在一拍多板治具中，左右吸嘴示教必须稳定锁定同一块基准板（按从上到下、从左到右排序的第 1 号板），
+        /// 防止因不同帧间最高匹配分数跳变导致左、右吸嘴示教锁定在不同板位上。
+        /// </summary>
+        private TemplateMatchResult LocateReferenceBoard(Bitmap image, CalibrationJob job)
+        {
+            if (job != null && job.Template != null &&
+                job.Template.MatchParameters != null &&
+                job.Template.MatchParameters.NumMatches != 1)
+            {
+                TemplateMatchCollectionResult collection = _sdk.LocateAll(image, job, false);
+                if (collection != null && collection.Success &&
+                    collection.Matches != null && collection.Matches.Count > 0)
+                {
+                    List<TemplateMatchResult> ordered = BoardInspectionService.OrderMatches(
+                        collection.Matches,
+                        job.Template,
+                        null);
+                    if (ordered.Count > 0) return ordered[0];
+                }
+            }
+
+            return _sdk.Locate(image, job, false);
         }
 
         /// <summary>清除指定侧的示教姿态并保存修改。</summary>

@@ -439,6 +439,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
             AddAdvancedParameterRow(matchTable, "亚像素", _subPixelCombo, _matchAdvancedRows);
             AddAdvancedParameterRow(matchTable, "超时 (ms, 0=不限)", _timeoutInput, _matchAdvancedRows);
             AddAdvancedParameterRow(matchTable, "轮廓采点间隔半径 (px)", _contourPointSpacingInput, _matchAdvancedRows);
+            AddAdvancedControlRow(matchTable, _allowPartialCheck, _matchAdvancedRows);
             UpdateAdvancedRows(_matchAdvancedToggle, _matchAdvancedRows);
             matchPage.Controls.Add(WrapScrollable(matchTable));
 

@@ -38,7 +38,7 @@ namespace NinePointRotationCalibration.Station.Devices
                 try
                 {
                     int error = 0;
-                    List<string> serialNumbers = enumerator.EnumCamrea(out error);
+                    List<string> serialNumbers = enumerator.EnumCamrea(ref error);
                     EnsureSuccess(serialNumbers != null, error, "Enumerate cameras", enumerator);
                     List<CameraDescriptor> devices = new List<CameraDescriptor>();
                     foreach (string serialNumber in serialNumbers)
@@ -56,7 +56,6 @@ namespace NinePointRotationCalibration.Station.Devices
                 finally
                 {
                     enumerator.FreeHGlobal();
-                    enumerator.Dispose();
                 }
             }, cancellationToken);
         }
@@ -72,7 +71,7 @@ namespace NinePointRotationCalibration.Station.Devices
                 try
                 {
                     int error = 0;
-                    EnsureSuccess(camera.Open(deviceId.Trim(), out error), error, "Open camera", camera);
+                    EnsureSuccess(camera.Open(deviceId.Trim(), ref error), error, "Open camera", camera);
                     SetTriggerModeCore(camera, "Software");
                     lock (_stateSync)
                     {
@@ -88,7 +87,6 @@ namespace NinePointRotationCalibration.Station.Devices
                 {
                     camera.Close();
                     camera.FreeHGlobal();
-                    camera.Dispose();
                     throw;
                 }
             }, cancellationToken);
@@ -107,7 +105,7 @@ namespace NinePointRotationCalibration.Station.Devices
             {
                 CameraMVS camera = GetConnectedCamera();
                 int error = 0;
-                EnsureSuccess(camera.SetExposureTime((float)exposureMicroseconds, out error), error, "Set exposure", camera);
+                EnsureSuccess(camera.SetExposureTime((float)exposureMicroseconds, ref error), error, "Set exposure", camera);
                 return true;
             }, cancellationToken);
         }
@@ -119,13 +117,13 @@ namespace NinePointRotationCalibration.Station.Devices
                 CameraMVS camera = GetConnectedCamera();
                 int error = 0;
                 float exposure = 0;
-                EnsureSuccess(camera.GetExposureTime(out exposure, out error), error, "Get exposure", camera);
+                EnsureSuccess(camera.GetExposureTime(ref exposure, ref error), error, "Get exposure", camera);
                 float gamma = 1;
                 error = 0;
-                EnsureSuccess(camera.GetGamma(out gamma, out error), error, "Get gamma", camera);
+                EnsureSuccess(camera.GetGamma(ref gamma, ref error), error, "Get gamma", camera);
                 uint saturation = 0;
                 error = 0;
-                EnsureSuccess(camera.GetSaturation(out saturation, out error), error, "Get saturation", camera);
+                EnsureSuccess(camera.GetSaturation(ref saturation, ref error), error, "Get saturation", camera);
                 float gain = 0;
                 TryGetOptionalFloat(camera, new[] { "GetGain", "GetGainValue" }, out gain);
                 string triggerMode;
@@ -167,18 +165,18 @@ namespace NinePointRotationCalibration.Station.Devices
             {
                 CameraMVS camera = GetConnectedCamera();
                 int error = 0;
-                EnsureSuccess(camera.SetExposureTime((float)parameters.ExposureMicroseconds, out error), error, "Set exposure", camera);
+                EnsureSuccess(camera.SetExposureTime((float)parameters.ExposureMicroseconds, ref error), error, "Set exposure", camera);
                 TrySetOptionalFloat(camera, new[] { "SetGain", "SetGainValue" }, (float)parameters.Gain);
                 error = 0;
-                EnsureSuccess(camera.SetGamma((float)parameters.Gamma, out error), error, "Set gamma", camera);
+                EnsureSuccess(camera.SetGamma((float)parameters.Gamma, ref error), error, "Set gamma", camera);
                 error = 0;
-                EnsureSuccess(camera.SetGammaEnable(true, out error), error, "Enable gamma", camera);
+                EnsureSuccess(camera.SetGammaEnable(true, ref error), error, "Enable gamma", camera);
                 error = 0;
-                EnsureSuccess(camera.SetSaturation((uint)parameters.Saturation, out error), error, "Set saturation", camera);
+                EnsureSuccess(camera.SetSaturation((uint)parameters.Saturation, ref error), error, "Set saturation", camera);
                 error = 0;
-                EnsureSuccess(camera.SetReverseX(parameters.ReverseX, out error), error, "Set reverse X", camera);
+                EnsureSuccess(camera.SetReverseX(parameters.ReverseX, ref error), error, "Set reverse X", camera);
                 error = 0;
-                EnsureSuccess(camera.SetReverseY(parameters.ReverseY, out error), error, "Set reverse Y", camera);
+                EnsureSuccess(camera.SetReverseY(parameters.ReverseY, ref error), error, "Set reverse Y", camera);
                 SetTriggerModeCore(camera, parameters.TriggerMode);
                 lock (_stateSync)
                 {
@@ -258,12 +256,12 @@ namespace NinePointRotationCalibration.Station.Devices
                 if (string.Equals(triggerMode, "Software", StringComparison.OrdinalIgnoreCase))
                 {
                     int error = 0;
-                    EnsureSuccess(camera.SoftTriggerOnce(out error), error, "Software trigger", camera);
+                    EnsureSuccess(camera.SoftTriggerOnce(ref error), error, "Software trigger", camera);
                 }
                 cancellationToken.ThrowIfCancellationRequested();
                 Bitmap image = null;
                 int captureError = 0;
-                bool captured = camera.GrabOneImage(out image, out captureError);
+                bool captured = camera.GrabOneImage(out image, ref captureError);
                 if (!captured || image == null)
                 {
                     if (image != null) image.Dispose();
@@ -328,7 +326,6 @@ namespace NinePointRotationCalibration.Station.Devices
             finally
             {
                 camera.FreeHGlobal();
-                camera.Dispose();
             }
         }
 
@@ -341,7 +338,7 @@ namespace NinePointRotationCalibration.Station.Devices
                     ? TriggerMode.HardTrigger
                     : TriggerMode.SoftwareTrigger;
             int error = 0;
-            EnsureSuccess(camera.SetTriggerMode(sdkMode, out error), error, "Set trigger mode", camera);
+            EnsureSuccess(camera.SetTriggerMode(sdkMode, ref error), error, "Set trigger mode", camera);
         }
 
         private static string NormalizeTriggerMode(string mode)

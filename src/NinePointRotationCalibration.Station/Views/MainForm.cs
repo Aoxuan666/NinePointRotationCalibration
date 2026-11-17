@@ -51,10 +51,18 @@ namespace NinePointRotationCalibration.Station.Views
     public partial class MainForm : Form
     {
         private readonly Dictionary<int, Button> _pointButtonMap = new Dictionary<int, Button>();
-        private readonly Color _idlePointColor = Color.FromArgb(50, 56, 64);
-        private readonly Color _activePointColor = Color.FromArgb(17, 122, 101);
+        private readonly Color _idlePointColor = Color.FromArgb(51, 65, 85);
+        private readonly Color _activePointColor = Color.FromArgb(15, 118, 110);
         private bool _workflowBusy;
         private bool _suppressFeatureEvents;
+        private bool _leftTeachingValid;
+        private bool _rightTeachingValid;
+        private double _leftTeachX;
+        private double _leftTeachY;
+        private double _leftTeachR;
+        private double _rightTeachX;
+        private double _rightTeachY;
+        private double _rightTeachR;
         private CameraUiState _cameraUiState = CameraUiState.Disconnected;
         private TcpUiState _tcpUiState = TcpUiState.NotListening;
 
@@ -421,9 +429,57 @@ namespace NinePointRotationCalibration.Station.Views
                 }
 
                 Label statusLabel = left ? lblLeftTeachingStatus : lblRightTeachingStatus;
-                statusLabel.Text = valid ? "已示教" : "未示教";
-                statusLabel.ForeColor = valid ? Color.FromArgb(17, 122, 101) : Color.FromArgb(138, 68, 68);
+                statusLabel.Text = valid ? "● 已示教" : "○ 未示教";
+                statusLabel.ForeColor = valid ? Color.FromArgb(15, 118, 110) : Color.FromArgb(185, 28, 28);
+
+                if (left)
+                {
+                    _leftTeachingValid = valid;
+                    _leftTeachX = machineX;
+                    _leftTeachY = machineY;
+                    _leftTeachR = machineR;
+                }
+                else
+                {
+                    _rightTeachingValid = valid;
+                    _rightTeachX = machineX;
+                    _rightTeachY = machineY;
+                    _rightTeachR = machineR;
+                }
+
+                UpdateDualNozzleSummary();
             });
+        }
+
+        private void UpdateDualNozzleSummary()
+        {
+            if (lblDualNozzleSummary == null) return;
+            if (_leftTeachingValid && _rightTeachingValid)
+            {
+                double dx = _rightTeachX - _leftTeachX;
+                double dy = _rightTeachY - _leftTeachY;
+                double distance = Math.Sqrt((dx * dx) + (dy * dy));
+                lblDualNozzleSummary.BackColor = Color.FromArgb(204, 251, 241);
+                lblDualNozzleSummary.ForeColor = Color.FromArgb(17, 94, 89);
+                lblDualNozzleSummary.Text = string.Format(
+                    CultureInfo.InvariantCulture,
+                    "双吸嘴已就绪：同轴间距 ΔX={0:0.###}  ΔY={1:0.###}  |ΔD|={2:0.###} mm\r\n盲摆策略：吸取旋转 R 对齐板角 → 盲摆转回固定角 (左:{3:0.##}° / 右:{4:0.##}°)",
+                    dx,
+                    dy,
+                    distance,
+                    _leftTeachR,
+                    _rightTeachR);
+            }
+            else
+            {
+                lblDualNozzleSummary.BackColor = Color.FromArgb(226, 232, 240);
+                lblDualNozzleSummary.ForeColor = Color.FromArgb(51, 65, 85);
+                lblDualNozzleSummary.Text = string.Format(
+                    CultureInfo.InvariantCulture,
+                    "双吸嘴状态：左吸嘴 [{0}] / 右吸嘴 [{1}]（需两侧均完成示教）\r\n工艺模式：吸取时旋转 R 轴对齐来料板角 → 盲摆转回固定示教角 (0°)",
+                    _leftTeachingValid ? "已示教" : "未示教",
+                    _rightTeachingValid ? "已示教" : "未示教");
+            }
         }
 
         public void SetDetectionSummary(int expected, int actual, bool success, string message)
@@ -488,7 +544,23 @@ namespace NinePointRotationCalibration.Station.Views
             {
                 dgvDetectionResults.Rows.Clear();
                 if (rows == null) return;
-                foreach (object[] row in rows) dgvDetectionResults.Rows.Add(row);
+                foreach (object[] row in rows)
+                {
+                    int rowIndex = dgvDetectionResults.Rows.Add(row);
+                    if (rowIndex >= 0 && row != null && row.Length > 0)
+                    {
+                        string status = Convert.ToString(row[row.Length - 1], CultureInfo.InvariantCulture);
+                        bool isNg = string.Equals(status, "NG", StringComparison.OrdinalIgnoreCase);
+                        DataGridViewRow gridRow = dgvDetectionResults.Rows[rowIndex];
+                        gridRow.DefaultCellStyle.ForeColor = isNg
+                            ? Color.FromArgb(185, 28, 28)
+                            : Color.FromArgb(21, 128, 61);
+                        if (isNg)
+                        {
+                            gridRow.DefaultCellStyle.BackColor = Color.FromArgb(254, 242, 242);
+                        }
+                    }
+                }
             });
         }
 
@@ -566,6 +638,7 @@ namespace NinePointRotationCalibration.Station.Views
             btnFit.Click += delegate { imageViewport.FitImage(); };
             btnActualPixels.Click += delegate { imageViewport.ShowActualPixels(); };
             btnClearLog.Click += delegate { rtbLog.Clear(); };
+            tabWork.DrawItem += TabWork_DrawItem;
             imageViewport.ImagePositionChanged += ImageViewport_ImagePositionChanged;
             imageViewport.ImageAvailabilityChanged += ImageViewport_ImageAvailabilityChanged;
             chkCameraEnabled.CheckedChanged += FeatureToggle_CheckedChanged;
@@ -636,6 +709,43 @@ namespace NinePointRotationCalibration.Station.Views
             SelectCalibrationPoint(pointNumber);
             EventHandler<CalibrationPointRequestedEventArgs> handler = CalibrationPointRequested;
             if (handler != null) handler(this, new CalibrationPointRequestedEventArgs(pointNumber));
+        }
+
+        private void TabWork_DrawItem(object sender, DrawItemEventArgs e)
+        {
+            if (e.Index < 0 || e.Index >= tabWork.TabPages.Count) return;
+            TabPage page = tabWork.TabPages[e.Index];
+            Rectangle bounds = e.Bounds;
+            bool selected = (e.State & DrawItemState.Selected) == DrawItemState.Selected;
+            bool enabled = page.Enabled;
+
+            Color backColor = selected
+                ? Color.FromArgb(255, 255, 255)
+                : Color.FromArgb(226, 232, 240);
+            Color foreColor = !enabled
+                ? Color.FromArgb(148, 163, 184)
+                : selected ? Color.FromArgb(15, 118, 110) : Color.FromArgb(51, 65, 85);
+
+            using (SolidBrush fillBrush = new SolidBrush(backColor))
+            {
+                e.Graphics.FillRectangle(fillBrush, bounds);
+            }
+
+            if (selected)
+            {
+                using (SolidBrush accentBrush = new SolidBrush(Color.FromArgb(15, 118, 110)))
+                {
+                    e.Graphics.FillRectangle(accentBrush, bounds.X, bounds.Bottom - 3, bounds.Width, 3);
+                }
+            }
+
+            TextRenderer.DrawText(
+                e.Graphics,
+                page.Text,
+                tabWork.Font,
+                bounds,
+                foreColor,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine);
         }
 
         private void CommandButton_Click(object sender, EventArgs e)

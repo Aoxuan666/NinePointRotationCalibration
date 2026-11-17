@@ -531,6 +531,18 @@ namespace NinePointRotationCalibration.Station.Tests
                 calibration, teaching, SuccessfulMatch(0.0, 0.0, 90.0), 0.0).Single();
             Near(0.0, mirrored.X, 1e-9, "mirrored stage keeps the arm length (X)");
             Near(10.0, mirrored.Y, 1e-9, "mirrored stage rotates the arm the physical way (Y)");
+
+            // Calibrated rotation center eccentricity compensation for pick-at-angle + blind-place-at-0:
+            calibration.PixelToStageMatrix = new AffineMatrix2D(1.0, 0.0, 0.0, 0.0, 1.0, 0.0);
+            calibration.Rotation.ReferenceStage = new StagePoint(0.0, 0.0);
+            calibration.Rotation.RotationCenterStage = new StagePoint(-10.0, 0.0);
+            teaching.Left = ValidTeaching(TeachingSide.Left, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+            MappedTargetPose eccentricTurn = mapper.Map(
+                calibration, teaching, SuccessfulMatch(0.0, 0.0, -90.0), 0.0).Single();
+            Near(10.0, eccentricTurn.X, 1e-9, "eccentric rotation center compensates X swing");
+            Near(-10.0, eccentricTurn.Y, 1e-9, "eccentric rotation center compensates Y swing");
+            Near(-90.0, eccentricTurn.PickR, 1e-9, "pick R aligns with rotated board");
+            Near(0.0, eccentricTurn.BlindPlaceR, 1e-9, "blind-place R returns to taught reference angle");
         }
 
         private static void TestBlobAnalysis()

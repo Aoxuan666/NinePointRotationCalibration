@@ -4,6 +4,13 @@ using NinePointRotationCalibration.Station.Models;
 
 namespace NinePointRotationCalibration.Station.Services.Inspection
 {
+    /// <summary>
+    /// 单轴双吸嘴（左/右吸嘴）定位吸取 + 盲摆固定位置坐标映射器。
+    /// 工艺动作：吸取时旋转 R 轴对齐来料 PCB 角度（PickR = MachineR + ROffset），
+    /// 吸取后移动至固定盲摆工位并将 R 轴转回固定示教角（BlindPlaceR = MachineR，常为 0°）。
+    /// 当旋转标定包含有效的机械旋转中心（RotationCenterStage / ReferenceStage）时，
+    /// 自动补偿 R 轴从吸取对齐角转回盲摆固定角过程中的旋转中心偏心摆臂位移。
+    /// </summary>
     public sealed class TargetPoseMapper
     {
         public List<MappedTargetPose> Map(
@@ -40,36 +47,60 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
             StagePoint detectedStage = calibration.TransformImageToStage(boardMatch.Anchor);
             StagePoint taughtImageStage = calibration.TransformImageToStage(taughtAnchor);
 
-            // The taught target is rigidly attached to the board: keep its lever arm
-            // from the board anchor (in stage units) and rotate it by the board's
-            // rotation since teaching. The rotation is measured in the stage frame by
-            // mapping the template direction through the affine, so mirrored setups
-            // and the downward image row axis are handled without sign guessing.
+            // 计算来料板在机械台面坐标系下的真实旋转角增量（自动处理镜像轴或图像行向下坐标系）。
             double boardRotation = NormalizeDegrees(
                 StageAngleDegrees(calibration, boardMatch.Anchor, boardMatch.AngleDegrees) -
                 StageAngleDegrees(calibration, taughtAnchor, teaching.ImageAngleDegrees));
             double radians = boardRotation * Math.PI / 180.0;
             double cos = Math.Cos(radians);
             double sin = Math.Sin(radians);
-            double armX = teaching.MachineX - taughtImageStage.X;
-            double armY = teaching.MachineY - taughtImageStage.Y;
+
+            // 若五点旋转标定测定了 R 轴机械旋转中心相对于标定参考点（ReferenceStage）的偏心向量：
+            // C_rot(M) = M + (RotationCenterStage - ReferenceStage)。
+            // 吸取时 R 轴旋转对齐 PCB，去固定位置盲摆时 R 轴转回固定示教角（0°）：
+            // 吸取时刻必须让旋转后的吸嘴/板锚点向量与 R 轴旋转中心严格重合，转回 0° 盲摆时才能落位零偏差。
+            double rotCenterOffsetX = 0.0;
+            double rotCenterOffsetY = 0.0;
+            if (HasCalibratedRotationCenter(calibration.Rotation))
+            {
+                rotCenterOffsetX = calibration.Rotation.RotationCenterStage.X - calibration.Rotation.ReferenceStage.X;
+                rotCenterOffsetY = calibration.Rotation.RotationCenterStage.Y - calibration.Rotation.ReferenceStage.Y;
+            }
+
+            double armX = (teaching.MachineX - taughtImageStage.X) + rotCenterOffsetX;
+            double armY = (teaching.MachineY - taughtImageStage.Y) + rotCenterOffsetY;
 
             double direction = calibration.Rotation.DirectionMultiplier;
 
-            // imageAngle = direction * machineAngle + offset, so the inverse delta is
-            // machineDelta = direction * (detectedImageAngle - taughtImageAngle).
+            // imageAngle = direction * machineAngle + offset => machineDelta = direction * deltaImageAngle
             double imageCorrection = NormalizeDegrees(boardMatch.AngleDegrees - teaching.ImageAngleDegrees);
-            double targetR = teaching.MachineR + (direction * imageCorrection);
-            double offsetR = NormalizeDegrees(targetR - currentR);
+            double pickR = teaching.MachineR + (direction * imageCorrection);
+            double offsetR = NormalizeDegrees(pickR - currentR);
+            double targetR = currentR + offsetR;
 
             result.Add(new MappedTargetPose
             {
                 Side = teaching.Side,
-                X = detectedStage.X + (armX * cos) - (armY * sin),
-                Y = detectedStage.Y + (armX * sin) + (armY * cos),
+                X = detectedStage.X - rotCenterOffsetX + (armX * cos) - (armY * sin),
+                Y = detectedStage.Y - rotCenterOffsetY + (armX * sin) + (armY * cos),
                 ROffset = offsetR,
-                TargetR = currentR + offsetR
+                TargetR = targetR,
+                PickR = targetR,
+                BlindPlaceR = teaching.MachineR
             });
+        }
+
+        private static bool HasCalibratedRotationCenter(RotationCalibrationResult rotation)
+        {
+            if (rotation == null || !rotation.IsAvailable || !rotation.Success) return false;
+            if (!IsFinite(rotation.RotationCenterStage.X) || !IsFinite(rotation.RotationCenterStage.Y) ||
+                !IsFinite(rotation.ReferenceStage.X) || !IsFinite(rotation.ReferenceStage.Y))
+            {
+                return false;
+            }
+
+            return Math.Abs(rotation.RotationCenterStage.X - rotation.ReferenceStage.X) > 1e-9 ||
+                   Math.Abs(rotation.RotationCenterStage.Y - rotation.ReferenceStage.Y) > 1e-9;
         }
 
         /// <summary>

@@ -308,7 +308,7 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
             }
         }
 
-        private static List<TemplateMatchResult> OrderMatches(
+        internal static List<TemplateMatchResult> OrderMatches(
             IEnumerable<TemplateMatchResult> matches,
             TemplateDefinition template,
             DetectionProfile profile)

@@ -24,7 +24,9 @@ namespace NinePointRotationCalibration.Station.Views
         {
             if (e == null) return;
             bool error = string.Equals(e.Level, "ERROR", StringComparison.OrdinalIgnoreCase);
-            _view.AppendLog("[" + (e.Level ?? "INFO") + "] " + (e.Message ?? string.Empty), error);
+            string level = (e.Level ?? "INFO").Trim().ToUpperInvariant();
+            string prefix = (level == "WARN" || level == "WARNING") ? "[WARN] " : string.Empty;
+            _view.AppendLog(prefix + (e.Message ?? string.Empty), error);
         }
 
         private void Runtime_StateChanged(object sender, RuntimeStateEventArgs e)
@@ -175,7 +177,28 @@ namespace NinePointRotationCalibration.Station.Views
             List<ViewportContourOverlay> contours = new List<ViewportContourOverlay>();
             foreach (BoardInspectionItem item in result.Items ?? new List<BoardInspectionItem>())
             {
-                string sides = string.Join(",", item.Targets.Select(target => target.Side == TeachingSide.Left ? "L" : "R"));
+                MappedTargetPose leftTarget = item.Targets == null
+                    ? null
+                    : item.Targets.FirstOrDefault(target => target != null && target.Side == TeachingSide.Left);
+                MappedTargetPose rightTarget = item.Targets == null
+                    ? null
+                    : item.Targets.FirstOrDefault(target => target != null && target.Side == TeachingSide.Right);
+                string leftText = leftTarget == null
+                    ? "--"
+                    : string.Format(
+                        CultureInfo.InvariantCulture,
+                        "{0:0.##}, {1:0.##}, {2:0.##}°",
+                        leftTarget.X,
+                        leftTarget.Y,
+                        leftTarget.TargetR);
+                string rightText = rightTarget == null
+                    ? "--"
+                    : string.Format(
+                        CultureInfo.InvariantCulture,
+                        "{0:0.##}, {1:0.##}, {2:0.##}°",
+                        rightTarget.X,
+                        rightTarget.Y,
+                        rightTarget.TargetR);
                 rows.Add(new object[]
                 {
                     item.BoardIndex,
@@ -183,8 +206,9 @@ namespace NinePointRotationCalibration.Station.Views
                     item.ImageColumn.ToString("0.###", CultureInfo.InvariantCulture),
                     item.ImageRow.ToString("0.###", CultureInfo.InvariantCulture),
                     item.ImageAngleDegrees.ToString("0.###", CultureInfo.InvariantCulture),
+                    leftText,
+                    rightText,
                     item.HasManualMark ? "有" : "无",
-                    sides,
                     item.HasManualMark ? "NG" : "OK"
                 });
                 foreach (BlobFinding blob in item.Blobs ?? new List<BlobFinding>())

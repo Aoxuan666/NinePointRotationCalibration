@@ -1067,7 +1067,9 @@ namespace NinePointRotationCalibration.Station.Services
                         { "x", target.X },
                         { "y", target.Y },
                         { "rOffset", target.ROffset },
-                        { "targetR", target.TargetR }
+                        { "targetR", target.TargetR },
+                        { "pickR", target.PickR },
+                        { "blindPlaceR", target.BlindPlaceR }
                     });
                 }
                 itemData["targets"] = targets;

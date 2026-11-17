@@ -44,6 +44,7 @@ namespace NinePointRotationCalibration.Station.Views
         private TextBox[] rightTeachingValues;
         private Label lblLeftTeachingStatus;
         private Label lblRightTeachingStatus;
+        private Label lblDualNozzleSummary;
         private TabPage tabCalibration;
         private ToolTip toolTip;
 
@@ -282,11 +283,14 @@ namespace NinePointRotationCalibration.Station.Views
 
             tabWork = new TabControl();
             tabWork.Dock = DockStyle.Fill;
-            tabWork.Font = new Font(Font.FontFamily, 9.0F, FontStyle.Regular);
+            tabWork.DrawMode = TabDrawMode.OwnerDrawFixed;
+            tabWork.Font = new Font(Font.FontFamily, 9.0F, FontStyle.Bold);
+            tabWork.ItemSize = new Size(88, 32);
             tabWork.Multiline = true;
             tabWork.Name = "tabWork";
-            tabWork.Padding = new Point(11, 6);
+            tabWork.Padding = new Point(10, 6);
             tabWork.SelectedIndex = 0;
+            tabWork.SizeMode = TabSizeMode.Fixed;
             tabWork.TabPages.Add(BuildCalibrationTab());
             tabWork.TabPages.Add(BuildTeachingTab());
             tabWork.TabPages.Add(BuildTemplateTab());
@@ -445,22 +449,36 @@ namespace NinePointRotationCalibration.Station.Views
         {
             TabPage page = CreateTabPage("tabTeaching", "左右示教");
             TableLayoutPanel layout = CreateScrollableStack();
-            layout.RowCount = 3;
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 246.0F));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 246.0F));
+            layout.RowCount = 4;
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 232.0F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 232.0F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 62.0F));
             layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100.0F));
 
             TextBox[] leftValues;
             TextBox[] rightValues;
-            GroupBox leftGroup = BuildTeachingGroup("左侧示教", "left", out leftValues, out lblLeftTeachingStatus);
-            GroupBox rightGroup = BuildTeachingGroup("右侧示教", "right", out rightValues, out lblRightTeachingStatus);
+            GroupBox leftGroup = BuildTeachingGroup("左侧吸嘴示教 (Left Nozzle)", "left", out leftValues, out lblLeftTeachingStatus);
+            GroupBox rightGroup = BuildTeachingGroup("右侧吸嘴示教 (Right Nozzle)", "right", out rightValues, out lblRightTeachingStatus);
             leftTeachingValues = leftValues;
             rightTeachingValues = rightValues;
 
-            Label hint = CreateHintLabel("记录当前会拍照并使用定位模板匹配，将模板匹配中心/角度与当前机械 X/Y/R 成对保存。");
+            lblDualNozzleSummary = new Label();
+            lblDualNozzleSummary.AutoEllipsis = true;
+            lblDualNozzleSummary.BackColor = Color.FromArgb(226, 232, 240);
+            lblDualNozzleSummary.Dock = DockStyle.Fill;
+            lblDualNozzleSummary.Font = new Font("Microsoft YaHei UI", 8.75F, FontStyle.Bold, GraphicsUnit.Point, 134);
+            lblDualNozzleSummary.ForeColor = Color.FromArgb(30, 41, 59);
+            lblDualNozzleSummary.Margin = new Padding(3, 2, 3, 6);
+            lblDualNozzleSummary.Name = "lblDualNozzleSummary";
+            lblDualNozzleSummary.Padding = new Padding(10, 6, 10, 6);
+            lblDualNozzleSummary.Text = "双吸嘴状态：等待左右吸嘴完成示教\r\n工艺模式：吸取时旋转 R 轴对齐来料板角 → 盲摆转回固定示教角 (0°)";
+            lblDualNozzleSummary.TextAlign = ContentAlignment.MiddleLeft;
+
+            Label hint = CreateHintLabel("多板治具下，记录左/右吸嘴示教均自动锁定左上角 1 号基准板；吸取时 R 轴旋转对齐 PCB，盲摆时转回示教固定 R 角（0°），并自动补偿旋转中心偏心摆臂。");
             layout.Controls.Add(leftGroup, 0, 0);
             layout.Controls.Add(rightGroup, 0, 1);
-            layout.Controls.Add(hint, 0, 2);
+            layout.Controls.Add(lblDualNozzleSummary, 0, 2);
+            layout.Controls.Add(hint, 0, 3);
             page.Controls.Add(layout);
             return page;
         }
@@ -502,23 +520,23 @@ namespace NinePointRotationCalibration.Station.Views
             layout.Dock = DockStyle.Fill;
             layout.Padding = new Padding(8);
             layout.RowCount = 4;
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 310.0F));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42.0F));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28.0F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 272.0F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 40.0F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 26.0F));
             layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100.0F));
 
             GroupBox settings = CreateGroupBox("板件与标记检测");
             TableLayoutPanel settingFields = CreatePairedFieldTable();
             settingFields.RowCount = 8;
             settingFields.RowStyles.Clear();
-            settingFields.RowStyles.Add(new RowStyle(SizeType.Percent, 20.0F));
-            settingFields.RowStyles.Add(new RowStyle(SizeType.Percent, 20.0F));
-            settingFields.RowStyles.Add(new RowStyle(SizeType.Percent, 20.0F));
-            settingFields.RowStyles.Add(new RowStyle(SizeType.Percent, 20.0F));
-            settingFields.RowStyles.Add(new RowStyle(SizeType.Percent, 20.0F));
-            settingFields.RowStyles.Add(new RowStyle(SizeType.Percent, 20.0F));
-            settingFields.RowStyles.Add(new RowStyle(SizeType.Percent, 20.0F));
-            settingFields.RowStyles.Add(new RowStyle(SizeType.Percent, 20.0F));
+            settingFields.RowStyles.Add(new RowStyle(SizeType.Percent, 12.5F));
+            settingFields.RowStyles.Add(new RowStyle(SizeType.Percent, 12.5F));
+            settingFields.RowStyles.Add(new RowStyle(SizeType.Percent, 12.5F));
+            settingFields.RowStyles.Add(new RowStyle(SizeType.Percent, 12.5F));
+            settingFields.RowStyles.Add(new RowStyle(SizeType.Percent, 12.5F));
+            settingFields.RowStyles.Add(new RowStyle(SizeType.Percent, 12.5F));
+            settingFields.RowStyles.Add(new RowStyle(SizeType.Percent, 12.5F));
+            settingFields.RowStyles.Add(new RowStyle(SizeType.Percent, 12.5F));
             nudExpectedCount = CreateDecimalInput("nudExpectedCount", 6.0M, 1.0M, 100.0M, 0);
             NumericUpDown brightThreshold = CreateDecimalInput("nudBrightThreshold", 128.0M, 0.0M, 255.0M, 0);
             NumericUpDown minimumArea = CreateDecimalInput("nudMinimumBlobArea", 30.0M, 0.0M, 10000000.0M, 0);
@@ -630,14 +648,15 @@ namespace NinePointRotationCalibration.Station.Views
 
             dgvDetectionResults = new DataGridView();
             ConfigureGrid(dgvDetectionResults, "dgvDetectionResults");
-            AddTextColumn(dgvDetectionResults, "Index", "板号", 48);
-            AddTextColumn(dgvDetectionResults, "Score", "分数", 60);
-            AddTextColumn(dgvDetectionResults, "ImageX", "图像 X", 74);
-            AddTextColumn(dgvDetectionResults, "ImageY", "图像 Y", 74);
-            AddTextColumn(dgvDetectionResults, "Angle", "角度", 64);
-            AddTextColumn(dgvDetectionResults, "Mark", "叉标记", 64);
-            AddTextColumn(dgvDetectionResults, "Side", "映射", 58);
-            AddTextColumn(dgvDetectionResults, "Status", "状态", 60);
+            AddTextColumn(dgvDetectionResults, "Index", "板号", 42);
+            AddTextColumn(dgvDetectionResults, "Score", "分数", 52);
+            AddTextColumn(dgvDetectionResults, "ImageX", "图像 X", 64);
+            AddTextColumn(dgvDetectionResults, "ImageY", "图像 Y", 64);
+            AddTextColumn(dgvDetectionResults, "Angle", "板角°", 54);
+            AddTextColumn(dgvDetectionResults, "LeftTarget", "左吸嘴吸取 (X,Y,R)", 138);
+            AddTextColumn(dgvDetectionResults, "RightTarget", "右吸嘴吸取 (X,Y,R)", 138);
+            AddTextColumn(dgvDetectionResults, "Mark", "白标", 46);
+            AddTextColumn(dgvDetectionResults, "Status", "状态", 48);
 
             layout.Controls.Add(settings, 0, 0);
             layout.Controls.Add(actions, 0, 1);
@@ -652,12 +671,11 @@ namespace NinePointRotationCalibration.Station.Views
             TabPage page = CreateTabPage("tabCamera", "相机");
             TableLayoutPanel layout = CreateScrollableStack();
             layout.RowCount = 6;
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 82.0F));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 160.0F));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 236.0F));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 280.0F));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 44.0F));
-            layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100.0F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 74.0F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 148.0F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 228.0F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 220.0F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42.0F));
             layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100.0F));
 
             GroupBox mode = CreateGroupBox("运行开关");
@@ -1119,11 +1137,28 @@ namespace NinePointRotationCalibration.Station.Views
 
         private static Button CreateButton(string name, string text, int width, int height, bool primary, string actionKey)
         {
+            bool danger = !string.IsNullOrWhiteSpace(actionKey) &&
+                (actionKey.IndexOf("cancel", System.StringComparison.OrdinalIgnoreCase) >= 0 ||
+                 actionKey.IndexOf("stop", System.StringComparison.OrdinalIgnoreCase) >= 0 ||
+                 actionKey.IndexOf("disconnect", System.StringComparison.OrdinalIgnoreCase) >= 0 ||
+                 actionKey.IndexOf("clear", System.StringComparison.OrdinalIgnoreCase) >= 0);
+
             Button button = new Button();
-            button.BackColor = primary ? Color.FromArgb(17, 122, 101) : Color.FromArgb(72, 78, 86);
+            button.BackColor = primary
+                ? Color.FromArgb(15, 118, 110)
+                : danger ? Color.FromArgb(127, 29, 29) : Color.FromArgb(51, 65, 85);
             button.Cursor = Cursors.Hand;
-            button.FlatAppearance.BorderColor = primary ? Color.FromArgb(17, 122, 101) : Color.FromArgb(100, 107, 115);
+            button.FlatAppearance.BorderColor = primary
+                ? Color.FromArgb(20, 184, 166)
+                : danger ? Color.FromArgb(185, 28, 28) : Color.FromArgb(100, 116, 139);
+            button.FlatAppearance.MouseOverBackColor = primary
+                ? Color.FromArgb(13, 148, 136)
+                : danger ? Color.FromArgb(153, 27, 27) : Color.FromArgb(71, 85, 105);
+            button.FlatAppearance.MouseDownBackColor = primary
+                ? Color.FromArgb(17, 94, 89)
+                : danger ? Color.FromArgb(105, 20, 20) : Color.FromArgb(30, 41, 59);
             button.FlatStyle = FlatStyle.Flat;
+            button.Font = new Font("Microsoft YaHei UI", 9.0F, primary ? FontStyle.Bold : FontStyle.Regular, GraphicsUnit.Point, 134);
             button.ForeColor = Color.White;
             button.Margin = new Padding(0, 0, 7, 0);
             button.Name = name;
@@ -1206,31 +1241,38 @@ namespace NinePointRotationCalibration.Station.Views
 
         private static void ConfigureGrid(DataGridView grid, string name)
         {
+            System.Reflection.PropertyInfo doubleBuffered = typeof(DataGridView).GetProperty(
+                "DoubleBuffered",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            if (doubleBuffered != null) doubleBuffered.SetValue(grid, true, null);
+
             grid.AllowUserToAddRows = false;
             grid.AllowUserToDeleteRows = false;
             grid.AllowUserToResizeRows = false;
             grid.AutoSizeRowsMode = DataGridViewAutoSizeRowsMode.None;
+            grid.AlternatingRowsDefaultCellStyle.BackColor = Color.FromArgb(248, 250, 252);
             grid.BackgroundColor = Color.White;
             grid.BorderStyle = BorderStyle.FixedSingle;
             grid.ColumnHeadersBorderStyle = DataGridViewHeaderBorderStyle.Single;
-            grid.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(226, 230, 234);
-            grid.ColumnHeadersDefaultCellStyle.ForeColor = Color.FromArgb(39, 43, 48);
-            grid.ColumnHeadersDefaultCellStyle.SelectionBackColor = Color.FromArgb(226, 230, 234);
-            grid.ColumnHeadersDefaultCellStyle.SelectionForeColor = Color.FromArgb(39, 43, 48);
+            grid.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(241, 245, 249);
+            grid.ColumnHeadersDefaultCellStyle.Font = new Font("Microsoft YaHei UI", 8.75F, FontStyle.Bold, GraphicsUnit.Point, 134);
+            grid.ColumnHeadersDefaultCellStyle.ForeColor = Color.FromArgb(30, 41, 59);
+            grid.ColumnHeadersDefaultCellStyle.SelectionBackColor = Color.FromArgb(241, 245, 249);
+            grid.ColumnHeadersDefaultCellStyle.SelectionForeColor = Color.FromArgb(30, 41, 59);
             grid.ColumnHeadersHeight = 30;
             grid.ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing;
             grid.DefaultCellStyle.BackColor = Color.White;
-            grid.DefaultCellStyle.ForeColor = Color.FromArgb(45, 49, 54);
-            grid.DefaultCellStyle.SelectionBackColor = Color.FromArgb(205, 226, 220);
-            grid.DefaultCellStyle.SelectionForeColor = Color.FromArgb(25, 45, 40);
+            grid.DefaultCellStyle.ForeColor = Color.FromArgb(30, 41, 59);
+            grid.DefaultCellStyle.SelectionBackColor = Color.FromArgb(204, 251, 241);
+            grid.DefaultCellStyle.SelectionForeColor = Color.FromArgb(17, 94, 89);
             grid.Dock = DockStyle.Fill;
             grid.EnableHeadersVisualStyles = false;
-            grid.GridColor = Color.FromArgb(218, 222, 226);
+            grid.GridColor = Color.FromArgb(226, 232, 240);
             grid.MultiSelect = false;
             grid.Name = name;
             grid.ReadOnly = true;
             grid.RowHeadersVisible = false;
-            grid.RowTemplate.Height = 27;
+            grid.RowTemplate.Height = 28;
             grid.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
         }
 

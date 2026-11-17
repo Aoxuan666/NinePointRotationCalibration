@@ -98,7 +98,11 @@ namespace NinePointRotationCalibration.Station.Models
 
         public StationOptions DeepClone()
         {
-            return (StationOptions)MemberwiseClone();
+            StationOptions clone = (StationOptions)MemberwiseClone();
+            clone.CameraFeatures = CameraFeatures == null
+                ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                : new Dictionary<string, string>(CameraFeatures, StringComparer.OrdinalIgnoreCase);
+            return clone;
         }
 
         public bool NormalizeAfterLoad()
