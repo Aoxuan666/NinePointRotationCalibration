@@ -325,7 +325,6 @@ namespace NinePointRotationCalibration.Station.Views
                             regions,
                             _lastInspectionBoardIndices,
                             _selectedInspectionBoardIndex));
-                        SyncEffectViewportViewDeferred();
                     }
                 }
             }

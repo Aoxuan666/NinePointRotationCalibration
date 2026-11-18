@@ -89,7 +89,6 @@ namespace NinePointRotationCalibration.Station.Views
                 _view.SetEffectViewportInformation(string.IsNullOrWhiteSpace(_renderedEffectInfoText)
                     ? "检测效果图已就绪"
                     : _renderedEffectInfoText);
-                SyncEffectViewportViewDeferred();
                 return;
             }
 
@@ -120,7 +119,6 @@ namespace NinePointRotationCalibration.Station.Views
             {
                 _view.EffectViewport.ClearOverlays();
             }
-            SyncEffectViewportViewDeferred();
             _view.SetEffectViewportInformation("检测效果图刷新中...");
             TriggerEffectPreviewOnUi(false);
         }
@@ -266,7 +264,6 @@ namespace NinePointRotationCalibration.Station.Views
                             _view.EffectViewport.SetImageOwned(source);
                             source = null;
                             _view.EffectViewport.ClearOverlays();
-                            SyncEffectViewportViewDeferred();
                             _view.SetEffectViewportInformation(job == null || job.Template == null || !job.Template.HasUsableModel
                                 ? "尚未加载定位模板 · 当前显示原图"
                                 : "未匹配到目标板 · 当前显示原图");
@@ -306,7 +303,6 @@ namespace NinePointRotationCalibration.Station.Views
                             _view.EffectViewport.SetImageOwned(source);
                             source = null;
                             _view.EffectViewport.ClearOverlays();
-                            SyncEffectViewportViewDeferred();
                             _view.SetEffectViewportInformation("未匹配到模板目标 · 当前显示原图");
                             _view.SetOperationStatus("当前图像未匹配到定位模板目标", false, true);
                         }
@@ -376,7 +372,6 @@ namespace NinePointRotationCalibration.Station.Views
                     preview.Rois,
                     boardIndices,
                     selectedBoardIndex));
-                SyncEffectViewportViewDeferred();
                 _view.SetEffectViewportInformation(effectInfo);
                 _view.SetOperationStatus(binaryEnabled ? "检测效果图（局部二值）已更新" : "检测效果图（原图叠加）已更新", false, false);
                 _renderedEffectGeneration = generation;
@@ -681,37 +676,6 @@ namespace NinePointRotationCalibration.Station.Views
                 .ToList();
         }
 
-        private void SyncEffectViewportViewDeferred()
-        {
-            if (_disposed || !_view.IsDetectionDualViewActive) return;
-            if (_view.EffectViewport.IsHandleCreated)
-            {
-                try
-                {
-                    _view.EffectViewport.BeginInvoke(new MethodInvoker(delegate
-                    {
-                        if (!_disposed &&
-                            _view.IsDetectionDualViewActive &&
-                            _view.Viewport.HasImage &&
-                            _view.EffectViewport.HasImage)
-                        {
-                            _view.EffectViewport.SyncViewFrom(_view.Viewport);
-                        }
-                    }));
-                }
-                catch (ObjectDisposedException)
-                {
-                }
-                catch (InvalidOperationException)
-                {
-                }
-            }
-            else if (_view.Viewport.HasImage && _view.EffectViewport.HasImage)
-            {
-                _view.EffectViewport.SyncViewFrom(_view.Viewport);
-            }
-        }
-
         private static string BuildEffectInfoText(DetectionProfile profile, bool binaryEnabled, int blobCount)
         {
             return string.Format(
@@ -803,7 +767,6 @@ namespace NinePointRotationCalibration.Station.Views
                     _view.EffectViewport.SetImageOwned(effectCopy);
                     _view.EffectViewport.ClearOverlays();
                     _view.SetEffectViewportInformation(inspectionFrame ? "检测效果图计算中..." : "已载入图像，正在生成效果图...");
-                    SyncEffectViewportViewDeferred();
                     scheduleEffect = !inspectionFrame;
                 }
             }

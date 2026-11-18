@@ -75,7 +75,6 @@ namespace NinePointRotationCalibration.Station.Views
         private bool _dualViewStateInitialized;
         private bool _suppressImageSplitBalance;
         private bool _warmingTabs;
-        private bool _syncingViewports;
         private bool _logCollapsed;
         private bool _userExpandedLogInDualView;
 
@@ -475,10 +474,6 @@ namespace NinePointRotationCalibration.Station.Views
                     if (active)
                     {
                         BalanceImageSplit();
-                        if (imageViewport.HasImage && effectViewport.HasImage)
-                        {
-                            SyncLinkedViewport(imageViewport, effectViewport);
-                        }
                     }
                 }
             });
@@ -519,10 +514,6 @@ namespace NinePointRotationCalibration.Station.Views
                     btnToggleDualLayout.Text = toVertical ? "⇅ 切换上下" : "⇄ 切换左右";
                 }
                 BalanceImageSplit();
-            }
-            if (_dualViewActive && imageViewport.HasImage && effectViewport.HasImage)
-            {
-                SyncLinkedViewport(imageViewport, effectViewport);
             }
         }
 
@@ -601,29 +592,6 @@ namespace NinePointRotationCalibration.Station.Views
             }
 
             return UiRenderOptimizer.BeginFreezeScope(tabWork, tabWork);
-        }
-
-        private void SyncLinkedViewport(ImageViewport source, ImageViewport target)
-        {
-            if (_syncingViewports || !_dualViewActive || source == null || target == null)
-            {
-                return;
-            }
-
-            if (!source.HasImage || !target.HasImage)
-            {
-                return;
-            }
-
-            _syncingViewports = true;
-            try
-            {
-                target.SyncViewFrom(source);
-            }
-            finally
-            {
-                _syncingViewports = false;
-            }
         }
 
         public void SelectCalibrationPoint(int pointNumber)
@@ -1067,12 +1035,12 @@ namespace NinePointRotationCalibration.Station.Views
             btnFit.Click += delegate
             {
                 imageViewport.FitImage();
-                if (effectViewport.HasImage) effectViewport.FitImage();
+                if (_dualViewActive && effectViewport.HasImage) effectViewport.FitImage();
             };
             btnActualPixels.Click += delegate
             {
                 imageViewport.ShowActualPixels();
-                if (effectViewport.HasImage) effectViewport.ShowActualPixels();
+                if (_dualViewActive && effectViewport.HasImage) effectViewport.ShowActualPixels();
             };
             btnClearLog.Click += delegate { rtbLog.Clear(); };
             if (btnToggleLog != null)
@@ -1095,9 +1063,7 @@ namespace NinePointRotationCalibration.Station.Views
             tabWork.DrawItem += TabWork_DrawItem;
             imageViewport.ImagePositionChanged += ImageViewport_ImagePositionChanged;
             imageViewport.ImageAvailabilityChanged += ImageViewport_ImageAvailabilityChanged;
-            imageViewport.ViewChanged += delegate { SyncLinkedViewport(imageViewport, effectViewport); };
             effectViewport.ImagePositionChanged += ImageViewport_ImagePositionChanged;
-            effectViewport.ViewChanged += delegate { SyncLinkedViewport(effectViewport, imageViewport); };
             dgvDetectionResults.SelectionChanged += delegate { RaiseUiAction("detection.rowSelected", dgvDetectionResults); };
             chkCameraEnabled.CheckedChanged += FeatureToggle_CheckedChanged;
             chkCalibrationEnabled.CheckedChanged += FeatureToggle_CheckedChanged;

@@ -38,7 +38,6 @@ namespace NinePointRotationCalibration.Station.Views
         private int _releaseStarted;
         private int _resourcesDisposed;
         private bool _loadingControls;
-        private bool _syncingViewports;
         private volatile bool _closing;
 
         public BlobDebugForm(
@@ -122,8 +121,6 @@ namespace NinePointRotationCalibration.Station.Views
             };
             btnApply.Click += BtnApply_Click;
             btnToggleLayout.Click += delegate { TogglePreviewLayout(); };
-            sourceViewport.ViewChanged += delegate { SyncLinkedViewport(sourceViewport, binaryViewport); };
-            binaryViewport.ViewChanged += delegate { SyncLinkedViewport(binaryViewport, sourceViewport); };
             previewSplit.SizeChanged += delegate { BalancePreviewSplit(); };
         }
 
@@ -669,7 +666,6 @@ namespace NinePointRotationCalibration.Station.Views
             binaryViewport.SetPointOverlays(null);
             binaryViewport.SetRoiOverlays(payload.Regions);
             binaryViewport.SetContourOverlays(payload.Contours);
-            SyncBinaryViewportDeferred();
             UpdatePreviewToolbar();
 
             dgvBlobs.Rows.Clear();
@@ -795,47 +791,6 @@ namespace NinePointRotationCalibration.Station.Views
             btnActualPixels.Enabled = hasImage;
         }
 
-        private void SyncLinkedViewport(ImageViewport source, ImageViewport target)
-        {
-            if (_syncingViewports || _closing || source == null || target == null) return;
-            if (!source.HasImage || !target.HasImage) return;
-
-            _syncingViewports = true;
-            try
-            {
-                target.SyncViewFrom(source);
-            }
-            finally
-            {
-                _syncingViewports = false;
-            }
-        }
-
-        private void SyncBinaryViewportDeferred()
-        {
-            if (_closing || sourceViewport == null || binaryViewport == null) return;
-            if (binaryViewport.IsHandleCreated)
-            {
-                try
-                {
-                    binaryViewport.BeginInvoke(new MethodInvoker(delegate
-                    {
-                        SyncLinkedViewport(sourceViewport, binaryViewport);
-                    }));
-                }
-                catch (ObjectDisposedException)
-                {
-                }
-                catch (InvalidOperationException)
-                {
-                }
-            }
-            else
-            {
-                SyncLinkedViewport(sourceViewport, binaryViewport);
-            }
-        }
-
         private void BalancePreviewSplit()
         {
             if (previewSplit == null || previewSplit.IsDisposed) return;
@@ -866,7 +821,6 @@ namespace NinePointRotationCalibration.Station.Views
                 }
                 BalancePreviewSplit();
             }
-            SyncLinkedViewport(sourceViewport, binaryViewport);
         }
 
         private void SetPreviewStatus(string text, bool isError)

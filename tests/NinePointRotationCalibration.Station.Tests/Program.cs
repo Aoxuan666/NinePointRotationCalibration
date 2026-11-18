@@ -3334,10 +3334,23 @@ namespace NinePointRotationCalibration.Station.Tests
                             }
                         }, 8000), "re-enabling binary preview must smoothly restore localized binary segmentation");
 
-                        // 缩放同步检查
+                        // 原图窗口与检测效果图窗口互相独立：缩放/拖动任意一个窗口不得带动另一个窗口
+                        float initialSourceScale = form.Viewport.EffectiveScale;
+                        float initialEffectScale = form.EffectViewport.EffectiveScale;
                         form.Viewport.ShowActualPixels();
-                        True(PumpUntil(() => Math.Abs(form.Viewport.EffectiveScale - form.EffectViewport.EffectiveScale) < 1e-3f, 3000),
-                            "zooming top source viewport must synchronize bottom effect viewport scale");
+                        Application.DoEvents();
+                        True(Math.Abs(form.Viewport.EffectiveScale - 1.0f) < 1e-3f &&
+                             Math.Abs(form.EffectViewport.EffectiveScale - initialEffectScale) < 1e-3f,
+                            "zooming source viewport must keep effect viewport transform independent");
+
+                        form.Viewport.FitImage();
+                        form.EffectViewport.ShowActualPixels();
+                        Application.DoEvents();
+                        True(Math.Abs(form.Viewport.EffectiveScale - initialSourceScale) < 1e-3f &&
+                             Math.Abs(form.EffectViewport.EffectiveScale - 1.0f) < 1e-3f,
+                            "zooming effect viewport must keep source viewport transform independent");
+                        form.EffectViewport.FitImage();
+                        Application.DoEvents();
 
                         // 切出检测页后折叠下窗口，恢复日志高度并保留原图与勾选偏好；随后切回检测页验证零重绘秒切缓存命中
                         form.WorkTabs.SelectedIndex = 0;
@@ -3396,6 +3409,22 @@ namespace NinePointRotationCalibration.Station.Tests
                                  debugTop.Height >= 500 &&
                                  debugBottom.Height >= 500,
                                 "BlobDebugForm layout toggle must support full-height side-by-side mode");
+
+                            True(PumpUntil(() => debugTop.HasImage && debugBottom.HasImage, 5000),
+                                "BlobDebugForm must populate both viewports before independence verification");
+                            float debugTopInitialScale = debugTop.EffectiveScale;
+                            float debugBottomInitialScale = debugBottom.EffectiveScale;
+                            debugTop.ShowActualPixels();
+                            Application.DoEvents();
+                            True(Math.Abs(debugTop.EffectiveScale - 1.0f) < 1e-3f &&
+                                 Math.Abs(debugBottom.EffectiveScale - debugBottomInitialScale) < 1e-3f,
+                                "BlobDebugForm source viewport must remain independent from binary viewport");
+                            debugBottom.ShowActualPixels();
+                            debugTop.FitImage();
+                            Application.DoEvents();
+                            True(Math.Abs(debugTop.EffectiveScale - debugTopInitialScale) < 1e-3f &&
+                                 Math.Abs(debugBottom.EffectiveScale - 1.0f) < 1e-3f,
+                                "BlobDebugForm binary viewport must remain independent from source viewport");
                         }
                     }
                 }
