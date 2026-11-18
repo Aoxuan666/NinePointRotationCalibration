@@ -303,7 +303,7 @@ namespace NinePointRotationCalibration.Station.Views
             lblEffectViewportInfo.Font = new Font("Microsoft YaHei UI", 8.25F, FontStyle.Regular, GraphicsUnit.Point, 134);
             lblEffectViewportInfo.ForeColor = Color.FromArgb(181, 188, 196);
             lblEffectViewportInfo.Padding = new Padding(12, 0, 0, 0);
-            lblEffectViewportInfo.Text = "等待图像";
+            lblEffectViewportInfo.Text = "未加载图像 · 请先导入图片";
             lblEffectViewportInfo.TextAlign = ContentAlignment.MiddleLeft;
             pnlEffectViewportHeader.Controls.Add(lblEffectViewportInfo);
             pnlEffectViewportHeader.Controls.Add(lblEffectViewportTitle);
@@ -344,7 +344,7 @@ namespace NinePointRotationCalibration.Station.Views
             lblImageInfo.AutoEllipsis = true;
             lblImageInfo.Dock = DockStyle.Fill;
             lblImageInfo.ForeColor = Color.FromArgb(181, 188, 196);
-            lblImageInfo.Text = "无图像";
+            lblImageInfo.Text = "未加载图像 · 请点击上方「导入图片」加载图像";
             lblImageInfo.TextAlign = ContentAlignment.MiddleLeft;
 
             lblCursorPosition = new Label();
@@ -589,10 +589,25 @@ namespace NinePointRotationCalibration.Station.Views
         {
             TabPage page = CreateTabPage("tabTemplates", "模板");
             TableLayoutPanel layout = CreateScrollableStack(page);
-            layout.RowCount = 3;
+            layout.RowCount = 4;
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42.0F));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 214.0F));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 214.0F));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48.0F));
+
+            FlowLayoutPanel folderBar = new FlowLayoutPanel();
+            folderBar.Dock = DockStyle.Fill;
+            folderBar.FlowDirection = FlowDirection.LeftToRight;
+            folderBar.Padding = new Padding(0, 2, 0, 2);
+            folderBar.WrapContents = false;
+            Button importFolderButton = CreateButton("btnTemplateImportFolder", "导入配置文件夹", 124, 32, true, "files.folder.import");
+            Label folderHint = new Label();
+            folderHint.AutoSize = true;
+            folderHint.ForeColor = Color.FromArgb(94, 101, 109);
+            folderHint.Margin = new Padding(8, 8, 0, 0);
+            folderHint.Text = "一键统一加载/绑定同一目录的标定、定位与检测配置";
+            folderBar.Controls.Add(importFolderButton);
+            folderBar.Controls.Add(folderHint);
 
             GroupBox calibration = BuildTemplateGroup(
                 "标定模板",
@@ -604,11 +619,13 @@ namespace NinePointRotationCalibration.Station.Views
                 "txtPositioningTemplatePath",
                 "template.positioning",
                 "用于 PCB 板定位、角度与中心计算");
-            Label hint = CreateHintLabel("标定模板和定位模板相互独立；创建模板时使用当前图像与当前 ROI。路径由配置文件持久化。");
+            Label hint = CreateHintLabel("所有配置文件统一存放在同一配置文件夹；也可在「通信 / 文件」页查看或统一切换。");
 
-            layout.Controls.Add(calibration, 0, 0);
-            layout.Controls.Add(positioning, 0, 1);
-            layout.Controls.Add(hint, 0, 2);
+            layout.Controls.Add(folderBar, 0, 0);
+            layout.Controls.Add(calibration, 0, 1);
+            layout.Controls.Add(positioning, 0, 2);
+            layout.Controls.Add(hint, 0, 3);
+            page.Controls.Add(layout);
             return page;
         }
 
@@ -902,7 +919,7 @@ namespace NinePointRotationCalibration.Station.Views
             TableLayoutPanel layout = CreateScrollableStack(page);
             layout.RowCount = 3;
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 158.0F));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 272.0F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 318.0F));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48.0F));
 
             GroupBox tcp = CreateGroupBox("TCP 服务端");
@@ -926,26 +943,28 @@ namespace NinePointRotationCalibration.Station.Views
             tcpFields.SetColumnSpan(tcpCommands, 2);
             tcp.Controls.Add(tcpFields);
 
-            GroupBox files = CreateGroupBox("配置与数据文件");
+            GroupBox files = CreateGroupBox("配置与数据文件（统一配置目录）");
             TableLayoutPanel fileFields = new TableLayoutPanel();
             fileFields.AutoScroll = false;
             fileFields.ColumnCount = 3;
             fileFields.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 96.0F));
             fileFields.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100.0F));
-            fileFields.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 62.0F));
+            fileFields.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 92.0F));
             fileFields.Dock = DockStyle.Fill;
             fileFields.Padding = new Padding(8, 5, 8, 5);
-            fileFields.RowCount = 5;
+            fileFields.RowCount = 6;
             fileFields.RowStyles.Add(new RowStyle(SizeType.Absolute, 44.0F));
             fileFields.RowStyles.Add(new RowStyle(SizeType.Absolute, 44.0F));
             fileFields.RowStyles.Add(new RowStyle(SizeType.Absolute, 44.0F));
             fileFields.RowStyles.Add(new RowStyle(SizeType.Absolute, 44.0F));
             fileFields.RowStyles.Add(new RowStyle(SizeType.Absolute, 44.0F));
-            AddPathField(fileFields, 0, "标定文件", "txtCalibrationFile", "files.calibration.browse");
-            AddPathField(fileFields, 1, "定位文件", "txtPositioningFile", "files.positioning.browse");
-            AddPathField(fileFields, 2, "示教文件", "txtTeachingFile", "files.teaching.browse");
-            AddPathField(fileFields, 3, "检测配置", "txtDetectionProfile", "files.detection.browse");
-            AddPathField(fileFields, 4, "图像归档", "txtImageArchive", "files.archive.browse");
+            fileFields.RowStyles.Add(new RowStyle(SizeType.Absolute, 44.0F));
+            AddPathField(fileFields, 0, "配置文件夹", "txtConfigDirectory", "files.folder.import", "导入文件夹");
+            AddPathField(fileFields, 1, "标定文件", "txtCalibrationFile", "files.calibration.browse");
+            AddPathField(fileFields, 2, "定位文件", "txtPositioningFile", "files.positioning.browse");
+            AddPathField(fileFields, 3, "示教文件", "txtTeachingFile", "files.teaching.browse");
+            AddPathField(fileFields, 4, "检测配置", "txtDetectionProfile", "files.detection.browse");
+            AddPathField(fileFields, 5, "图像归档", "txtImageArchive", "files.archive.browse");
             files.Controls.Add(fileFields);
 
             FlowLayoutPanel savePanel = new FlowLayoutPanel();
@@ -1226,7 +1245,13 @@ namespace NinePointRotationCalibration.Station.Views
             table.Controls.Add(editor, column + 1, row);
         }
 
-        private void AddPathField(TableLayoutPanel table, int row, string labelText, string textBoxName, string browseAction)
+        private void AddPathField(
+            TableLayoutPanel table,
+            int row,
+            string labelText,
+            string textBoxName,
+            string browseAction,
+            string buttonText = "浏览")
         {
             Label label = new Label();
             label.AutoEllipsis = true;
@@ -1236,7 +1261,7 @@ namespace NinePointRotationCalibration.Station.Views
             TextBox path = CreateTextBox(textBoxName, string.Empty);
             path.Dock = DockStyle.Fill;
             path.Margin = new Padding(0, 8, 7, 8);
-            Button browse = CreateButton("btnBrowse" + textBoxName, "浏览", 56, 28, false, browseAction);
+            Button browse = CreateButton("btnBrowse" + textBoxName, buttonText, 84, 28, false, browseAction);
             browse.Dock = DockStyle.Fill;
             browse.Margin = new Padding(0, 7, 0, 7);
             table.Controls.Add(label, 0, row);

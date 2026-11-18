@@ -140,6 +140,7 @@ namespace NinePointRotationCalibration.Station.Tests
             Run("Adaptive template thresholds build and match across low-contrast, MockPCB, and UI workflow", TestAdaptiveTemplateThresholdsEndToEnd);
             Run("Template editor starts without default ROIs and auto-extracts/refreshes features", TestTemplateEditorEmptyDefaultAndAutoFeatureExtraction);
             Run("Detection tab displays synchronized top-source and bottom-effect viewports", TestDetectionDualViewportsAndSmoothBinaryPreview);
+            Run("No default image loads on startup, config folder imports uniformly, and test detection runs cleanly", TestNoDefaultImageAndUnifiedConfigFolderAndResilientInspection);
 
             Console.WriteLine();
             Console.WriteLine("Passed: {0}; Failed: {1}", _passed, _failed);
@@ -3326,6 +3327,179 @@ namespace NinePointRotationCalibration.Station.Tests
                                  debugForm.Controls.Find("tabPreview", true).Length == 0,
                                 "BlobDebugForm must use stacked top-source and bottom-binary dual viewports");
                         }
+                    }
+                }
+            }
+            finally
+            {
+                if (Directory.Exists(directory)) Directory.Delete(directory, true);
+            }
+        }
+
+        private static void TestNoDefaultImageAndUnifiedConfigFolderAndResilientInspection()
+        {
+            StationOptions freshDefaults = new StationOptions();
+            True(string.Equals(freshDefaults.CameraProvider, "Dahua", StringComparison.OrdinalIgnoreCase),
+                "fresh StationOptions must not default to Mock camera provider");
+            True(!string.IsNullOrWhiteSpace(freshDefaults.ConfigDirectory),
+                "StationOptions must expose a default unified ConfigDirectory");
+
+            string directory = Path.Combine(
+                Path.GetTempPath(),
+                "NinePointRotationCalibration.Station.Tests",
+                Guid.NewGuid().ToString("N"));
+            string unifiedDir = Path.Combine(directory, "unified-config");
+            Directory.CreateDirectory(directory);
+            Directory.CreateDirectory(unifiedDir);
+            try
+            {
+                // 准备统一配置文件夹中的全套文件（定位模板仅保留 TemplateRoi、不单设 DetectionRoi，用来验证 ROI 兜底）
+                using (Bitmap trainImg = new Bitmap(220, 180, PixelFormat.Format24bppRgb))
+                {
+                    using (Graphics g = Graphics.FromImage(trainImg))
+                    {
+                        g.Clear(Color.FromArgb(40, 40, 40));
+                        g.DrawRectangle(new Pen(Color.FromArgb(220, 220, 220), 4.0f), 60, 45, 100, 90);
+                    }
+
+                    using (NinePointRotationCalibrationSdk sdk = new NinePointRotationCalibrationSdk())
+                    {
+                        TemplateDefinition def = new TemplateDefinition
+                        {
+                            ModelType = TemplateModelType.Shape,
+                            TemplateRoi = RectangleRegion(90.0, 110.0, 62.0, 56.0, 0.0)
+                        };
+                        TemplateBuildResult build = sdk.BuildTemplate(trainImg, def);
+                        True(build.Success && build.Template != null, "test template must build cleanly");
+                        build.Template.DetectionRoi = null;
+                        CalibrationJob posJob = new CalibrationJob
+                        {
+                            Name = "Unified Positioning",
+                            Template = build.Template
+                        };
+                        JobPackageSerializer.Save(Path.Combine(unifiedDir, "positioning.nprcal"), posJob);
+                    }
+
+                    CalibrationJob calibJob = new CalibrationJob { Name = "Unified Calibration" };
+                    JobPackageSerializer.Save(Path.Combine(unifiedDir, "calibration.nprcal"), calibJob);
+
+                    AtomicJsonStore store = new AtomicJsonStore();
+                    store.Save(Path.Combine(unifiedDir, "teaching.json"), new TeachingData
+                    {
+                        Left = new TeachingPose { Side = TeachingSide.Left, IsValid = false },
+                        Right = new TeachingPose { Side = TeachingSide.Right, IsValid = false }
+                    });
+                    store.Save(Path.Combine(unifiedDir, "detection-profile.json"), new DetectionProfile
+                    {
+                        AutoThreshold = true,
+                        DetectDarkForeground = false,
+                        MinimumBlobArea = 20.0,
+                        MaximumBlobArea = 8000.0,
+                        TemplateMatchingEnabled = true,
+                        FollowTemplateTransform = true
+                    });
+
+                    // 即便旧 station.json 中保存的是 Mock，也绝不自动向主界面推入默认 6 板图
+                    StationOptions options = CreateTestOptions(
+                        directory,
+                        Path.Combine(directory, "detection.json"),
+                        Path.Combine(directory, "positioning.nprcal"));
+                    options.CameraProvider = "Mock";
+                    options.TcpPort = FindAvailableTcpPort();
+
+                    using (StationRuntime runtime = CreateRuntime(Path.Combine(directory, "station.json"), options))
+                    using (MainForm form = new MainForm())
+                    using (MainFormRuntimeBinder binder = new MainFormRuntimeBinder(form, runtime))
+                    {
+                        form.ShowInTaskbar = false;
+                        form.StartPosition = FormStartPosition.Manual;
+                        form.Location = new Point(-20000, -20000);
+                        form.Show();
+                        Application.DoEvents();
+
+                        runtime.StartAsync(CancellationToken.None).GetAwaiter().GetResult();
+                        Thread.Sleep(250);
+                        Application.DoEvents();
+
+                        True(!form.Viewport.HasImage && !form.EffectViewport.HasImage && GetLockedDisplayImage(binder) == null,
+                            "startup with Mock provider must not push any default image into the viewports");
+
+                        // 未导入图片前直接点测试检测，必须友好提示需加载图像，而不是去采集默认模拟图
+                        form.WorkTabs.SelectedTab = form.WorkTabs.TabPages["tabDetection"];
+                        Application.DoEvents();
+                        bool threwNoImage = false;
+                        try
+                        {
+                            MethodInfo runInspection = typeof(MainFormRuntimeBinder).GetMethod(
+                                "RunInspectionAsync",
+                                BindingFlags.Instance | BindingFlags.NonPublic);
+                            Task t = (Task)runInspection.Invoke(binder, new object[] { CancellationToken.None });
+                            t.GetAwaiter().GetResult();
+                        }
+                        catch (InvalidOperationException)
+                        {
+                            threwNoImage = true;
+                        }
+                        True(threwNoImage, "test detection without loaded image must require explicit image loading");
+                        True(!form.Viewport.HasImage, "rejected detection must keep viewport free of default mock image");
+
+                        // 统一导入配置文件夹并校验所有文件路径与运行时同步
+                        string summary = runtime.ImportConfigDirectory(unifiedDir);
+                        True(summary.IndexOf(unifiedDir, StringComparison.OrdinalIgnoreCase) >= 0,
+                            "ImportConfigDirectory must report unified folder path");
+                        InvokeBinder(binder, "RefreshAllConfigUiFromRuntime");
+
+                        StationOptions afterImport = runtime.GetOptionsSnapshot();
+                        True(string.Equals(afterImport.CalibrationJobPath, Path.Combine(unifiedDir, "calibration.nprcal"), StringComparison.OrdinalIgnoreCase) &&
+                             string.Equals(afterImport.PositioningJobPath, Path.Combine(unifiedDir, "positioning.nprcal"), StringComparison.OrdinalIgnoreCase) &&
+                             string.Equals(afterImport.TeachingPath, Path.Combine(unifiedDir, "teaching.json"), StringComparison.OrdinalIgnoreCase) &&
+                             string.Equals(afterImport.DetectionProfilePath, Path.Combine(unifiedDir, "detection-profile.json"), StringComparison.OrdinalIgnoreCase) &&
+                             string.Equals(afterImport.ImageArchiveDirectory, Path.Combine(unifiedDir, "images"), StringComparison.OrdinalIgnoreCase),
+                            "ImportConfigDirectory must unify all configuration and data paths into the same directory");
+                        TextBox dirBox = form.Controls.Find("txtConfigDirectory", true).OfType<TextBox>().Single();
+                        True(string.Equals(dirBox.Text, unifiedDir, StringComparison.OrdinalIgnoreCase),
+                            "UI config directory textbox must reflect imported folder");
+
+                        // 导入用户图像（含一个明显白斑叉号）后点击测试检测（即使标定与示教未完成），必须稳定通过且不恢复默认图、不抛取消异常
+                        using (Bitmap userImage = new Bitmap(trainImg))
+                        {
+                            using (Graphics g = Graphics.FromImage(userImage))
+                            using (Pen cross = new Pen(Color.White, 5.0f))
+                            {
+                                g.DrawLine(cross, 95, 75, 125, 105);
+                                g.DrawLine(cross, 125, 75, 95, 105);
+                            }
+
+                            InvokeBinder(
+                                binder,
+                                "PinOwnedDisplayImage",
+                                new Bitmap(userImage),
+                                "imported-test.png",
+                                false,
+                                null);
+                            True(PumpUntil(() => form.Viewport.HasImage && form.EffectViewport.HasImage, 5000),
+                                "imported image must appear in both viewports");
+
+                            MethodInfo runInspection = typeof(MainFormRuntimeBinder).GetMethod(
+                                "RunInspectionAsync",
+                                BindingFlags.Instance | BindingFlags.NonPublic);
+                            Task runTask = (Task)runInspection.Invoke(binder, new object[] { CancellationToken.None });
+                            while (!runTask.IsCompleted)
+                            {
+                                Application.DoEvents();
+                                Thread.Sleep(15);
+                            }
+                            runTask.GetAwaiter().GetResult();
+
+                            Bitmap locked = GetLockedDisplayImage(binder);
+                            True(locked != null && locked.Width == 220 && locked.Height == 180,
+                                "test detection must preserve imported user image instead of reverting to 1600x1000 default mock frame");
+                            True(PumpUntil(() =>
+                                form.DetectionResultGrid.Rows.Count == 1 &&
+                                GetViewportRoiOverlayCount(form.EffectViewport) == 1, 5000),
+                                "visual inspection fallback must populate detection grid and render ROI overlay cleanly");
+                        }
+                        runtime.StopAsync().GetAwaiter().GetResult();
                     }
                 }
             }

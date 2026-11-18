@@ -45,6 +45,12 @@ namespace NinePointRotationCalibration.Station.Services.Teaching
             lock (_sync) return Clone(_data);
         }
 
+        /// <summary>从外部加载或导入配置文件夹时整体替换示教数据快照。</summary>
+        public void SetData(TeachingData data)
+        {
+            lock (_sync) _data = Clone(data ?? new TeachingData());
+        }
+
         /// <summary>采集一幅图像并使用 HALCON 模板定位生成指定侧的示教姿态。</summary>
         public async Task<TeachingPose> CaptureAsync(
             TeachingSide side,

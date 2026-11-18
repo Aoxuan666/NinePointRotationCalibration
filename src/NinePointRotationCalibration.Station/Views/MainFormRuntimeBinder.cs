@@ -46,6 +46,7 @@ namespace NinePointRotationCalibration.Station.Views
         private List<int> _lastInspectionBoardIndices = new List<int>();
         private int _selectedInspectionBoardIndex = -1;
         private long _lastInspectionOverlayGeneration = -1;
+        private long _lastInspectionCompletedGeneration = -1;
         private DisplayMode _displayMode;
         private long _displayGeneration;
         private long _inspectionFrameGeneration = -1;
@@ -125,6 +126,7 @@ namespace NinePointRotationCalibration.Station.Views
                 options.ArchiveImages,
                 false);
 
+            SetText("txtConfigDirectory", options.GetUnifiedConfigDirectory());
             SetPathPair("txtCalibrationTemplatePath", "txtCalibrationFile", options.CalibrationJobPath);
             SetPathPair("txtPositioningTemplatePath", "txtPositioningFile", options.PositioningJobPath);
             CalibrationJob initialCalibrationJob = _runtime.GetCalibrationJobSnapshot();
@@ -174,7 +176,7 @@ namespace NinePointRotationCalibration.Station.Views
         private async void View_Shown(object sender, EventArgs e)
         {
             if (_runtime.IsStarted) return;
-            if (_runtime.IsCameraEnabled)
+            if (_runtime.IsCameraEnabled && !_runtime.IsMockCamera)
                 _view.SetCameraStatus(CameraUiState.Connecting, "正在自动连接");
             await RunOperationAsync(
                 "启动工作站",
@@ -184,6 +186,8 @@ namespace NinePointRotationCalibration.Station.Views
                     await _runtime.StartAsync(token).ConfigureAwait(true);
                     if (!_runtime.IsCameraEnabled)
                         _view.SetCameraStatus(CameraUiState.Disabled, string.Empty);
+                    else if (_runtime.IsMockCamera)
+                        _view.SetCameraStatus(CameraUiState.Disconnected, "等待手动导入图像");
                     else if (_runtime.IsCameraConnected)
                     {
                         _view.SetCameraStatus(CameraUiState.Connected, "已就绪");
@@ -255,6 +259,11 @@ namespace NinePointRotationCalibration.Station.Views
 
         private async void View_SnapshotRequested(object sender, EventArgs e)
         {
+            if (_runtime.IsMockCamera || !_runtime.IsCameraEnabled || !_runtime.IsCameraConnected)
+            {
+                ImportLocalImage();
+                return;
+            }
             await RunOperationAsync(
                 "单次拍照",
                 _view.FindActionControl("camera.snapshot"),
@@ -326,6 +335,11 @@ namespace NinePointRotationCalibration.Station.Views
                         ToggleArchiveImages();
                         return;
                     case "camera.test":
+                        if (_runtime.IsMockCamera || !_runtime.IsCameraEnabled || !_runtime.IsCameraConnected)
+                        {
+                            ImportLocalImage();
+                            return;
+                        }
                         await RunOperationAsync(
                             "测试拍照",
                             e.Source,
@@ -380,6 +394,9 @@ namespace NinePointRotationCalibration.Station.Views
                         return;
                     case "teaching.right.clear":
                         await ClearTeachingAsync(TeachingSide.Right, e.Source).ConfigureAwait(true);
+                        return;
+                    case "files.folder.import":
+                        ImportConfigFolder();
                         return;
                     case "template.calibration.browse":
                     case "template.positioning.browse":

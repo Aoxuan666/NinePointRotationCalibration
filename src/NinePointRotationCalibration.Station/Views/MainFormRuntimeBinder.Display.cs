@@ -123,6 +123,26 @@ namespace NinePointRotationCalibration.Station.Views
             _view.EffectViewport.SetRoiOverlays(ApplySelectedRoiHighlight(rois, indices, boardIndex));
         }
 
+        private void TriggerEffectPreviewOnUi(bool debounce)
+        {
+            if (_disposed || !_view.IsDetectionDualViewActive) return;
+            if (_view.IsHandleCreated && _view.InvokeRequired)
+            {
+                try
+                {
+                    _view.BeginInvoke(new MethodInvoker(delegate { ScheduleBinaryPreview(debounce); }));
+                }
+                catch (ObjectDisposedException)
+                {
+                }
+                catch (InvalidOperationException)
+                {
+                }
+                return;
+            }
+            ScheduleBinaryPreview(debounce);
+        }
+
         private async void ScheduleBinaryPreview(bool debounce)
         {
             if (_disposed || !_view.IsDetectionDualViewActive) return;
@@ -174,25 +194,48 @@ namespace NinePointRotationCalibration.Station.Views
 
             try
             {
-                // 连续拖动/微调参数时先进行 25ms 合并窗口防抖，再执行后台计算，保证界面响应丝滑
-                if (debounce) await Task.Delay(25, cancellation.Token).ConfigureAwait(true);
+                // 连续拖动/微调参数时先进行 25ms 合并窗口防抖，不向 Task.Delay 传 CancellationToken 以避免调试器首次概率异常中断
+                if (debounce)
+                {
+                    await Task.Delay(25).ConfigureAwait(true);
+                    if (cancellation.IsCancellationRequested || _disposed || !_view.IsDetectionDualViewActive)
+                        return;
+                }
 
                 DetectionProfile profile = ReadDetectionProfileFromView();
                 bool binaryEnabled = IsBinaryPreviewEnabled();
                 if (profile.TemplateMatchingEnabled && regions.Count == 0)
                 {
+                    CalibrationJob job = _runtime.GetPositioningJobSnapshot();
+                    bool alreadyInspectedCurrentFrame;
+                    lock (_displaySync) alreadyInspectedCurrentFrame = _lastInspectionCompletedGeneration == generation;
+                    if (alreadyInspectedCurrentFrame || job == null || job.Template == null || !job.Template.HasUsableModel)
+                    {
+                        bool stillCurrent;
+                        lock (_displaySync) stillCurrent = generation == _displayGeneration;
+                        if (stillCurrent && !cancellation.IsCancellationRequested && _view.IsDetectionDualViewActive)
+                        {
+                            _view.EffectViewport.SetImageOwned(source);
+                            source = null;
+                            _view.EffectViewport.ClearOverlays();
+                            SyncEffectViewportViewDeferred();
+                            _view.SetEffectViewportInformation(job == null || job.Template == null || !job.Template.HasUsableModel
+                                ? "尚未加载定位模板 · 当前显示原图"
+                                : "未匹配到目标板 · 当前显示原图");
+                        }
+                        return;
+                    }
+
                     _view.SetEffectViewportInformation("正在定位检测区域...");
                     _view.SetOperationStatus("正在定位检测 ROI...", true, false);
                     int maximumMatches = Decimal.ToInt32(_view.ExpectedBoardCountInput.Value) + 1;
-                    TemplateMatchCollectionResult matchResult = await _runtime
-                        .TestPositioningTemplateAsync(
-                            source,
-                            maximumMatches,
-                            true,
-                            cancellation.Token)
+                    TemplateMatchCollectionResult matchResult = await Task
+                        .Run(() => _runtime.LocatePositioningForPreview(source, maximumMatches))
                         .ConfigureAwait(true);
-                    CalibrationJob job = _runtime.GetPositioningJobSnapshot();
-                    if (matchResult != null && matchResult.Success && job != null && job.Template != null)
+                    if (cancellation.IsCancellationRequested || _disposed || !_view.IsDetectionDualViewActive)
+                        return;
+
+                    if (matchResult != null && matchResult.Success)
                     {
                         List<TemplateMatchResult> validMatches = (matchResult.Matches ?? new List<TemplateMatchResult>())
                             .Where(match => match != null && match.Success)
@@ -215,8 +258,8 @@ namespace NinePointRotationCalibration.Station.Views
                             source = null;
                             _view.EffectViewport.ClearOverlays();
                             SyncEffectViewportViewDeferred();
-                            _view.SetEffectViewportInformation("未匹配到模板目标 · 已显示原图");
-                            _view.SetOperationStatus("模板定位后没有得到有效检测 ROI。请检查模板和检测 ROI。", false, true);
+                            _view.SetEffectViewportInformation("未匹配到模板目标 · 当前显示原图");
+                            _view.SetOperationStatus("当前图像未匹配到定位模板目标", false, true);
                         }
                         return;
                     }
@@ -242,15 +285,21 @@ namespace NinePointRotationCalibration.Station.Views
                         profile,
                         binaryEnabled,
                         selectedBoardIndex,
-                        cancellation.Token),
-                    cancellation.Token).ConfigureAwait(true);
+                        cancellation.Token)).ConfigureAwait(true);
                 source.Dispose();
                 source = null;
 
                 bool current;
                 lock (_displaySync) current = generation == _displayGeneration;
-                if (!current || cancellation.IsCancellationRequested || !_view.IsDetectionDualViewActive)
+                if (preview == null || !current || cancellation.IsCancellationRequested || !_view.IsDetectionDualViewActive)
                 {
+                    if (preview != null) preview.Dispose();
+                    return;
+                }
+                if (!string.IsNullOrWhiteSpace(preview.ErrorMessage))
+                {
+                    _view.SetEffectViewportInformation("检测效果图更新失败");
+                    _view.SetOperationStatus("检测效果图更新失败：" + preview.ErrorMessage, false, true);
                     preview.Dispose();
                     return;
                 }
@@ -277,12 +326,9 @@ namespace NinePointRotationCalibration.Station.Views
                 _view.SetOperationStatus(binaryEnabled ? "检测效果图（局部二值）已更新" : "检测效果图（原图叠加）已更新", false, false);
                 preview.Dispose();
             }
-            catch (OperationCanceledException)
-            {
-            }
             catch (Exception exception)
             {
-                if (!_disposed)
+                if (!_disposed && !cancellation.IsCancellationRequested)
                 {
                     _view.SetEffectViewportInformation("检测效果图更新失败");
                     _view.SetOperationStatus("检测效果图更新失败：" + exception.Message, false, true);
@@ -310,6 +356,8 @@ namespace NinePointRotationCalibration.Station.Views
             int selectedBoardIndex,
             CancellationToken cancellationToken)
         {
+            if (cancellationToken.IsCancellationRequested) return null;
+
             EffectPreviewPayload payload = new EffectPreviewPayload();
             Bitmap combined = new Bitmap(source);
             payload.Image = combined;
@@ -344,10 +392,24 @@ namespace NinePointRotationCalibration.Station.Views
                     int index = 0;
                     foreach (DetectionRoi roi in targets)
                     {
-                        cancellationToken.ThrowIfCancellationRequested();
+                        if (cancellationToken.IsCancellationRequested)
+                        {
+                            payload.Dispose();
+                            return null;
+                        }
                         bool roiHasDefect = false;
-                        using (BlobAnalysisResult analysis = _binaryAnalyzer.AnalyzeRoiDetailed(
-                            source, roi, profile, binaryEnabled, cancellationToken))
+                        List<BlobAnalysisResult> analyses = _binaryAnalyzer.AnalyzeRoisDetailedNoThrow(
+                            source, new[] { roi }, profile, binaryEnabled, cancellationToken);
+                        if (cancellationToken.IsCancellationRequested)
+                        {
+                            foreach (BlobAnalysisResult item in analyses)
+                            {
+                                if (item != null) item.Dispose();
+                            }
+                            payload.Dispose();
+                            return null;
+                        }
+                        using (BlobAnalysisResult analysis = analyses.Count > 0 ? analyses[0] : new BlobAnalysisResult { Roi = roi })
                         {
                             if (binaryEnabled &&
                                 analysis.BinaryImage != null &&
@@ -425,10 +487,11 @@ namespace NinePointRotationCalibration.Station.Views
                 }
                 return payload;
             }
-            catch
+            catch (Exception exception)
             {
                 payload.Dispose();
-                throw;
+                if (cancellationToken.IsCancellationRequested) return null;
+                return new EffectPreviewPayload { ErrorMessage = exception.Message };
             }
         }
 
@@ -627,6 +690,9 @@ namespace NinePointRotationCalibration.Station.Views
                 if (_lockedDisplayImage != null) return (Bitmap)_lockedDisplayImage.Clone();
             }
 
+            // 启用了模拟相机时禁止从仿真预览流截屏，强制要求先导入真实图像
+            if (_runtime.IsMockCamera) return null;
+
             Bitmap snapshot = _view.Viewport.Snapshot();
             if (snapshot == null) return null;
 
@@ -677,7 +743,7 @@ namespace NinePointRotationCalibration.Station.Views
                 }
             }
             if (previous != null) previous.Dispose();
-            if (scheduleEffect) ScheduleBinaryPreview(false);
+            if (scheduleEffect) TriggerEffectPreviewOnUi(false);
         }
 
         // 退出锁定状态与二值预览，恢复接收相机实时预览流
@@ -717,6 +783,7 @@ namespace NinePointRotationCalibration.Station.Views
             _lastInspectionBoardIndices = new List<int>();
             _selectedInspectionBoardIndex = -1;
             _lastInspectionOverlayGeneration = -1;
+            _lastInspectionCompletedGeneration = -1;
         }
 
         private void DisplayImageCore(Bitmap image, string source, DateTime capturedAtUtc)
@@ -742,6 +809,7 @@ namespace NinePointRotationCalibration.Station.Views
             }
 
             public Bitmap Image { get; set; }
+            public string ErrorMessage { get; set; }
             public int BlobCount { get; set; }
             public List<ViewportContourOverlay> BlobContours { get; private set; }
             public List<ViewportContourOverlay> EffectContours { get; private set; }

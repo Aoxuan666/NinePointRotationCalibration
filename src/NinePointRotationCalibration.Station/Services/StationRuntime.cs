@@ -141,6 +141,16 @@ namespace NinePointRotationCalibration.Station.Services
         public bool IsCameraEnabled { get { lock (_stateSync) return _options.CameraEnabled; } }
         public bool IsCalibrationEnabled { get { lock (_stateSync) return _options.CalibrationEnabled; } }
         public bool IsArchiveImagesEnabled { get { lock (_stateSync) return _options.ArchiveImages; } }
+        public bool IsMockCamera
+        {
+            get
+            {
+                string provider;
+                lock (_stateSync) provider = _options.CameraProvider;
+                return string.Equals(provider, "Mock", StringComparison.OrdinalIgnoreCase) ||
+                       (_camera.ProviderName ?? string.Empty).StartsWith("Mock", StringComparison.OrdinalIgnoreCase);
+            }
+        }
 
         public StationOptions GetOptionsSnapshot()
         {
@@ -265,8 +275,11 @@ namespace NinePointRotationCalibration.Station.Services
                 Features = ParseCameraFeatures(options.CameraFeatures),
                 TriggerMode = options.CameraTriggerMode
             }, cancellationToken).ConfigureAwait(false);
-            // 启动自动连接与手动切换后的预览取图循环（单次拍照本身不会开启该循环）
-            _camera.StartPreview();
+            // 仅真实相机开启实时预览流；模拟相机不再向主界面自动推送默认测试图
+            if (!IsMockCamera)
+            {
+                _camera.StartPreview();
+            }
             OnStateChanged("camera", true, _camera.ProviderName + " / " + _camera.ConnectedDeviceId);
         }
 
@@ -528,6 +541,236 @@ namespace NinePointRotationCalibration.Station.Services
             }
         }
 
+        /// <summary>将配置与数据文件（标定、定位、示教、检测参数与归档目录）统一绑定到同一文件夹并同步加载。</summary>
+        public string ImportConfigDirectory(string directory)
+        {
+            ThrowIfDisposed();
+            if (string.IsNullOrWhiteSpace(directory))
+                throw new ArgumentException("配置文件夹路径不能为空。", nameof(directory));
+
+            string normalized = Path.GetFullPath(directory.Trim());
+            Directory.CreateDirectory(normalized);
+
+            EnterSynchronousWorkflow("importing configuration directory");
+            try
+            {
+                string calibrationPath = ResolveDirectoryJobPath(normalized, "calibration.nprcal", "calib", null);
+                string positioningPath = ResolveDirectoryJobPath(normalized, "positioning.nprcal", "pos", calibrationPath);
+                string teachingPath = Path.Combine(normalized, "teaching.json");
+                string detectionPath = Path.Combine(normalized, "detection-profile.json");
+                string archiveDirectory = Path.Combine(normalized, "images");
+
+                CalibrationJob currentCalibration;
+                CalibrationJob currentPositioning;
+                DetectionProfile currentProfile;
+                lock (_stateSync)
+                {
+                    currentCalibration = _calibrationJob == null ? new CalibrationJob { Name = "Calibration" } : _calibrationJob.DeepClone();
+                    currentPositioning = _positioningJob == null ? new CalibrationJob { Name = "PCB positioning" } : _positioningJob.DeepClone();
+                    currentProfile = CloneDetectionProfile(_detectionProfile);
+                }
+                TeachingData currentTeaching = _teaching.GetSnapshot();
+
+                int loadedFileCount = 0;
+                int createdFileCount = 0;
+
+                CalibrationJob loadedCalibration = currentCalibration;
+                if (File.Exists(calibrationPath))
+                {
+                    JobPersistenceResult res = _sdk.TryLoadJob(calibrationPath);
+                    if (res.Success && res.Job != null)
+                    {
+                        loadedCalibration = res.Job.DeepClone();
+                        loadedFileCount++;
+                    }
+                }
+                else
+                {
+                    SaveJob(loadedCalibration, calibrationPath);
+                    createdFileCount++;
+                }
+
+                DetectionProfile loadedProfile = currentProfile;
+                if (File.Exists(detectionPath))
+                {
+                    DetectionProfile parsed;
+                    string error;
+                    if (_jsonStore.TryLoad(detectionPath, out parsed, out error) && parsed != null)
+                    {
+                        loadedProfile = CloneDetectionProfile(parsed);
+                        loadedFileCount++;
+                    }
+                }
+                else
+                {
+                    _jsonStore.Save(detectionPath, loadedProfile);
+                    createdFileCount++;
+                }
+
+                CalibrationJob loadedPositioning = currentPositioning;
+                if (File.Exists(positioningPath))
+                {
+                    JobPersistenceResult res = _sdk.TryLoadJob(positioningPath);
+                    if (res.Success && res.Job != null)
+                    {
+                        loadedPositioning = res.Job.DeepClone();
+                        if (MigrateLegacyDetectionRoi(loadedPositioning, loadedProfile))
+                        {
+                            SaveJob(loadedPositioning, positioningPath);
+                        }
+                        loadedFileCount++;
+                    }
+                }
+                else
+                {
+                    SaveJob(loadedPositioning, positioningPath);
+                    createdFileCount++;
+                }
+
+                TeachingData loadedTeaching = currentTeaching;
+                if (File.Exists(teachingPath))
+                {
+                    TeachingData parsed;
+                    string error;
+                    if (_jsonStore.TryLoad(teachingPath, out parsed, out error) && parsed != null)
+                    {
+                        loadedTeaching = parsed;
+                        loadedFileCount++;
+                    }
+                }
+                else
+                {
+                    _jsonStore.Save(teachingPath, loadedTeaching);
+                    createdFileCount++;
+                }
+
+                CalibrationResult calibrationResult = _sdk.Calculate(loadedCalibration);
+                StationOptions updatedOptions;
+                lock (_stateSync)
+                {
+                    _options.ConfigDirectory = normalized;
+                    _options.CalibrationJobPath = calibrationPath;
+                    _options.PositioningJobPath = positioningPath;
+                    _options.TeachingPath = teachingPath;
+                    _options.DetectionProfilePath = detectionPath;
+                    _options.ImageArchiveDirectory = archiveDirectory;
+
+                    _calibrationJob = loadedCalibration.DeepClone();
+                    _calibrationResult = calibrationResult == null ? null : calibrationResult.DeepClone();
+                    _positioningJob = loadedPositioning.DeepClone();
+                    _detectionProfile = CloneDetectionProfile(loadedProfile);
+                    _teachingData = loadedTeaching;
+                    updatedOptions = _options.DeepClone();
+                }
+
+                _calibration.UpdateOptions(updatedOptions);
+                _calibration.SetJob(loadedCalibration);
+                _teaching.SetData(loadedTeaching);
+                _jsonStore.Save(_optionsPath, updatedOptions);
+
+                PublishCalibrationRecords();
+                OnCalibrationCalculationCompleted(this, new CalibrationResultEventArgs(calibrationResult));
+                if (loadedTeaching != null)
+                {
+                    if (loadedTeaching.Left != null) OnTeachingChanged(this, new TeachingEventArgs(loadedTeaching.Left));
+                    if (loadedTeaching.Right != null) OnTeachingChanged(this, new TeachingEventArgs(loadedTeaching.Right));
+                }
+
+                string summary = string.Format(
+                    CultureInfo.InvariantCulture,
+                    "配置文件夹已切换：{0}（已加载 {1} 项，新建补全 {2} 项）",
+                    normalized,
+                    loadedFileCount,
+                    createdFileCount);
+                OnLog("INFO", summary);
+                return summary;
+            }
+            finally
+            {
+                _workflowGate.Release();
+            }
+        }
+
+        /// <summary>按指定路径重新加载示教与检测参数文件（若文件存在），并同步更新配置路径。</summary>
+        public void ReloadAuxiliaryConfigs(string teachingPath, string detectionProfilePath)
+        {
+            ThrowIfDisposed();
+            EnterSynchronousWorkflow("reloading auxiliary configs");
+            try
+            {
+                TeachingData reloadedTeaching = null;
+                DetectionProfile reloadedProfile = null;
+
+                if (!string.IsNullOrWhiteSpace(teachingPath) && File.Exists(teachingPath))
+                {
+                    TeachingData parsed;
+                    string error;
+                    if (_jsonStore.TryLoad(teachingPath, out parsed, out error) && parsed != null)
+                    {
+                        reloadedTeaching = parsed;
+                    }
+                }
+                if (!string.IsNullOrWhiteSpace(detectionProfilePath) && File.Exists(detectionProfilePath))
+                {
+                    DetectionProfile parsed;
+                    string error;
+                    if (_jsonStore.TryLoad(detectionProfilePath, out parsed, out error) && parsed != null)
+                    {
+                        reloadedProfile = CloneDetectionProfile(parsed);
+                    }
+                }
+
+                StationOptions updatedOptions;
+                lock (_stateSync)
+                {
+                    if (!string.IsNullOrWhiteSpace(teachingPath)) _options.TeachingPath = teachingPath;
+                    if (!string.IsNullOrWhiteSpace(detectionProfilePath)) _options.DetectionProfilePath = detectionProfilePath;
+                    if (reloadedProfile != null) _detectionProfile = reloadedProfile;
+                    if (reloadedTeaching != null) _teachingData = reloadedTeaching;
+                    updatedOptions = _options.DeepClone();
+                }
+
+                if (reloadedTeaching != null)
+                {
+                    _teaching.SetData(reloadedTeaching);
+                    if (reloadedTeaching.Left != null) OnTeachingChanged(this, new TeachingEventArgs(reloadedTeaching.Left));
+                    if (reloadedTeaching.Right != null) OnTeachingChanged(this, new TeachingEventArgs(reloadedTeaching.Right));
+                }
+
+                _jsonStore.Save(_optionsPath, updatedOptions);
+            }
+            finally
+            {
+                _workflowGate.Release();
+            }
+        }
+
+        private static string ResolveDirectoryJobPath(
+            string directory,
+            string defaultFileName,
+            string nameKeyword,
+            string excludedPath)
+        {
+            string preferred = Path.Combine(directory, defaultFileName);
+            if (File.Exists(preferred)) return preferred;
+
+            string[] candidates = Directory.Exists(directory)
+                ? Directory.GetFiles(directory, "*.nprcal", SearchOption.TopDirectoryOnly)
+                : new string[0];
+            string matched = candidates.FirstOrDefault(file =>
+                !string.Equals(file, excludedPath, StringComparison.OrdinalIgnoreCase) &&
+                Path.GetFileNameWithoutExtension(file).IndexOf(nameKeyword, StringComparison.OrdinalIgnoreCase) >= 0);
+            if (!string.IsNullOrWhiteSpace(matched)) return matched;
+
+            if (!string.IsNullOrWhiteSpace(excludedPath))
+            {
+                string remaining = candidates.FirstOrDefault(file =>
+                    !string.Equals(file, excludedPath, StringComparison.OrdinalIgnoreCase));
+                if (!string.IsNullOrWhiteSpace(remaining)) return remaining;
+            }
+            return preferred;
+        }
+
         public Task<TemplateMatchResult> TestCalibrationTemplateAsync(
             Bitmap image,
             CancellationToken cancellationToken)
@@ -573,8 +816,34 @@ namespace NinePointRotationCalibration.Station.Services
                         job.Template.MatchParameters.NumMatches = maximumMatches;
                     }
                     return _sdk.LocateAll(image, job, includeContour);
-                }, cancellationToken),
+                }),
                 cancellationToken);
+        }
+
+        /// <summary>供检测页实时效果图在后台定位检测 ROI 使用，不占用独占工作流门锁，且取消或失败时不向调用方抛异常。</summary>
+        public TemplateMatchCollectionResult LocatePositioningForPreview(Bitmap image, int maximumMatches)
+        {
+            if (_disposed || image == null) return null;
+
+            CalibrationJob job = GetPositioningJobSnapshot();
+            if (job == null || job.Template == null || !job.Template.HasUsableModel)
+            {
+                return null;
+            }
+
+            if (maximumMatches > 0 && job.Template.MatchParameters != null)
+            {
+                job.Template.MatchParameters.NumMatches = maximumMatches;
+            }
+
+            try
+            {
+                return _sdk.LocateAll(image, job, true);
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         /// <summary>执行在线检测并发布检测结果。</summary>
@@ -1017,19 +1286,31 @@ namespace NinePointRotationCalibration.Station.Services
                 CalibrationResult calibration;
                 DetectionProfile profile;
                 TeachingData teaching;
-                bool mapTargets;
+                bool calibrationEnabled;
                 lock (_stateSync)
                 {
                     positioning = _positioningJob.DeepClone();
                     calibration = _calibrationResult == null ? null : _calibrationResult.DeepClone();
                     profile = CloneDetectionProfile(_detectionProfile);
                     teaching = _teaching.GetSnapshot();
-                    mapTargets = _options.CalibrationEnabled;
+                    calibrationEnabled = _options.CalibrationEnabled;
                 }
+
+                bool canMapTargets = calibrationEnabled &&
+                    calibration != null &&
+                    calibration.TranslationSuccess &&
+                    calibration.Rotation != null &&
+                    calibration.Rotation.Success &&
+                    calibration.Rotation.IsAvailable &&
+                    Math.Abs(calibration.Rotation.DirectionMultiplier) >= 0.5 &&
+                    teaching != null &&
+                    teaching.Left != null && teaching.Left.IsValid &&
+                    teaching.Right != null && teaching.Right.IsValid &&
+                    !double.IsNaN(currentR) && !double.IsInfinity(currentR);
 
                 PublishFrame(image, "offline-inspection");
                 InspectionResult result = await Task.Run(
-                    () => mapTargets
+                    () => canMapTargets
                         ? _inspection.Inspect(
                             image,
                             positioning,
@@ -1044,6 +1325,12 @@ namespace NinePointRotationCalibration.Station.Services
                             profile,
                             expectedCount),
                     cancellationToken).ConfigureAwait(false);
+                if (calibrationEnabled && !canMapTargets && result != null && result.Executed)
+                {
+                    result.Message = string.IsNullOrWhiteSpace(result.Message)
+                        ? "标定或左右示教未完成，当前仅展示视觉定位与瑕疵检测结果。"
+                        : result.Message + "（标定或左右示教未完成，当前仅展示视觉定位与瑕疵检测结果）";
+                }
                 OnInspectionCompleted(result);
                 return result;
             }

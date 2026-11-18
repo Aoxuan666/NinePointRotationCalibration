@@ -76,6 +76,7 @@ namespace NinePointRotationCalibration.Station.Views
             string source = e.Source ?? "frame";
             if (string.Equals(source, "preview", StringComparison.OrdinalIgnoreCase))
             {
+                if (_runtime.IsMockCamera) return;
                 lock (_displaySync)
                 {
                     if (_displayMode != DisplayMode.LivePreview || _disposed) return;
@@ -102,6 +103,23 @@ namespace NinePointRotationCalibration.Station.Views
                     }
                 }
                 return;
+            }
+
+            if (string.Equals(source, "offline-inspection", StringComparison.OrdinalIgnoreCase))
+            {
+                lock (_displaySync)
+                {
+                    if (!_disposed &&
+                        _displayMode == DisplayMode.LockedFrame &&
+                        _lockedDisplayImage != null &&
+                        _lockedDisplayImage.Width == e.Image.Width &&
+                        _lockedDisplayImage.Height == e.Image.Height)
+                    {
+                        // 离线检测复用了当前已锁定/导入图像，直接关联当前代次，避免重复清空叠加层或触发异常取消
+                        _inspectionFrameGeneration = _displayGeneration;
+                        return;
+                    }
+                }
             }
 
             // 非实时预览帧（单次拍照、标定、示教及在线/离线检测）会锁定主画面，防止被后续预览流覆盖
@@ -190,6 +208,7 @@ namespace NinePointRotationCalibration.Station.Views
             List<ViewportPointOverlay> points = new List<ViewportPointOverlay>();
             List<ViewportRoiOverlay> regions = new List<ViewportRoiOverlay>();
             List<ViewportContourOverlay> contours = new List<ViewportContourOverlay>();
+            List<ViewportContourOverlay> matchedContours = new List<ViewportContourOverlay>();
             foreach (BoardInspectionItem item in result.Items ?? new List<BoardInspectionItem>())
             {
                 MappedTargetPose leftTarget = item.Targets == null
@@ -252,6 +271,16 @@ namespace NinePointRotationCalibration.Station.Views
                         Color = item.HasManualMark ? Color.OrangeRed : Color.DeepSkyBlue
                     });
                 }
+                foreach (List<ImagePoint> segment in item.MatchContourSegments ?? new List<List<ImagePoint>>())
+                {
+                    if (segment == null || segment.Count < 2) continue;
+                    matchedContours.Add(new ViewportContourOverlay
+                    {
+                        Points = segment.Select(point => new PointF((float)point.Column, (float)point.Row)).ToList(),
+                        Color = Color.FromArgb(190, 0, 210, 255),
+                        LineWidth = 1.25F
+                    });
+                }
             }
 
             _view.ReplaceDetectionResults(rows);
@@ -273,8 +302,9 @@ namespace NinePointRotationCalibration.Station.Views
                         .Where(item => item != null && item.DetectionRegion != null)
                         .Select(item => item.BoardIndex)
                         .ToList();
-                    _lastMatchedBoardContours = new List<ViewportContourOverlay>();
+                    _lastMatchedBoardContours = matchedContours;
                     _lastInspectionOverlayGeneration = _displayGeneration;
+                    _lastInspectionCompletedGeneration = _displayGeneration;
                     if (!_view.IsDetectionDualViewActive)
                     {
                         _view.Viewport.SetPointOverlays(null);
@@ -283,9 +313,13 @@ namespace NinePointRotationCalibration.Station.Views
                     }
                     else
                     {
+                        List<ViewportContourOverlay> effectContours = new List<ViewportContourOverlay>(
+                            matchedContours.Count + contours.Count);
+                        effectContours.AddRange(matchedContours);
+                        effectContours.AddRange(contours);
                         _view.Viewport.ClearOverlays();
                         _view.EffectViewport.SetPointOverlays(null);
-                        _view.EffectViewport.SetContourOverlays(contours);
+                        _view.EffectViewport.SetContourOverlays(effectContours);
                         _view.EffectViewport.SetRoiOverlays(ApplySelectedRoiHighlight(
                             regions,
                             _lastInspectionBoardIndices,
@@ -294,7 +328,12 @@ namespace NinePointRotationCalibration.Station.Views
                     }
                 }
             }
-            _view.SetDetectionSummary(result.ExpectedCount, result.ActualCount, result.Success && result.Pass, result.Message);
+            string summaryMessage = result.Executed ? result.Message : TranslateInspectionError(result);
+            _view.SetDetectionSummary(result.ExpectedCount, result.ActualCount, result.Success && result.Pass, summaryMessage);
+            if (!result.Executed)
+            {
+                _view.SetEffectViewportInformation("检测未执行：" + summaryMessage);
+            }
             _view.SetInspectionHud(
                 result.ElapsedMilliseconds,
                 result.MatchElapsedMilliseconds,
@@ -308,8 +347,8 @@ namespace NinePointRotationCalibration.Station.Views
                 result.ActualCount,
                 result.Success && result.Pass,
                 result.HasManualMarks);
-            // 若当前处于检测双视图，检测结果同步后立即刷新检测效果图窗口（含局部二值/原图叠加）
-            if (_view.IsDetectionDualViewActive) ScheduleBinaryPreview(false);
+            // 若当前处于检测双视图，检测结果同步后立即在 UI 线程触发检测效果图刷新（保证 async 延续回到 UI 线程）
+            if (_view.IsDetectionDualViewActive) TriggerEffectPreviewOnUi(false);
         }
     }
 }

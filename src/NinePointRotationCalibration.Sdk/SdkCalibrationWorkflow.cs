@@ -48,7 +48,10 @@ namespace NinePointRotationCalibration
         {
             return Task.Run(() =>
             {
-                cancellationToken.ThrowIfCancellationRequested();
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    return new TemplateFeatureResult { Success = false, Message = "已取消" };
+                }
                 TemplateDefinition template = CoreUiMapper.ToCoreTemplate(state, _baseline.Template, image.Width, image.Height);
                 Halcon.TemplateBuildResult build;
                 IFeaturePreviewTemplateMatchingEngine previewEngine = _engine as IFeaturePreviewTemplateMatchingEngine;
@@ -64,7 +67,10 @@ namespace NinePointRotationCalibration
                 {
                     build = _engine.BuildTemplate(image, template);
                 }
-                cancellationToken.ThrowIfCancellationRequested();
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    return new TemplateFeatureResult { Success = false, Message = "已取消" };
+                }
                 if (!build.Success)
                 {
                     return new TemplateFeatureResult { Success = false, Message = build.Message };
@@ -79,7 +85,7 @@ namespace NinePointRotationCalibration
                     FeaturePoints = SampleFeaturePoints(contours, 4000),
                     RecommendedParameters = MergeResolvedThresholds(state == null ? null : state.Parameters, build.Template)
                 };
-            }, cancellationToken);
+            });
         }
 
         /// <summary>根据编辑参数创建 HALCON 模板模型（回传实际生效的自适应阈值参数）。</summary>

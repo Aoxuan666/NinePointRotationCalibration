@@ -198,8 +198,9 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
             if (template == null || match == null || !match.Success || profile == null)
                 return null;
             RegionDefinition source = profile.FollowTemplateTransform
-                ? template.DetectionRoi : template.TemplateRoi;
-            if (source == null && !profile.FollowTemplateTransform)
+                ? (template.DetectionRoi ?? template.TemplateRoi)
+                : (template.TemplateRoi ?? template.DetectionRoi);
+            if (source == null)
                 source = CreateReferenceImageRegion(template);
             if (source == null) return null;
             DetectionRoi transformed = TransformRegion(template, match, source);

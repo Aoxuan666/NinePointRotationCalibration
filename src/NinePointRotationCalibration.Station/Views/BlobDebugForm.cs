@@ -273,10 +273,12 @@ namespace NinePointRotationCalibration.Station.Views
                 payload = await Task.Run(
                     () => AnalyzePreview(profile, cancellation.Token)).ConfigureAwait(false);
                 cancelled = cancellation.IsCancellationRequested;
-            }
-            catch (OperationCanceledException)
-            {
-                cancelled = true;
+                if (!cancelled && payload != null && !string.IsNullOrWhiteSpace(payload.ErrorMessage))
+                {
+                    error = new InvalidOperationException(payload.ErrorMessage);
+                    payload.Dispose();
+                    payload = null;
+                }
             }
             catch (Exception exception)
             {
@@ -320,21 +322,27 @@ namespace NinePointRotationCalibration.Station.Views
                 {
                     if (profile.TemplateMatchingEnabled)
                     {
-                        TemplateMatchCollectionResult located = EnsureTemplateMatches(cancellationToken);
+                        string locateError;
+                        TemplateMatchCollectionResult located = EnsureTemplateMatches(cancellationToken, out locateError);
+                        if (cancellationToken.IsCancellationRequested) return null;
+                        if (!string.IsNullOrWhiteSpace(locateError))
+                        {
+                            return new PreviewPayload { ErrorMessage = locateError };
+                        }
                         if (located == null) return null;
                         if (located.Matches != null)
                         {
                             matches.AddRange(located.Matches.Where(match => match != null && match.Success));
                         }
                         if (matches.Count == 0)
-                            throw new InvalidOperationException("定位模板未匹配到目标。");
-
-                        if (profile.FollowTemplateTransform &&
-                            (_positioningJob == null || _positioningJob.Template == null ||
-                             _positioningJob.Template.DetectionRoi == null))
                         {
-                            throw new InvalidOperationException(
-                                "定位模板尚未配置检测 ROI，请先在定位模板编辑器中创建检测区。");
+                            return new PreviewPayload { ErrorMessage = "定位模板未匹配到目标。" };
+                        }
+
+                        if (_positioningJob == null || _positioningJob.Template == null ||
+                            (_positioningJob.Template.DetectionRoi == null && _positioningJob.Template.TemplateRoi == null))
+                        {
+                            return new PreviewPayload { ErrorMessage = "定位模板尚未配置模板 ROI 或检测 ROI，请先在定位模板编辑器中创建。" };
                         }
 
                         List<DetectionRoi> rois = matches.Select(match =>
@@ -385,12 +393,18 @@ namespace NinePointRotationCalibration.Station.Views
             }
         }
 
-        private TemplateMatchCollectionResult EnsureTemplateMatches(CancellationToken cancellationToken)
+        private TemplateMatchCollectionResult EnsureTemplateMatches(
+            CancellationToken cancellationToken,
+            out string errorMessage)
         {
+            errorMessage = null;
             if (cancellationToken.IsCancellationRequested) return null;
             if (_cachedMatches != null) return _cachedMatches;
             if (_positioningJob == null || _positioningJob.Template == null)
-                throw new InvalidOperationException("未加载定位模板，无法启用模板匹配。");
+            {
+                errorMessage = "未加载定位模板，无法启用模板匹配。";
+                return null;
+            }
 
             CalibrationJob locateJob = _positioningJob.DeepClone();
             if (locateJob.Template.MatchParameters != null)
@@ -399,10 +413,10 @@ namespace NinePointRotationCalibration.Station.Views
             TemplateMatchCollectionResult result = _sdk.LocateAll(_sourceImage, locateJob, false);
             if (result == null || !result.Success)
             {
-                throw new InvalidOperationException(
-                    result == null || string.IsNullOrWhiteSpace(result.Message)
-                        ? "定位模板未返回有效结果。"
-                        : result.Message);
+                errorMessage = result == null || string.IsNullOrWhiteSpace(result.Message)
+                    ? "定位模板未返回有效结果。"
+                    : result.Message;
+                return null;
             }
 
             // HALCON 定位过程不可中断；即使当前预览代次在 LocateAll 期间已过期，也保留成功缓存，
@@ -964,6 +978,7 @@ namespace NinePointRotationCalibration.Station.Views
             }
 
             public Bitmap BinaryImage { get; set; }
+            public string ErrorMessage { get; set; }
             public List<ViewportRoiOverlay> Regions { get; private set; }
             public List<ViewportContourOverlay> Contours { get; private set; }
             public List<BlobRow> Rows { get; private set; }

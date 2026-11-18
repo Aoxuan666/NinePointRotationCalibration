@@ -109,19 +109,14 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
                 }
                 if (useTemplateMatching && mapTargets && !IsFinite(currentR))
                     return Failure(result, "CURRENT_R_INVALID", "A finite current R value is required for mapping.");
-                if (useTemplateMatching && profile.FollowTemplateTransform &&
-                    positioningJob.Template.DetectionRoi == null)
-                {
-                    return Failure(result, "DETECTION_ROI_MISSING",
-                        "Create the detection ROI in the positioning template editor first.");
-                }
-                if (useTemplateMatching && !profile.FollowTemplateTransform &&
+                if (useTemplateMatching &&
+                    positioningJob.Template.DetectionRoi == null &&
                     positioningJob.Template.TemplateRoi == null &&
                     (positioningJob.Template.ReferenceImageWidth <= 0 ||
                      positioningJob.Template.ReferenceImageHeight <= 0))
                 {
-                    return Failure(result, "BOARD_BOUNDS_MISSING",
-                        "The positioning template does not contain usable board bounds.");
+                    return Failure(result, "DETECTION_ROI_MISSING",
+                        "定位模板尚未配置模板 ROI 或检测 ROI，请先在定位模板编辑器中框选区域。");
                 }
                 if (expectedCount <= 0)
                     return Failure(result, "EXPECTED_COUNT_INVALID", "Expected board count must be greater than zero.");

@@ -416,14 +416,20 @@ namespace NinePointRotationCalibration.Station.Views
 
         private Task EditTemplateAsync(bool positioning)
         {
-            using (Bitmap image = SnapshotAndLockCurrentImage())
+            Bitmap image = SnapshotAndLockCurrentImage();
+            if (image == null)
+            {
+                ImportLocalImage();
+                image = SnapshotAndLockCurrentImage();
+            }
+            using (image)
             {
                 if (image == null)
                 {
-                    const string message = "当前没有可用图像。请先拍照或导入一张清晰图像，再创建模板。";
+                    const string message = "请先导入一张图像后再创建或编辑模板。";
                     _view.AppendLog(message, true);
-                    _view.SetOperationStatus("创建模板失败：无当前图像", false, true);
-                    throw new InvalidOperationException(message);
+                    _view.SetOperationStatus("已取消：未加载图像", false, true);
+                    return Task.CompletedTask;
                 }
 
                 TemplateSetupResult result = positioning
@@ -460,7 +466,11 @@ namespace NinePointRotationCalibration.Station.Views
 
                 UpdateTemplateStatusLabel(positioning, result.Template);
                 if (positioning)
+                {
                     ApplyDetectionProfileToView(_runtime.GetDetectionProfileSnapshot());
+                    lock (_displaySync) ClearInspectionPreviewCache();
+                    if (_view.IsDetectionDualViewActive) ScheduleBinaryPreview(false);
+                }
                 _view.AppendLog(positioning ? "定位模板已更新。" : "标定模板已更新。", false);
             }
             return Task.CompletedTask;
@@ -556,9 +566,18 @@ namespace NinePointRotationCalibration.Station.Views
 
         private async Task TestTemplateAsync(bool positioning, CancellationToken cancellationToken)
         {
-            using (Bitmap image = SnapshotAndLockCurrentImage())
+            Bitmap image = SnapshotAndLockCurrentImage();
+            if (image == null)
             {
-                if (image == null) throw new InvalidOperationException("请先拍照，再测试模板。");
+                ImportLocalImage();
+                image = SnapshotAndLockCurrentImage();
+            }
+            using (image)
+            {
+                if (image == null)
+                {
+                    throw new InvalidOperationException("请先点击「导入图片」加载图像后再测试模板。");
+                }
 
                 if (positioning)
                 {
@@ -685,46 +704,71 @@ namespace NinePointRotationCalibration.Station.Views
             int expectedCount = Decimal.ToInt32(_view.ExpectedBoardCountInput.Value);
             double currentR = ReadNumeric("nudInspectionCurrentR");
 
-            // 相机或标定功能关闭时，“测试检测”回退复用当前锁定/导入图像走离线检测路径
-            if (!_runtime.IsCameraEnabled || !_runtime.IsCalibrationEnabled)
+            // 只要当前已加载/锁定图像，或未启用实体相机（含模拟相机），均直接检测当前加载图像，避免回退抓取默认模拟图
+            using (Bitmap image = SnapshotAndLockCurrentImage())
             {
-                using (Bitmap image = SnapshotAndLockCurrentImage())
+                if (image != null)
                 {
-                    if (image == null) throw new InvalidOperationException("请先导入图片或拍照。");
-                    await _runtime
+                    InspectionResult offlineResult = await _runtime
                         .RunOfflineInspectionAsync(image, expectedCount, currentR, cancellationToken)
                         .ConfigureAwait(true);
+                    if (offlineResult != null && !offlineResult.Executed)
+                    {
+                        throw new InvalidOperationException(TranslateInspectionError(offlineResult));
+                    }
+                    return;
                 }
-                return;
             }
 
-            await _runtime
+            if (!_runtime.IsCameraEnabled ||
+                !_runtime.IsCalibrationEnabled ||
+                _runtime.IsMockCamera ||
+                !_runtime.IsCameraConnected)
+            {
+                throw new InvalidOperationException("当前尚未加载图像，请先点击「导入图片」加载检测图像。");
+            }
+
+            InspectionResult result = await _runtime
                 .RunInspectionAsync(expectedCount, currentR, cancellationToken)
                 .ConfigureAwait(true);
+            if (result != null && !result.Executed)
+            {
+                throw new InvalidOperationException(TranslateInspectionError(result));
+            }
         }
 
         private async Task RunCurrentImageInspectionAsync(CancellationToken cancellationToken)
         {
             using (Bitmap image = SnapshotAndLockCurrentImage())
             {
-                if (image == null) throw new InvalidOperationException("请先导入图片或拍照。");
+                if (image == null) throw new InvalidOperationException("请先点击「导入图片」加载检测图像。");
 
                 DetectionProfile profile = ReadDetectionProfileFromView();
                 _runtime.UpdateDetectionProfile(profile);
                 int expectedCount = Decimal.ToInt32(_view.ExpectedBoardCountInput.Value);
                 double currentR = ReadNumeric("nudInspectionCurrentR");
-                await _runtime
+                InspectionResult result = await _runtime
                     .RunOfflineInspectionAsync(image, expectedCount, currentR, cancellationToken)
                     .ConfigureAwait(true);
+                if (result != null && !result.Executed)
+                {
+                    throw new InvalidOperationException(TranslateInspectionError(result));
+                }
             }
         }
 
         // 锁定当前显示图像打开 Blob 调试弹窗，确认后同步参数至界面和运行时配置
         private void OpenBlobDebugWindow()
         {
-            using (Bitmap image = SnapshotAndLockCurrentImage())
+            Bitmap image = SnapshotAndLockCurrentImage();
+            if (image == null)
             {
-                if (image == null) throw new InvalidOperationException("请先导入图片或拍照。");
+                ImportLocalImage();
+                image = SnapshotAndLockCurrentImage();
+            }
+            using (image)
+            {
+                if (image == null) throw new InvalidOperationException("请先点击「导入图片」加载图像。");
 
                 DetectionProfile profile = ReadDetectionProfileFromView();
                 CalibrationJob positioningJob = _runtime.GetPositioningJobSnapshot();
@@ -742,6 +786,7 @@ namespace NinePointRotationCalibration.Station.Views
                     _runtime.UpdateDetectionProfile(applied);
                     _view.AppendLog("Blob 调试参数已应用并保存。", false);
                     _view.SetOperationStatus("Blob 调试参数已应用", false, false);
+                    if (_view.IsDetectionDualViewActive) ScheduleBinaryPreview(false);
                 }
             }
         }
@@ -790,7 +835,20 @@ namespace NinePointRotationCalibration.Station.Views
 
         private void SaveAllSettings()
         {
-            StationOptions options = ReadOptionsFromView(_runtime.GetOptionsSnapshot());
+            string requestedFolder = ReadTextOrFallback("txtConfigDirectory", string.Empty);
+            StationOptions current = _runtime.GetOptionsSnapshot();
+            if (!string.IsNullOrWhiteSpace(requestedFolder) &&
+                !string.Equals(
+                    Path.GetFullPath(requestedFolder),
+                    Path.GetFullPath(current.GetUnifiedConfigDirectory()),
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                _runtime.ImportConfigDirectory(requestedFolder);
+                RefreshAllConfigUiFromRuntime();
+                current = _runtime.GetOptionsSnapshot();
+            }
+
+            StationOptions options = ReadOptionsFromView(current);
             _runtime.UpdateOptions(options);
             _runtime.UpdateDetectionProfile(ReadDetectionProfileFromView());
             _view.AppendLog("工作站设置与检测参数已保存。", false);
@@ -822,6 +880,7 @@ namespace NinePointRotationCalibration.Station.Views
             options.RotationStepDegrees = ReadNumeric("nudCalibrationStepR");
             options.MotionTimeoutMilliseconds = Convert.ToInt32(ReadNumeric("nudMotionTimeout"), CultureInfo.InvariantCulture);
             options.ExpectedBoardCount = Decimal.ToInt32(_view.ExpectedBoardCountInput.Value);
+            options.ConfigDirectory = ReadTextOrFallback("txtConfigDirectory", options.GetUnifiedConfigDirectory());
             options.CalibrationJobPath = ReadPath("txtCalibrationTemplatePath", "txtCalibrationFile", options.CalibrationJobPath);
             options.PositioningJobPath = ReadPath("txtPositioningTemplatePath", "txtPositioningFile", options.PositioningJobPath);
             options.TeachingPath = ReadTextOrFallback("txtTeachingFile", options.TeachingPath);
@@ -878,8 +937,85 @@ namespace NinePointRotationCalibration.Station.Views
             _view.TemplateMatchingInput.Checked = profile.TemplateMatchingEnabled;
         }
 
+        private void ImportConfigFolder()
+        {
+            using (FolderBrowserDialog dialog = new FolderBrowserDialog())
+            {
+                dialog.Description = "选择统一配置文件夹（自动加载同目录下的标定、定位、示教与检测参数文件）";
+                string current = ReadTextOrFallback("txtConfigDirectory", string.Empty);
+                if (!string.IsNullOrWhiteSpace(current) && Directory.Exists(current))
+                {
+                    dialog.SelectedPath = current;
+                }
+                if (dialog.ShowDialog(_view) != DialogResult.OK) return;
+
+                string summary = _runtime.ImportConfigDirectory(dialog.SelectedPath);
+                RefreshAllConfigUiFromRuntime();
+                _view.AppendLog(summary, false);
+                _view.SetOperationStatus("配置文件夹已导入", false, false);
+            }
+        }
+
+        private void RefreshAllConfigUiFromRuntime()
+        {
+            StationOptions options = _runtime.GetOptionsSnapshot();
+            SetText("txtConfigDirectory", options.GetUnifiedConfigDirectory());
+            SetPathPair("txtCalibrationTemplatePath", "txtCalibrationFile", options.CalibrationJobPath);
+            SetPathPair("txtPositioningTemplatePath", "txtPositioningFile", options.PositioningJobPath);
+            SetText("txtTeachingFile", options.TeachingPath);
+            SetText("txtDetectionProfile", options.DetectionProfilePath);
+            SetText("txtImageArchive", options.ImageArchiveDirectory);
+
+            CalibrationJob calibrationJob = _runtime.GetCalibrationJobSnapshot();
+            CalibrationJob positioningJob = _runtime.GetPositioningJobSnapshot();
+            UpdateTemplateStatusLabel(false, calibrationJob == null ? null : calibrationJob.Template);
+            UpdateTemplateStatusLabel(true, positioningJob == null ? null : positioningJob.Template);
+            ApplyDetectionProfileToView(_runtime.GetDetectionProfileSnapshot());
+            TeachingData teaching = _runtime.GetTeachingSnapshot();
+            ApplyTeachingToView(teaching == null ? null : teaching.Left);
+            ApplyTeachingToView(teaching == null ? null : teaching.Right);
+            foreach (CalibrationPointRecord record in _runtime.GetCalibrationRecordsSnapshot())
+            {
+                ApplyCalibrationRecord(record);
+            }
+            CalibrationResult calibrationResult = _runtime.GetCalibrationResultSnapshot();
+            _view.SetCalibrationRmsSummary(calibrationResult);
+            _view.ApplyCalibrationDiagnostics(calibrationResult);
+
+            lock (_displaySync) ClearInspectionPreviewCache();
+            if (_view.IsDetectionDualViewActive) ScheduleBinaryPreview(false);
+        }
+
+        private static string TranslateInspectionError(InspectionResult result)
+        {
+            if (result == null) return "未返回检测结果";
+            switch (result.ErrorCode ?? string.Empty)
+            {
+                case "IMAGE_MISSING":
+                    return "尚未加载图像，请先点击「导入图片」";
+                case "POSITIONING_TEMPLATE_MISSING":
+                    return "定位模板尚未配置，请先在「模板」页加载或创建定位模板";
+                case "DETECTION_ROI_MISSING":
+                case "BOARD_BOUNDS_MISSING":
+                    return "定位模板缺少模板 ROI 或检测 ROI，请在模板编辑器中添加区域并创建模型";
+                case "POSITIONING_FAILED":
+                    return "当前图像未能匹配到定位模板，请检查模板参数或目标数量设置";
+                case "CALIBRATION_MISSING":
+                    return "九点与旋转标定尚未完成";
+                case "TEACHING_MISSING":
+                    return "左右吸嘴示教数据不完整";
+                default:
+                    return string.IsNullOrWhiteSpace(result.Message) ? "检测执行失败" : result.Message;
+            }
+        }
+
         private void BrowsePath(string action)
         {
+            if (string.Equals(action, "files.folder.import", StringComparison.OrdinalIgnoreCase))
+            {
+                ImportConfigFolder();
+                return;
+            }
             if (string.Equals(action, "files.archive.browse", StringComparison.OrdinalIgnoreCase))
             {
                 using (FolderBrowserDialog dialog = new FolderBrowserDialog())
@@ -929,8 +1065,37 @@ namespace NinePointRotationCalibration.Station.Views
                 dialog.RestoreDirectory = true;
                 if (dialog.ShowDialog(_view) != DialogResult.OK) return;
 
+                string chosenFolder = Path.GetDirectoryName(dialog.FileName);
+                if (!string.IsNullOrWhiteSpace(chosenFolder))
+                {
+                    _runtime.ImportConfigDirectory(chosenFolder);
+                }
+
+                if (File.Exists(dialog.FileName))
+                {
+                    if (action.Contains("calibration"))
+                    {
+                        _runtime.LoadCalibrationJob(dialog.FileName);
+                    }
+                    else if (action.Contains("positioning"))
+                    {
+                        _runtime.LoadPositioningJob(dialog.FileName);
+                    }
+                    else if (action.Contains("teaching"))
+                    {
+                        _runtime.ReloadAuxiliaryConfigs(dialog.FileName, null);
+                    }
+                    else
+                    {
+                        _runtime.ReloadAuxiliaryConfigs(null, dialog.FileName);
+                    }
+                }
+
+                RefreshAllConfigUiFromRuntime();
                 if (secondaryName == null) SetText(primaryName, dialog.FileName);
                 else SetPathPair(primaryName, secondaryName, dialog.FileName);
+                _view.AppendLog("已切换至配置目录并加载：" + dialog.FileName, false);
+                _view.SetOperationStatus("配置已加载", false, false);
             }
         }
     }
