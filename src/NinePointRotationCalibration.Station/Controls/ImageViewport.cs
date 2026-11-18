@@ -111,7 +111,7 @@ namespace NinePointRotationCalibration.Station.Controls
             BackColor = Color.Black;
             ForeColor = Color.FromArgb(220, 225, 230);
             TabStop = true;
-            MinimumSize = new Size(320, 240);
+            MinimumSize = new Size(160, 120);
         }
 
         public event EventHandler ViewChanged;
@@ -270,6 +270,34 @@ namespace NinePointRotationCalibration.Station.Controls
             Invalidate();
         }
 
+        /// <summary>同步对齐另一视口的缩放倍率与画布中心位置（不触发 ViewChanged 避免双向循环）。</summary>
+        public void SyncViewFrom(ImageViewport source)
+        {
+            if (source == null || ReferenceEquals(source, this) || _disposed) return;
+
+            float sourceScale;
+            PointF sourceOrigin;
+            if (!source.TryGetTransform(out sourceScale, out sourceOrigin)) return;
+            if (_displayedImage == null || ClientSize.Width <= 0 || ClientSize.Height <= 0) return;
+
+            PointF sourceCenterImage = new PointF(
+                ((source.ClientSize.Width * 0.5f) - sourceOrigin.X) / sourceScale,
+                ((source.ClientSize.Height * 0.5f) - sourceOrigin.Y) / sourceScale);
+
+            _fitMode = source._fitMode;
+            float baseScale = GetBaseScale();
+            float targetScale = source._fitMode ? baseScale * source._zoom : sourceScale;
+            float nextZoom = baseScale > 0.0f ? targetScale / baseScale : source._zoom;
+            _zoom = Math.Max(MinimumZoom, Math.Min(MaximumZoom, nextZoom));
+
+            float appliedScale = baseScale * _zoom;
+            PointF centeredOrigin = GetCenteredOrigin(appliedScale);
+            _pan = new PointF(
+                (ClientSize.Width * 0.5f) - (sourceCenterImage.X * appliedScale) - centeredOrigin.X,
+                (ClientSize.Height * 0.5f) - (sourceCenterImage.Y * appliedScale) - centeredOrigin.Y);
+            Invalidate();
+        }
+
         public void SetPointOverlays(IEnumerable<ViewportPointOverlay> points)
         {
             lock (_overlaySync)
@@ -371,7 +399,9 @@ namespace NinePointRotationCalibration.Station.Controls
                 ? InterpolationMode.NearestNeighbor
                 : InterpolationMode.Bilinear;
             e.Graphics.PixelOffsetMode = PixelOffsetMode.Half;
+            e.Graphics.CompositingMode = CompositingMode.SourceCopy;
             e.Graphics.DrawImage(image, destination);
+            e.Graphics.CompositingMode = CompositingMode.SourceOver;
 
             DrawOverlays(e.Graphics, scale, origin);
         }
@@ -380,7 +410,7 @@ namespace NinePointRotationCalibration.Station.Controls
         {
             base.OnMouseDown(e);
             Focus();
-            if (e.Button == MouseButtons.Middle)
+            if (_displayedImage != null && (e.Button == MouseButtons.Middle || e.Button == MouseButtons.Left))
             {
                 _isPanning = true;
                 _lastMousePoint = e.Location;
@@ -414,12 +444,18 @@ namespace NinePointRotationCalibration.Station.Controls
         protected override void OnMouseUp(MouseEventArgs e)
         {
             base.OnMouseUp(e);
-            if (e.Button == MouseButtons.Middle)
+            if (_isPanning && (e.Button == MouseButtons.Middle || e.Button == MouseButtons.Left))
             {
                 _isPanning = false;
                 Capture = false;
                 Cursor = Cursors.Default;
             }
+        }
+
+        protected override void OnDoubleClick(EventArgs e)
+        {
+            base.OnDoubleClick(e);
+            if (_displayedImage != null) FitImage();
         }
 
         protected override void OnMouseWheel(MouseEventArgs e)

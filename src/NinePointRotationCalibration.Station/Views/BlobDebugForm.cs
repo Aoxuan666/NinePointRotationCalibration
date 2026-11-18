@@ -37,6 +37,7 @@ namespace NinePointRotationCalibration.Station.Views
         private int _releaseStarted;
         private int _resourcesDisposed;
         private bool _loadingControls;
+        private bool _syncingViewports;
         private volatile bool _closing;
 
         public BlobDebugForm(
@@ -58,7 +59,6 @@ namespace NinePointRotationCalibration.Station.Views
             ApplyProfileToControls(_appliedProfile);
             WireEvents();
             sourceViewport.SetImage(_sourceImage);
-            tabPreview.SelectedTab = tabBinaryImage;
             UpdateDependentControls();
 
             AcceptButton = btnApply;
@@ -108,15 +108,26 @@ namespace NinePointRotationCalibration.Station.Views
             }
 
             btnRefresh.Click += delegate { SchedulePreview(true); };
-            btnFit.Click += delegate { GetActiveViewport().FitImage(); };
-            btnActualPixels.Click += delegate { GetActiveViewport().ShowActualPixels(); };
+            btnFit.Click += delegate
+            {
+                if (sourceViewport.HasImage) sourceViewport.FitImage();
+                if (binaryViewport.HasImage) binaryViewport.FitImage();
+            };
+            btnActualPixels.Click += delegate
+            {
+                if (sourceViewport.HasImage) sourceViewport.ShowActualPixels();
+                if (binaryViewport.HasImage) binaryViewport.ShowActualPixels();
+            };
             btnApply.Click += BtnApply_Click;
-            tabPreview.SelectedIndexChanged += delegate { UpdatePreviewToolbar(); };
+            sourceViewport.ViewChanged += delegate { SyncLinkedViewport(sourceViewport, binaryViewport); };
+            binaryViewport.ViewChanged += delegate { SyncLinkedViewport(binaryViewport, sourceViewport); };
+            previewSplit.SizeChanged += delegate { BalancePreviewSplit(); };
         }
 
         private void BlobDebugForm_Shown(object sender, EventArgs e)
         {
             ClampToWorkingArea();
+            BalancePreviewSplit();
             SchedulePreview(true);
         }
 
@@ -637,12 +648,12 @@ namespace NinePointRotationCalibration.Station.Views
 
             Bitmap binaryImage = payload.TakeBinaryImage();
             binaryViewport.SetImageOwned(binaryImage);
-            sourceViewport.SetPointOverlays(null);
-            sourceViewport.SetRoiOverlays(payload.Regions);
-            sourceViewport.SetContourOverlays(payload.Contours);
+            sourceViewport.ClearOverlays();
             binaryViewport.SetPointOverlays(null);
-            binaryViewport.SetRoiOverlays(null);
+            binaryViewport.SetRoiOverlays(payload.Regions);
             binaryViewport.SetContourOverlays(payload.Contours);
+            SyncBinaryViewportDeferred();
+            UpdatePreviewToolbar();
 
             dgvBlobs.Rows.Clear();
             foreach (BlobRow item in payload.Rows)
@@ -761,14 +772,64 @@ namespace NinePointRotationCalibration.Station.Views
 
         private void UpdatePreviewToolbar()
         {
-            ImageViewport active = GetActiveViewport();
-            btnFit.Enabled = active != null && active.HasImage;
-            btnActualPixels.Enabled = active != null && active.HasImage;
+            bool hasImage = (sourceViewport != null && sourceViewport.HasImage) ||
+                            (binaryViewport != null && binaryViewport.HasImage);
+            btnFit.Enabled = hasImage;
+            btnActualPixels.Enabled = hasImage;
         }
 
-        private ImageViewport GetActiveViewport()
+        private void SyncLinkedViewport(ImageViewport source, ImageViewport target)
         {
-            return tabPreview.SelectedTab == tabSourceImage ? sourceViewport : binaryViewport;
+            if (_syncingViewports || _closing || source == null || target == null) return;
+            if (!source.HasImage || !target.HasImage) return;
+
+            _syncingViewports = true;
+            try
+            {
+                target.SyncViewFrom(source);
+            }
+            finally
+            {
+                _syncingViewports = false;
+            }
+        }
+
+        private void SyncBinaryViewportDeferred()
+        {
+            if (_closing || sourceViewport == null || binaryViewport == null) return;
+            if (binaryViewport.IsHandleCreated)
+            {
+                try
+                {
+                    binaryViewport.BeginInvoke(new MethodInvoker(delegate
+                    {
+                        SyncLinkedViewport(sourceViewport, binaryViewport);
+                    }));
+                }
+                catch (ObjectDisposedException)
+                {
+                }
+                catch (InvalidOperationException)
+                {
+                }
+            }
+            else
+            {
+                SyncLinkedViewport(sourceViewport, binaryViewport);
+            }
+        }
+
+        private void BalancePreviewSplit()
+        {
+            if (previewSplit == null || previewSplit.IsDisposed) return;
+
+            int available = previewSplit.Height - previewSplit.SplitterWidth;
+            int min1 = previewSplit.Panel1MinSize;
+            int max1 = available - previewSplit.Panel2MinSize;
+            if (max1 >= min1)
+            {
+                previewSplit.SplitterDistance = Math.Max(min1, Math.Min(max1, available / 2));
+            }
         }
 
         private void SetPreviewStatus(string text, bool isError)

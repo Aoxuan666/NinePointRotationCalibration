@@ -100,6 +100,8 @@ namespace NinePointRotationCalibration.WinForms.Controls
 
         public event EventHandler SelectedRoiChanged;
 
+        public event EventHandler ToolChanged;
+
         public event EventHandler ViewChanged;
 
         [Browsable(false)]
@@ -134,6 +136,7 @@ namespace NinePointRotationCalibration.WinForms.Controls
                 FinishDrag(false);
                 _tool = value;
                 Cursor = GetDefaultCursor();
+                OnToolChanged();
                 Invalidate();
             }
         }
@@ -251,7 +254,7 @@ namespace NinePointRotationCalibration.WinForms.Controls
         }
 
         /// <summary>
-        /// 设置当前显示图像（内部持有深拷贝）并初始化默认 ROI 与适应窗口视图。
+        /// 设置当前显示图像（内部持有深拷贝）并适应窗口显示；默认不自动创建模板/搜索 ROI。
         /// </summary>
         public void SetImage(Bitmap image)
         {
@@ -272,34 +275,10 @@ namespace NinePointRotationCalibration.WinForms.Controls
             _interactivePreview = CreateInteractivePreview(_image);
 
             _viewInitialized = false;
-            if (_image != null)
+            if (_image != null && _templateRoi != null &&
+                (!_anchorVisible || (_anchor.Row == 0.0 && _anchor.Column == 0.0)))
             {
-                if (_templateRoi == null)
-                {
-                    double halfWidth = Math.Max(10.0, _image.Width * 0.15);
-                    double halfHeight = Math.Max(10.0, _image.Height * 0.15);
-                    _templateRoi = new RotatedRectangle(
-                        _image.Height / 2.0,
-                        _image.Width / 2.0,
-                        halfWidth,
-                        halfHeight,
-                        0.0);
-                }
-
-                if (_searchRoi == null)
-                {
-                    _searchRoi = new RotatedRectangle(
-                        _image.Height / 2.0,
-                        _image.Width / 2.0,
-                        Math.Max(20.0, _image.Width * 0.42),
-                        Math.Max(20.0, _image.Height * 0.42),
-                        0.0);
-                }
-
-                if (!_anchorVisible || (_anchor.Row == 0.0 && _anchor.Column == 0.0))
-                {
-                    _anchor = new ImageCoordinate(_templateRoi.CenterRow, _templateRoi.CenterColumn);
-                }
+                _anchor = new ImageCoordinate(_templateRoi.CenterRow, _templateRoi.CenterColumn);
             }
 
             FitImage();
@@ -477,11 +456,8 @@ namespace NinePointRotationCalibration.WinForms.Controls
             }
 
             DrawImageLayer(graphics);
-            // 交互拖拽或快速滚轮缩放期间跳过静态特征点叠加，保证实时帧率
-            if (!interactive)
-            {
-                DrawOverlayLayer(graphics, _editorOverlay, false);
-            }
+            // 交互拖拽与缩放期间全程绘制高效缓冲特征点叠加层，保证轮廓跟随丝滑不闪退
+            DrawOverlayLayer(graphics, _editorOverlay, false);
             if (MaskVisible)
             {
                 DrawMaskLayer(graphics);
@@ -603,7 +579,7 @@ namespace NinePointRotationCalibration.WinForms.Controls
                 return;
             }
 
-            if (_anchorVisible && !AnchorLocked &&
+            if (HasVisibleAnchor && !AnchorLocked &&
                 (_tool == CanvasEditTool.MoveAnchor || HitAnchor(eventArgs.Location)))
             {
                 BeginEditTransaction();
@@ -652,6 +628,27 @@ namespace NinePointRotationCalibration.WinForms.Controls
             }
 
             SelectedRoi = CanvasRoiTarget.None;
+            if (_tool == CanvasEditTool.Select)
+            {
+                _dragOperation = DragOperation.Pan;
+                Capture = true;
+                Cursor = Cursors.Hand;
+            }
+        }
+
+        protected override void OnDoubleClick(EventArgs eventArgs)
+        {
+            base.OnDoubleClick(eventArgs);
+            if (_image == null || _tool != CanvasEditTool.Select)
+            {
+                return;
+            }
+
+            Point client = PointToClient(Cursor.Position);
+            if ((!HasVisibleAnchor || !HitAnchor(client)) && HitTestRois(client).Target == CanvasRoiTarget.None)
+            {
+                FitImage();
+            }
         }
 
         protected override void OnMouseMove(MouseEventArgs eventArgs)
@@ -744,6 +741,15 @@ namespace NinePointRotationCalibration.WinForms.Controls
                 return;
             }
 
+            if (eventArgs.KeyCode == Keys.Delete || eventArgs.KeyCode == Keys.Back)
+            {
+                if (DeleteSelectedRoi())
+                {
+                    eventArgs.Handled = true;
+                }
+                return;
+            }
+
             int rowDirection = eventArgs.KeyCode == Keys.Up ? -1 : eventArgs.KeyCode == Keys.Down ? 1 : 0;
             int columnDirection = eventArgs.KeyCode == Keys.Left ? -1 : eventArgs.KeyCode == Keys.Right ? 1 : 0;
             if (rowDirection == 0 && columnDirection == 0)
@@ -752,10 +758,10 @@ namespace NinePointRotationCalibration.WinForms.Controls
             }
 
             double step = eventArgs.Shift ? 10.0 : 1.0;
-            BeginEditTransaction();
             if ((_tool == CanvasEditTool.MoveAnchor || _selectedRoi == CanvasRoiTarget.None) &&
-                _anchorVisible && !AnchorLocked)
+                HasVisibleAnchor && !AnchorLocked)
             {
+                BeginEditTransaction();
                 _anchor = ClampToImage(new ImageCoordinate(
                     _anchor.Row + (rowDirection * step),
                     _anchor.Column + (columnDirection * step)));
@@ -770,6 +776,8 @@ namespace NinePointRotationCalibration.WinForms.Controls
             {
                 return;
             }
+
+            BeginEditTransaction();
 
             if (eventArgs.Control && columnDirection != 0)
             {
@@ -1031,7 +1039,7 @@ namespace NinePointRotationCalibration.WinForms.Controls
             DrawRoi(graphics, _searchRoi, CanvasRoiTarget.Search, Color.DeepSkyBlue);
             DrawRoi(graphics, _detectionRoi, CanvasRoiTarget.Detection, Color.LimeGreen);
             DrawRoi(graphics, _templateRoi, CanvasRoiTarget.Template, Color.Gold);
-            if (_anchorVisible)
+            if (HasVisibleAnchor)
             {
                 DrawAnchor(graphics);
             }
@@ -1159,30 +1167,99 @@ namespace NinePointRotationCalibration.WinForms.Controls
             }
 
             List<RectangleF> occupiedLabels = new List<RectangleF>();
-            if (overlay.Points != null)
+            if (overlay.Points != null && overlay.Points.Count > 0)
             {
-                foreach (CanvasPointOverlay point in overlay.Points.Where(item => item != null))
+                Dictionary<int, List<RectangleF>> fastBuckets = null;
+                HashSet<long> fastPixelKeys = null;
+                List<CanvasPointOverlay> detailedPoints = null;
+                float clipMaxX = ClientSize.Width + 6.0f;
+                float clipMaxY = ClientSize.Height + 6.0f;
+
+                foreach (CanvasPointOverlay point in overlay.Points)
                 {
-                    PointF center = ImageToClient(point.Position);
-                    float radius = Math.Max(1.5f, point.RadiusPixels);
+                    if (point == null) continue;
                     bool hasLabel = !string.IsNullOrWhiteSpace(point.Label);
-                    bool drawOutline = radius >= 3.0f || point.IsSelected || hasLabel;
-                    using (Brush brush = new SolidBrush(Color.FromArgb(point.IsSelected ? 235 : 185, point.Color)))
+                    bool isPlainFeature = !hasLabel && !point.IsSelected && point.RadiusPixels < 3.0f;
+                    if (!isPlainFeature)
                     {
-                        graphics.FillEllipse(brush, center.X - radius, center.Y - radius, radius * 2.0f, radius * 2.0f);
+                        if (detailedPoints == null) detailedPoints = new List<CanvasPointOverlay>();
+                        detailedPoints.Add(point);
+                        continue;
                     }
 
-                    if (drawOutline)
+                    PointF center = ImageToClient(point.Position);
+                    if (center.X < -6.0f || center.Y < -6.0f || center.X > clipMaxX || center.Y > clipMaxY)
                     {
-                        using (Pen outline = new Pen(Color.FromArgb(230, Color.Black), 1.5f))
+                        continue;
+                    }
+
+                    // 特征预览点按颜色分组、屏幕像素格去重并复用画刷批量 FillRectangles，降低千点重绘开销
+                    Color brushColor = Color.FromArgb(200, point.Color);
+                    int argb = brushColor.ToArgb();
+                    int px = (int)Math.Round(center.X);
+                    int py = (int)Math.Round(center.Y);
+                    long key = (((long)argb & 0xFFFFL) << 40) | (((long)(px & 0xFFFFF)) << 20) | (uint)(py & 0xFFFFF);
+                    if (fastPixelKeys == null) fastPixelKeys = new HashSet<long>();
+                    if (!fastPixelKeys.Add(key)) continue;
+
+                    if (fastBuckets == null) fastBuckets = new Dictionary<int, List<RectangleF>>();
+                    List<RectangleF> bucket;
+                    if (!fastBuckets.TryGetValue(argb, out bucket))
+                    {
+                        bucket = new List<RectangleF>();
+                        fastBuckets[argb] = bucket;
+                    }
+
+                    float size = Math.Max(2.0f, Math.Min(4.0f, point.RadiusPixels * 2.0f));
+                    float half = size * 0.5f;
+                    bucket.Add(new RectangleF(center.X - half, center.Y - half, size, size));
+                }
+
+                if (fastBuckets != null)
+                {
+                    SmoothingMode previousSmoothing = graphics.SmoothingMode;
+                    graphics.SmoothingMode = SmoothingMode.None;
+                    try
+                    {
+                        foreach (KeyValuePair<int, List<RectangleF>> entry in fastBuckets)
                         {
-                            graphics.DrawEllipse(outline, center.X - radius, center.Y - radius, radius * 2.0f, radius * 2.0f);
+                            using (SolidBrush brush = new SolidBrush(Color.FromArgb(entry.Key)))
+                            {
+                                graphics.FillRectangles(brush, entry.Value.ToArray());
+                            }
                         }
                     }
-
-                    if (hasLabel)
+                    finally
                     {
-                        DrawAvoidingLabel(graphics, point.Label, center, point.Color, occupiedLabels);
+                        graphics.SmoothingMode = previousSmoothing;
+                    }
+                }
+
+                if (detailedPoints != null)
+                {
+                    foreach (CanvasPointOverlay point in detailedPoints)
+                    {
+                        PointF center = ImageToClient(point.Position);
+                        float radius = Math.Max(1.5f, point.RadiusPixels);
+                        bool hasLabel = !string.IsNullOrWhiteSpace(point.Label);
+                        bool drawOutline = radius >= 3.0f || point.IsSelected || hasLabel;
+                        using (Brush brush = new SolidBrush(Color.FromArgb(point.IsSelected ? 235 : 185, point.Color)))
+                        {
+                            graphics.FillEllipse(brush, center.X - radius, center.Y - radius, radius * 2.0f, radius * 2.0f);
+                        }
+
+                        if (drawOutline)
+                        {
+                            using (Pen outline = new Pen(Color.FromArgb(230, Color.Black), 1.5f))
+                            {
+                                graphics.DrawEllipse(outline, center.X - radius, center.Y - radius, radius * 2.0f, radius * 2.0f);
+                            }
+                        }
+
+                        if (hasLabel)
+                        {
+                            DrawAvoidingLabel(graphics, point.Label, center, point.Color, occupiedLabels);
+                        }
                     }
                 }
             }
@@ -1556,8 +1633,42 @@ namespace NinePointRotationCalibration.WinForms.Controls
             {
                 OnAnchorChanged(true);
             }
-            else if (operation == DragOperation.CreateRoi ||
-                     operation == DragOperation.MoveRoi ||
+            else if (operation == DragOperation.CreateRoi)
+            {
+                RotatedRectangle created = GetRoi(_selectedRoi);
+                if (created != null && _image != null && (created.HalfWidth < 6.0 || created.HalfHeight < 6.0))
+                {
+                    double fallbackWidth = _selectedRoi == CanvasRoiTarget.Search
+                        ? Math.Max(24.0, _image.Width * 0.35)
+                        : Math.Max(16.0, _image.Width * 0.12);
+                    double fallbackHeight = _selectedRoi == CanvasRoiTarget.Search
+                        ? Math.Max(24.0, _image.Height * 0.35)
+                        : Math.Max(16.0, _image.Height * 0.12);
+                    created.HalfWidth = created.HalfWidth < 6.0 ? fallbackWidth : created.HalfWidth;
+                    created.HalfHeight = created.HalfHeight < 6.0 ? fallbackHeight : created.HalfHeight;
+                    ClampRoiCenter(created);
+                    SetRoi(_selectedRoi, created);
+                }
+
+                if (_selectedRoi == CanvasRoiTarget.Template && created != null &&
+                    !AnchorLocked && _anchor.Row == 0.0 && _anchor.Column == 0.0)
+                {
+                    _anchor = new ImageCoordinate(created.CenterRow, created.CenterColumn);
+                    OnAnchorChanged(true);
+                }
+
+                OnRoiChanged(_selectedRoi, true);
+                if (_tool == CanvasEditTool.DrawTemplateRoi ||
+                    _tool == CanvasEditTool.DrawSearchRoi ||
+                    _tool == CanvasEditTool.DrawDetectionRoi)
+                {
+                    // 画完即切回选择模式，防止继续拖动时意外覆盖刚画好的 ROI
+                    _tool = CanvasEditTool.Select;
+                    Cursor = GetDefaultCursor();
+                    OnToolChanged();
+                }
+            }
+            else if (operation == DragOperation.MoveRoi ||
                      operation == DragOperation.ResizeRoi ||
                      operation == DragOperation.RotateRoi)
             {
@@ -1565,6 +1676,34 @@ namespace NinePointRotationCalibration.WinForms.Controls
             }
 
             Invalidate();
+        }
+
+        /// <summary>
+        /// 删除当前选中的非锁定 ROI，并同步更新选中焦点与编辑历史。
+        /// </summary>
+        public bool DeleteSelectedRoi()
+        {
+            if (_selectedRoi == CanvasRoiTarget.None || GetRoi(_selectedRoi) == null || IsTargetLocked(_selectedRoi))
+            {
+                return false;
+            }
+
+            BeginEditTransaction();
+            CanvasRoiTarget removed = _selectedRoi;
+            SetRoi(removed, null);
+            if (removed == CanvasRoiTarget.Template && !AnchorLocked)
+            {
+                _anchor = new ImageCoordinate(0.0, 0.0);
+                OnAnchorChanged(true);
+            }
+
+            SelectedRoi = _templateRoi != null
+                ? CanvasRoiTarget.Template
+                : _detectionRoi != null
+                    ? CanvasRoiTarget.Detection
+                    : _searchRoi != null ? CanvasRoiTarget.Search : CanvasRoiTarget.None;
+            OnRoiChanged(removed, true);
+            return true;
         }
 
         private void CycleOverlappingRoiSelection(Point location)
@@ -1706,7 +1845,7 @@ namespace NinePointRotationCalibration.WinForms.Controls
                 return Cursors.Cross;
             }
 
-            if (_anchorVisible && !AnchorLocked &&
+            if (HasVisibleAnchor && !AnchorLocked &&
                 (_tool == CanvasEditTool.MoveAnchor || HitAnchor(point)))
             {
                 return Cursors.SizeAll;
@@ -1853,9 +1992,27 @@ namespace NinePointRotationCalibration.WinForms.Controls
             }
         }
 
+        private bool HasVisibleAnchor
+        {
+            get
+            {
+                return _anchorVisible &&
+                       (_templateRoi != null || _anchor.Row != 0.0 || _anchor.Column != 0.0);
+            }
+        }
+
         private void OnSelectedRoiChanged()
         {
             EventHandler handler = SelectedRoiChanged;
+            if (handler != null)
+            {
+                handler(this, EventArgs.Empty);
+            }
+        }
+
+        private void OnToolChanged()
+        {
+            EventHandler handler = ToolChanged;
             if (handler != null)
             {
                 handler(this, EventArgs.Empty);

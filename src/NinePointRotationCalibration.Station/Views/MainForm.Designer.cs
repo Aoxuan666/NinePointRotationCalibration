@@ -10,7 +10,12 @@ namespace NinePointRotationCalibration.Station.Views
     {
         private IContainer components;
 
+        private SplitContainer imageSplit;
         private ImageViewport imageViewport;
+        private ImageViewport effectViewport;
+        private Panel pnlSourceViewportHeader;
+        private Panel pnlEffectViewportHeader;
+        private Label lblEffectViewportInfo;
         private DataGridView dgvCalibration;
         private DataGridView dgvDetectionResults;
         private RichTextBox rtbLog;
@@ -239,11 +244,79 @@ namespace NinePointRotationCalibration.Station.Views
             imageLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100.0F));
             imageLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28.0F));
 
+            imageSplit = new SplitContainer();
+            imageSplit.BackColor = Color.FromArgb(46, 52, 60);
+            imageSplit.Dock = DockStyle.Fill;
+            imageSplit.FixedPanel = FixedPanel.None;
+            imageSplit.IsSplitterFixed = false;
+            imageSplit.Margin = Padding.Empty;
+            imageSplit.Name = "imageSplit";
+            imageSplit.Orientation = Orientation.Horizontal;
+            imageSplit.Size = new Size(930, 650);
+            imageSplit.Panel1MinSize = 150;
+            imageSplit.Panel2MinSize = 150;
+            imageSplit.SplitterWidth = 6;
+            imageSplit.SplitterDistance = 322;
+            imageSplit.Panel2Collapsed = true;
+
+            pnlSourceViewportHeader = new Panel();
+            pnlSourceViewportHeader.Name = "pnlSourceViewportHeader";
+            pnlSourceViewportHeader.BackColor = Color.FromArgb(30, 35, 42);
+            pnlSourceViewportHeader.Dock = DockStyle.Top;
+            pnlSourceViewportHeader.Height = 24;
+            pnlSourceViewportHeader.Padding = new Padding(8, 0, 8, 0);
+            pnlSourceViewportHeader.Visible = false;
+            Label lblSourceViewportTitle = new Label();
+            lblSourceViewportTitle.Dock = DockStyle.Fill;
+            lblSourceViewportTitle.Font = new Font("Microsoft YaHei UI", 8.5F, FontStyle.Bold, GraphicsUnit.Point, 134);
+            lblSourceViewportTitle.ForeColor = Color.FromArgb(209, 213, 219);
+            lblSourceViewportTitle.Text = "原图窗口";
+            lblSourceViewportTitle.TextAlign = ContentAlignment.MiddleLeft;
+            pnlSourceViewportHeader.Controls.Add(lblSourceViewportTitle);
+
             imageViewport = new ImageViewport();
             imageViewport.Dock = DockStyle.Fill;
             imageViewport.Margin = Padding.Empty;
             imageViewport.Name = "imageViewport";
             imageViewport.TabIndex = 0;
+
+            imageSplit.Panel1.BackColor = Color.Black;
+            imageSplit.Panel1.Controls.Add(imageViewport);
+            imageSplit.Panel1.Controls.Add(pnlSourceViewportHeader);
+
+            pnlEffectViewportHeader = new Panel();
+            pnlEffectViewportHeader.Name = "pnlEffectViewportHeader";
+            pnlEffectViewportHeader.BackColor = Color.FromArgb(30, 35, 42);
+            pnlEffectViewportHeader.Dock = DockStyle.Top;
+            pnlEffectViewportHeader.Height = 24;
+            pnlEffectViewportHeader.Padding = new Padding(8, 0, 8, 0);
+            Label lblEffectViewportTitle = new Label();
+            lblEffectViewportTitle.AutoSize = true;
+            lblEffectViewportTitle.Dock = DockStyle.Left;
+            lblEffectViewportTitle.Font = new Font("Microsoft YaHei UI", 8.5F, FontStyle.Bold, GraphicsUnit.Point, 134);
+            lblEffectViewportTitle.ForeColor = Color.FromArgb(94, 234, 212);
+            lblEffectViewportTitle.Text = "检测效果图窗口";
+            lblEffectViewportTitle.TextAlign = ContentAlignment.MiddleLeft;
+            lblEffectViewportInfo = new Label();
+            lblEffectViewportInfo.AutoEllipsis = true;
+            lblEffectViewportInfo.Dock = DockStyle.Fill;
+            lblEffectViewportInfo.Font = new Font("Microsoft YaHei UI", 8.25F, FontStyle.Regular, GraphicsUnit.Point, 134);
+            lblEffectViewportInfo.ForeColor = Color.FromArgb(181, 188, 196);
+            lblEffectViewportInfo.Padding = new Padding(12, 0, 0, 0);
+            lblEffectViewportInfo.Text = "等待图像";
+            lblEffectViewportInfo.TextAlign = ContentAlignment.MiddleLeft;
+            pnlEffectViewportHeader.Controls.Add(lblEffectViewportInfo);
+            pnlEffectViewportHeader.Controls.Add(lblEffectViewportTitle);
+
+            effectViewport = new ImageViewport();
+            effectViewport.Dock = DockStyle.Fill;
+            effectViewport.Margin = Padding.Empty;
+            effectViewport.Name = "effectViewport";
+            effectViewport.TabIndex = 1;
+
+            imageSplit.Panel2.BackColor = Color.Black;
+            imageSplit.Panel2.Controls.Add(effectViewport);
+            imageSplit.Panel2.Controls.Add(pnlEffectViewportHeader);
 
             lblInspectionHud = new Label();
             lblInspectionHud.AutoEllipsis = true;
@@ -282,7 +355,7 @@ namespace NinePointRotationCalibration.Station.Views
 
             imageFooter.Controls.Add(lblImageInfo, 0, 0);
             imageFooter.Controls.Add(lblCursorPosition, 1, 0);
-            imageLayout.Controls.Add(imageViewport, 0, 0);
+            imageLayout.Controls.Add(imageSplit, 0, 0);
             imageLayout.Controls.Add(imageFooter, 0, 1);
             workspace.Panel1.Controls.Add(imageLayout);
 
@@ -573,6 +646,9 @@ namespace NinePointRotationCalibration.Station.Views
             NumericUpDown rectangularity = CreateDecimalInput("nudRectangularity", 0.78M, 0.0M, 1.0M, 2);
             NumericUpDown morphologyRadius = CreateDecimalInput("nudMorphologyRadius", 1.0M, 0.0M, 5.0M, 0);
             brightThreshold.Tag = "detection.previewParameters";
+            minimumArea.Tag = "detection.previewParameters";
+            maximumArea.Tag = "detection.previewParameters";
+            rectangularity.Tag = "detection.previewParameters";
             morphologyRadius.Tag = "detection.previewParameters";
             AddPairedField(settingFields, 0, 0, "生产目标板数", nudExpectedCount);
             AddPairedField(settingFields, 0, 2, "手动阈值", brightThreshold);
@@ -640,10 +716,11 @@ namespace NinePointRotationCalibration.Station.Views
             settingFields.SetColumnSpan(affineWithTemplate, 4);
             chkBinaryPreview = new CheckBox();
             chkBinaryPreview.AutoSize = true;
+            chkBinaryPreview.Checked = true;
             chkBinaryPreview.Dock = DockStyle.Fill;
             chkBinaryPreview.Name = "chkBinaryPreview";
             chkBinaryPreview.Tag = "detection.binaryPreview";
-            chkBinaryPreview.Text = "主画面显示二值图";
+            chkBinaryPreview.Text = "检测效果图显示局部二值分割";
             chkBinaryPreview.UseVisualStyleBackColor = true;
             settingFields.Controls.Add(chkBinaryPreview, 0, 7);
             settingFields.SetColumnSpan(chkBinaryPreview, 4);

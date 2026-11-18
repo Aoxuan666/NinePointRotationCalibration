@@ -82,6 +82,16 @@ namespace NinePointRotationCalibration.Station.Views
                     // 视口已有待绘制帧时在复制前直接丢弃新预览帧，防止相机高帧率在 UI 线程堆积内存
                     if (_view.Viewport.TrySetPreviewImage(e.Image))
                     {
+                        if (_view.IsDetectionDualViewActive)
+                        {
+                            _view.EffectViewport.TrySetPreviewImage(e.Image);
+                            _view.SetEffectViewportInformation(string.Format(
+                                CultureInfo.InvariantCulture,
+                                "{0} x {1}   实时预览同步原图   {2:HH:mm:ss.fff}",
+                                e.Image.Width,
+                                e.Image.Height,
+                                e.CapturedAtUtc.ToLocalTime()));
+                        }
                         _view.SetImageInformation(string.Format(
                             CultureInfo.InvariantCulture,
                             "{0} x {1}   {2}   {3:HH:mm:ss.fff}",
@@ -259,12 +269,28 @@ namespace NinePointRotationCalibration.Station.Views
                         .Where(item => item != null && item.DetectionRegion != null)
                         .Select(item => CloneDetectionRoi(item.DetectionRegion))
                         .ToList();
+                    _lastInspectionBoardIndices = result.Items
+                        .Where(item => item != null && item.DetectionRegion != null)
+                        .Select(item => item.BoardIndex)
+                        .ToList();
+                    _lastMatchedBoardContours = new List<ViewportContourOverlay>();
                     _lastInspectionOverlayGeneration = _displayGeneration;
-                    if (!IsBinaryPreviewEnabled())
+                    if (!_view.IsDetectionDualViewActive)
                     {
                         _view.Viewport.SetPointOverlays(null);
                         _view.Viewport.SetRoiOverlays(null);
                         _view.Viewport.SetContourOverlays(contours);
+                    }
+                    else
+                    {
+                        _view.Viewport.ClearOverlays();
+                        _view.EffectViewport.SetPointOverlays(null);
+                        _view.EffectViewport.SetContourOverlays(contours);
+                        _view.EffectViewport.SetRoiOverlays(ApplySelectedRoiHighlight(
+                            regions,
+                            _lastInspectionBoardIndices,
+                            _selectedInspectionBoardIndex));
+                        SyncEffectViewportViewDeferred();
                     }
                 }
             }
@@ -282,8 +308,8 @@ namespace NinePointRotationCalibration.Station.Views
                 result.ActualCount,
                 result.Success && result.Pass,
                 result.HasManualMarks);
-            // 若开启了主画面二值预览，则在检测结果同步后立即触发一次局部二值图重绘
-            if (IsBinaryPreviewEnabled()) ScheduleBinaryPreview(false);
+            // 若当前处于检测双视图，检测结果同步后立即刷新检测效果图窗口（含局部二值/原图叠加）
+            if (_view.IsDetectionDualViewActive) ScheduleBinaryPreview(false);
         }
     }
 }

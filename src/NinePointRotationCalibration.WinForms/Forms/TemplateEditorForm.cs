@@ -28,12 +28,17 @@ namespace NinePointRotationCalibration.WinForms.Forms
         private readonly ToolStripButton _undoButton;
         private readonly ToolStripButton _redoButton;
         private readonly ToolStripButton _maskVisibleButton;
+        private readonly ToolStripButton _addTemplateRoiButton;
+        private readonly ToolStripButton _addSearchRoiButton;
+        private readonly ToolStripButton _addDetectionRoiButton;
+        private readonly ToolStripButton _deleteRoiButton;
         private readonly ToolStripButton _selectToolButton;
         private readonly ToolStripButton _templateToolButton;
         private readonly ToolStripButton _searchToolButton;
         private readonly ToolStripButton _detectionToolButton;
         private readonly ToolStripButton _eraseToolButton;
         private readonly ToolStripButton _restoreToolButton;
+        private readonly System.Windows.Forms.Timer _autoPreviewTimer;
         private readonly TabControl _parameterTabs;
         private readonly CheckBox _teachAdvancedToggle;
         private readonly CheckBox _matchAdvancedToggle;
@@ -86,9 +91,14 @@ namespace NinePointRotationCalibration.WinForms.Forms
         private readonly bool _enableDetectionRoi;
 
         private Bitmap _referenceImage;
+        private PreviewImageHolder _previewImageHolder;
         private TemplateEditorState _state;
         private TemplateEditorState _originalState;
         private CancellationTokenSource _operationCancellation;
+        private CancellationTokenSource _autoPreviewCancellation;
+        private bool _autoPreviewRunning;
+        private bool _autoPreviewPending;
+        private int _autoPreviewGeneration;
         private bool _loadingControls;
         private bool _busy;
         private bool _initialBoundsConstrained;
@@ -108,6 +118,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
             Service = service;
             _enableDetectionRoi = enableDetectionRoi;
             _referenceImage = new Bitmap(referenceImage);
+            _previewImageHolder = new PreviewImageHolder(_referenceImage);
             _state = initialState == null ? new TemplateEditorState() : initialState.DeepClone();
             EnsureInitialGeometry(_state, _referenceImage.Size, _enableDetectionRoi);
             _originalState = _state.DeepClone();
@@ -122,14 +133,20 @@ namespace NinePointRotationCalibration.WinForms.Forms
             BackColor = Color.FromArgb(244, 246, 248);
 
             _canvas = new CalibrationCanvas { Dock = DockStyle.Fill };
+            _autoPreviewTimer = new System.Windows.Forms.Timer { Interval = 25 };
+            _autoPreviewTimer.Tick += AutoPreviewTimer_Tick;
 
             _undoButton = CreateToolButton("撤销", "撤销上一步模板编辑", UndoEdit);
             _redoButton = CreateToolButton("重做", "重做刚才撤销的模板编辑", RedoEdit);
             _maskVisibleButton = CreateToolButton("掩膜", "显示或隐藏掩膜叠加", ToggleMaskVisibility, true);
+            _addTemplateRoiButton = CreateToolButton("+ 模板ROI", "快速添加模板 ROI 并自动提取特征", (sender, args) => AddOrSelectRoi(CanvasRoiTarget.Template));
+            _addSearchRoiButton = CreateToolButton("+ 搜索ROI", "添加或选中搜索 ROI", (sender, args) => AddOrSelectRoi(CanvasRoiTarget.Search));
+            _addDetectionRoiButton = CreateToolButton("+ 检测ROI", "添加或选中检测 ROI", (sender, args) => AddOrSelectRoi(CanvasRoiTarget.Detection));
+            _deleteRoiButton = CreateToolButton("删除ROI", "删除当前选中的 ROI (Delete)", (sender, args) => DeleteSelectedRoi());
             _selectToolButton = CreateToolButton("选择", "选择、移动、缩放或旋转 ROI", (sender, args) => SelectTool(CanvasEditTool.Select), true);
-            _templateToolButton = CreateToolButton("模板区", "拖动创建新的模板 ROI", (sender, args) => SelectTool(CanvasEditTool.DrawTemplateRoi), true);
-            _searchToolButton = CreateToolButton("搜索区", "拖动创建新的搜索 ROI", (sender, args) => SelectTool(CanvasEditTool.DrawSearchRoi), true);
-            _detectionToolButton = CreateToolButton("检测区", "拖动创建该板的检测 ROI", (sender, args) => SelectTool(CanvasEditTool.DrawDetectionRoi), true);
+            _templateToolButton = CreateToolButton("框选模板", "在图上拖动框选创建模板 ROI", (sender, args) => SelectTool(CanvasEditTool.DrawTemplateRoi), true);
+            _searchToolButton = CreateToolButton("框选搜索", "在图上拖动框选创建搜索 ROI", (sender, args) => SelectTool(CanvasEditTool.DrawSearchRoi), true);
+            _detectionToolButton = CreateToolButton("框选检测", "在图上拖动框选创建检测 ROI", (sender, args) => SelectTool(CanvasEditTool.DrawDetectionRoi), true);
             _eraseToolButton = CreateToolButton("擦除", "使用画笔从模板有效域中排除区域", (sender, args) => SelectTool(CanvasEditTool.EraseMask), true);
             _restoreToolButton = CreateToolButton("恢复", "使用画笔恢复已擦除的模板区域", (sender, args) => SelectTool(CanvasEditTool.RestoreMask), true);
 
@@ -175,7 +192,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
             _templateLockedCheck = new CheckBox { Text = "锁定模板 ROI", AutoSize = true };
             _searchLockedCheck = new CheckBox { Text = "锁定搜索 ROI", AutoSize = true };
 
-            _extractButton = CreateActionButton("提取特征", ExtractFeaturesAsync);
+            _extractButton = CreateActionButton("刷新特征", ExtractFeaturesAsync);
             _createButton = CreateActionButton("创建模型", CreateModelAsync);
             _testButton = CreateActionButton("测试匹配", TestMatchAsync);
             _okButton = new Button { Text = "确认", Width = 96, Height = 34 };
@@ -224,9 +241,9 @@ namespace NinePointRotationCalibration.WinForms.Forms
             SelectTool(CanvasEditTool.Select);
             SetStatus(Service == null
                 ? "尚未注入模板服务；可编辑已有模板，提取/建模/测试暂不可用。"
-                : _enableDetectionRoi
-                    ? "请设置模板区域、搜索区域、检测区域和基准中心。"
-                    : "请设置模板区域、搜索区域和基准中心。", false);
+                : _state.TemplateRoi == null
+                    ? "默认无 ROI：请点击顶部「+ 模板ROI」或「框选模板」添加后自动显示特征点。"
+                    : "已加载模板 ROI，拖动或调参时将自动实时刷新特征点。", false);
             Shown += HandleFirstShown;
         }
 
@@ -256,12 +273,17 @@ namespace NinePointRotationCalibration.WinForms.Forms
             }
 
             CancelCurrentOperation();
+            CancelAutoPreview();
             _state = state.DeepClone();
             EnsureInitialGeometry(_state, _referenceImage.Size, _enableDetectionRoi);
             _originalState = _state.DeepClone();
             _undoStack.Clear();
             _redoStack.Clear();
             LoadStateToControls(true);
+            if (_state.TemplateRoi != null && !HasAnyOverlayFeatures(_state))
+            {
+                RequestAutoFeaturePreview(true);
+            }
         }
 
         /// <summary>
@@ -274,14 +296,22 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 throw new ArgumentNullException(nameof(image));
             }
 
+            CancelAutoPreview();
             Bitmap previous = _referenceImage;
+            PreviewImageHolder previousHolder = _previewImageHolder;
             _referenceImage = new Bitmap(image);
+            _previewImageHolder = new PreviewImageHolder(_referenceImage);
+            previousHolder.Dispose();
             previous.Dispose();
             EnsureInitialGeometry(_state, _referenceImage.Size, _enableDetectionRoi);
             _canvas.SetImage(_referenceImage);
             if (resetView)
             {
                 _canvas.FitImage();
+            }
+            if (_state.TemplateRoi != null)
+            {
+                RequestAutoFeaturePreview(true);
             }
         }
 
@@ -290,6 +320,15 @@ namespace NinePointRotationCalibration.WinForms.Forms
             if (disposing)
             {
                 CancelCurrentOperation();
+                CancelAutoPreview();
+                _autoPreviewTimer.Stop();
+                _autoPreviewTimer.Dispose();
+
+                if (_previewImageHolder != null)
+                {
+                    _previewImageHolder.Dispose();
+                    _previewImageHolder = null;
+                }
 
                 if (_referenceImage != null)
                 {
@@ -304,6 +343,8 @@ namespace NinePointRotationCalibration.WinForms.Forms
         protected override void OnFormClosing(FormClosingEventArgs eventArgs)
         {
             _closing = true;
+            _autoPreviewTimer.Stop();
+            CancelAutoPreview();
             if (_busy && eventArgs.CloseReason == CloseReason.UserClosing)
             {
                 CancelCurrentOperation();
@@ -314,13 +355,16 @@ namespace NinePointRotationCalibration.WinForms.Forms
 
         private void HandleFirstShown(object sender, EventArgs eventArgs)
         {
-            if (_initialBoundsConstrained)
+            if (!_initialBoundsConstrained)
             {
-                return;
+                _initialBoundsConstrained = true;
+                ConstrainToWorkingArea();
             }
 
-            _initialBoundsConstrained = true;
-            ConstrainToWorkingArea();
+            if (_state.TemplateRoi != null && Service != null && !HasAnyOverlayFeatures(_state))
+            {
+                RequestAutoFeaturePreview(true);
+            }
         }
 
         private void ConstrainToWorkingArea()
@@ -349,11 +393,20 @@ namespace NinePointRotationCalibration.WinForms.Forms
             {
                 GripStyle = ToolStripGripStyle.Hidden,
                 Dock = DockStyle.Top,
+                LayoutStyle = ToolStripLayoutStyle.Flow,
                 RenderMode = ToolStripRenderMode.System,
                 Padding = new Padding(5, 3, 5, 3)
             };
-            tools.Items.Add(CreateToolButton("适应", "使整幅图像适应窗口", (sender, args) => _canvas.FitImage()));
-            tools.Items.Add(CreateToolButton("1:1", "以一个图像像素对应一个屏幕像素显示", (sender, args) => _canvas.ShowOneToOne()));
+            tools.Items.Add(CreateToolButton("适应", "使整幅图像适应窗口 (F / 双击空白)", (sender, args) => _canvas.FitImage()));
+            tools.Items.Add(CreateToolButton("1:1", "以一个图像像素对应一个屏幕像素显示 (1)", (sender, args) => _canvas.ShowOneToOne()));
+            tools.Items.Add(new ToolStripSeparator());
+            tools.Items.Add(_addTemplateRoiButton);
+            tools.Items.Add(_addSearchRoiButton);
+            if (_enableDetectionRoi)
+            {
+                tools.Items.Add(_addDetectionRoiButton);
+            }
+            tools.Items.Add(_deleteRoiButton);
             tools.Items.Add(new ToolStripSeparator());
             tools.Items.Add(_selectToolButton);
             tools.Items.Add(_templateToolButton);
@@ -386,8 +439,29 @@ namespace NinePointRotationCalibration.WinForms.Forms
             mainSplit.Panel1.Controls.Add(tools);
 
             BuildParameterTabs();
+            // 常驻底部操作栏：无论切换到“示教参数”或“运行参数”页，都可直接刷新特征、创建模型或测试匹配
+            Panel persistentActions = new Panel
+            {
+                Dock = DockStyle.Bottom,
+                AutoSize = true,
+                Padding = new Padding(0, 6, 0, 2)
+            };
+            FlowLayoutPanel actionButtons = new FlowLayoutPanel
+            {
+                AutoSize = true,
+                Dock = DockStyle.Bottom,
+                WrapContents = true,
+                Padding = new Padding(0, 6, 0, 0)
+            };
+            actionButtons.Controls.Add(_extractButton);
+            actionButtons.Controls.Add(_createButton);
+            actionButtons.Controls.Add(_testButton);
+            persistentActions.Controls.Add(_testResultLabel);
+            persistentActions.Controls.Add(actionButtons);
+
             Panel rightPanel = new Panel { Dock = DockStyle.Fill, Padding = new Padding(8) };
             rightPanel.Controls.Add(_parameterTabs);
+            rightPanel.Controls.Add(persistentActions);
             rightPanel.Controls.Add(_modelStateLabel);
             mainSplit.Panel2.Controls.Add(rightPanel);
 
@@ -484,38 +558,25 @@ namespace NinePointRotationCalibration.WinForms.Forms
             anchorTable.RowCount++;
             anchorPage.Controls.Add(WrapScrollable(anchorTable));
 
-            TabPage operationsPage = new TabPage("模型与测试");
+            TabPage operationsPage = new TabPage("操作日志");
             TableLayoutPanel operationLayout = new TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
                 ColumnCount = 1,
-                RowCount = 4,
+                RowCount = 2,
                 Padding = new Padding(8)
             };
             operationLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            operationLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            operationLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             operationLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100.0f));
-            FlowLayoutPanel operationButtons = new FlowLayoutPanel
-            {
-                AutoSize = true,
-                Dock = DockStyle.Top,
-                WrapContents = true
-            };
-            operationButtons.Controls.Add(_extractButton);
-            operationButtons.Controls.Add(_createButton);
-            operationButtons.Controls.Add(_testButton);
             Label flowHelp = new Label
             {
-                Text = "推荐流程：提取特征（自动/手动阈值） -> 检查掩膜 -> 创建模型 -> 测试匹配。",
+                Text = "推荐流程：+ 模板ROI（或框选模板）→ 自动显示特征 → 微调/掩膜 → 测试匹配或确认。",
                 AutoSize = true,
                 ForeColor = Color.DimGray,
-                Padding = new Padding(0, 6, 0, 8)
+                Padding = new Padding(0, 2, 0, 8)
             };
-            operationLayout.Controls.Add(operationButtons, 0, 0);
-            operationLayout.Controls.Add(flowHelp, 0, 1);
-            operationLayout.Controls.Add(_testResultLabel, 0, 2);
-            operationLayout.Controls.Add(_operationLog, 0, 3);
+            operationLayout.Controls.Add(flowHelp, 0, 0);
+            operationLayout.Controls.Add(_operationLog, 0, 1);
             operationsPage.Controls.Add(operationLayout);
 
             _parameterTabs.TabPages.Add(teachPage);
@@ -530,7 +591,12 @@ namespace NinePointRotationCalibration.WinForms.Forms
             _canvas.RoiChanged += CanvasRoiChanged;
             _canvas.AnchorChanged += CanvasAnchorChanged;
             _canvas.MaskStrokeCreated += CanvasMaskStrokeCreated;
-            _canvas.SelectedRoiChanged += (sender, args) => UpdateRoiToolSelection();
+            _canvas.SelectedRoiChanged += (sender, args) =>
+            {
+                UpdateRoiToolSelection();
+                UpdateRoiToolbarButtons();
+            };
+            _canvas.ToolChanged += (sender, args) => SyncToolButtonCheckedState(_canvas.Tool);
 
             _modelTypeCombo.SelectedIndexChanged += ModelTypeChanged;
             _autoThresholdCheck.CheckedChanged += ShapeFeatureParameterChanged;
@@ -638,6 +704,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 UpdateHistoryButtons();
                 UpdateAnchorEnabledState();
                 UpdateShapeFeatureEnabledState();
+                UpdateRoiToolbarButtons();
             }
             finally
             {
@@ -649,36 +716,69 @@ namespace NinePointRotationCalibration.WinForms.Forms
         {
             if (eventArgs.Target == CanvasRoiTarget.Template)
             {
-                _state.TemplateRoi = eventArgs.Roi;
-                // 特征轮廓绑定于建模时的模板区域；拖动或旋转模板 ROI 时（尤其非对称矩形）需立即清空旧轮廓叠加，
-                // 并在拖拽结束（IsFinal）时标记需要重新创建模型。
-                if ((_state.ModelContours != null && _state.ModelContours.Count > 0) ||
-                    (_state.FeaturePoints != null && _state.FeaturePoints.Count > 0))
+                _state.TemplateRoi = eventArgs.Roi == null ? null : eventArgs.Roi.DeepClone();
+                _canvas.ClearRuntimeOverlay();
+                if (_state.TemplateRoi == null)
                 {
                     _state.ModelContours = new List<List<ImageCoordinate>>();
                     _state.FeaturePoints = new List<ImageCoordinate>();
+                    _state.ModelData = null;
                     UpdateEditorOverlay();
-                }
-                if (eventArgs.IsFinal)
-                {
                     MarkChanged(true);
+                    UpdateRoiToolbarButtons();
+                    return;
                 }
+
+                if (!_state.AnchorLocked && _state.ReferenceAnchor.Row == 0.0 && _state.ReferenceAnchor.Column == 0.0)
+                {
+                    SetReferenceAnchorInternal(new ImageCoordinate(
+                        _state.TemplateRoi.CenterRow,
+                        _state.TemplateRoi.CenterColumn));
+                }
+
+                if (Service == null)
+                {
+                    // 无后台服务模式（如离线编辑或单元测试）：仅在拖动时清空旧轮廓并在结束时标脏
+                    if ((_state.ModelContours != null && _state.ModelContours.Count > 0) ||
+                        (_state.FeaturePoints != null && _state.FeaturePoints.Count > 0))
+                    {
+                        _state.ModelContours = new List<List<ImageCoordinate>>();
+                        _state.FeaturePoints = new List<ImageCoordinate>();
+                        UpdateEditorOverlay();
+                    }
+                    if (eventArgs.IsFinal) MarkChanged(true);
+                }
+                else if (eventArgs.IsFinal)
+                {
+                    UpdateFilteredFeatureOverlay(_state.TemplateRoi);
+                    MarkChanged(true);
+                    RequestAutoFeaturePreview(true);
+                }
+                else
+                {
+                    // 拖拽期间先按新 ROI 多边形即时裁剪已有特征点消除拖影，同时 25ms 节流异步刷新 HALCON 真值
+                    UpdateFilteredFeatureOverlay(_state.TemplateRoi);
+                    RequestAutoFeaturePreview(false);
+                }
+                UpdateRoiToolbarButtons();
             }
             else if (eventArgs.Target == CanvasRoiTarget.Search)
             {
-                _state.SearchRoi = eventArgs.Roi;
+                _state.SearchRoi = eventArgs.Roi == null ? null : eventArgs.Roi.DeepClone();
                 if (eventArgs.IsFinal)
                 {
                     MarkChanged(false);
                 }
+                UpdateRoiToolbarButtons();
             }
             else if (eventArgs.Target == CanvasRoiTarget.Detection && _enableDetectionRoi)
             {
-                _state.DetectionRoi = eventArgs.Roi;
+                _state.DetectionRoi = eventArgs.Roi == null ? null : eventArgs.Roi.DeepClone();
                 if (eventArgs.IsFinal)
                 {
                     MarkChanged(false);
                 }
+                UpdateRoiToolbarButtons();
             }
         }
 
@@ -706,6 +806,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
         {
             _state.MaskStrokes = _canvas.GetMaskStrokes().ToList();
             MarkChanged(true);
+            RequestAutoFeaturePreview(true);
         }
 
         private void StructuralParameterChanged(object sender, EventArgs eventArgs)
@@ -718,6 +819,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
             PushUndoState();
             ReadParametersFromControls();
             MarkChanged(true);
+            RequestAutoFeaturePreview(false);
         }
 
         private void ModelTypeChanged(object sender, EventArgs eventArgs)
@@ -877,19 +979,20 @@ namespace NinePointRotationCalibration.WinForms.Forms
 
         private async void ExtractFeaturesAsync(object sender, EventArgs eventArgs)
         {
-            if (!CanRunServiceOperation("提取特征"))
+            if (!CanRunServiceOperation("刷新特征"))
             {
                 return;
             }
 
             ReadParametersFromControls();
             string validationMessage;
-            if (!ValidateGeometry(out validationMessage))
+            if (!ValidateFeatureGeometry(out validationMessage))
             {
                 MessageBox.Show(this, validationMessage, "模板参数", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
 
+            CancelAutoPreview();
             TemplateFeatureResult result = null;
             await RunBusyOperationAsync("正在提取模板特征...", async token =>
             {
@@ -910,20 +1013,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 return;
             }
 
-            _state.FeaturePoints = result.FeaturePoints ?? new List<ImageCoordinate>();
-            _state.ModelContours = result.Contours ?? new List<List<ImageCoordinate>>();
-            if (result.RecommendedParameters != null)
-            {
-                PushUndoState();
-                _state.Parameters = result.RecommendedParameters.DeepClone();
-                _state.ModelDirty = true;
-                LoadStateToControls(false);
-            }
-            else
-            {
-                UpdateEditorOverlay();
-            }
-
+            ApplyFeaturePreviewResult(result, true);
             SetStatus(
                 string.Format(
                     "特征提取完成（{0}个特征点，Canny {1:0.#}/{2:0.#}，最小对比度 {3}）。",
@@ -941,7 +1031,18 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 return;
             }
 
+            await BuildModelCoreAsync();
+        }
+
+        private async Task<bool> BuildModelCoreAsync()
+        {
+            if (_busy || Service == null)
+            {
+                return false;
+            }
+
             ReadParametersFromControls();
+            EnsureCompanionRois();
             string validationMessage;
             if (!ValidateGeometry(out validationMessage))
             {
@@ -949,9 +1050,10 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 {
                     MessageBox.Show(this, validationMessage, "模板参数", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 }
-                return;
+                return false;
             }
 
+            CancelAutoPreview();
             TemplateBuildResult result = null;
             await RunBusyOperationAsync("正在创建模板模型...", async token =>
             {
@@ -962,14 +1064,14 @@ namespace NinePointRotationCalibration.WinForms.Forms
             });
             if (result == null)
             {
-                return;
+                return false;
             }
 
             AppendOperationLog(result.Success, result.Message);
             if (!result.Success || result.ModelData == null || result.ModelData.Length == 0)
             {
                 SetStatus(result.Message ?? "模型创建失败。", true);
-                return;
+                return false;
             }
 
             PushUndoState();
@@ -1010,6 +1112,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
                             _state.Parameters.MinimumContrast)
                         : "手动阈值"),
                 false);
+            return true;
         }
 
         private void SyncResolvedThresholdsQuietly(TemplateEditorParameters resolved)
@@ -1053,12 +1156,16 @@ namespace NinePointRotationCalibration.WinForms.Forms
 
             if (!_state.HasModel || _state.ModelDirty)
             {
-                MessageBox.Show(this, "模板尚未创建或参数已改变，请先创建模型。", "测试匹配", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                return;
+                bool built = await BuildModelCoreAsync();
+                if (!built || !CanUpdateUi)
+                {
+                    return;
+                }
             }
 
             ReadParametersFromControls();
-            // 测试匹配视图仅展示本次定位结果，需先清空之前的特征提取叠加层
+            EnsureCompanionRois();
+            // 测试匹配时保留清晰原图并清空旧的特征编辑叠加，突出匹配轮廓与中心点
             _canvas.EditorOverlay = new CanvasRuntimeOverlay();
             _canvas.ClearRuntimeOverlay();
             TemplateTestResult result = null;
@@ -1102,6 +1209,168 @@ namespace NinePointRotationCalibration.WinForms.Forms
             {
                 handler(this, new TemplateTestCompletedEventArgs(result));
             }
+        }
+
+        private void RequestAutoFeaturePreview(bool immediate)
+        {
+            if (!CanUpdateUi || _busy || _loadingControls || Service == null)
+            {
+                return;
+            }
+
+            if (_state.TemplateRoi == null || _state.TemplateRoi.HalfWidth < 2.0 || _state.TemplateRoi.HalfHeight < 2.0)
+            {
+                return;
+            }
+
+            _autoPreviewGeneration++;
+            if (immediate)
+            {
+                _autoPreviewTimer.Stop();
+                StartNextAutoPreview();
+                return;
+            }
+
+            // 采用固定周期合并节流而非重置防抖，确保拖动 ROI 过程中按 ~40Hz 持续平滑刷新特征点
+            if (!_autoPreviewTimer.Enabled)
+            {
+                _autoPreviewTimer.Start();
+            }
+        }
+
+        private void AutoPreviewTimer_Tick(object sender, EventArgs eventArgs)
+        {
+            _autoPreviewTimer.Stop();
+            StartNextAutoPreview();
+        }
+
+        private void StartNextAutoPreview()
+        {
+            if (!CanUpdateUi || _busy || Service == null ||
+                _state.TemplateRoi == null || _state.TemplateRoi.HalfWidth < 2.0 || _state.TemplateRoi.HalfHeight < 2.0)
+            {
+                return;
+            }
+
+            if (_autoPreviewRunning)
+            {
+                // 单路最新槽位合并：前一次提取尚未返回时仅记录待执行标记，完成后立即追赶最新位姿
+                _autoPreviewPending = true;
+                return;
+            }
+
+            _autoPreviewPending = false;
+            _autoPreviewRunning = true;
+            ReadParametersFromControls();
+            TemplateEditorState snapshot = _state.DeepClone();
+            int generation = _autoPreviewGeneration;
+
+            if (_autoPreviewCancellation != null)
+            {
+                try { _autoPreviewCancellation.Cancel(); }
+                catch (ObjectDisposedException) { }
+                _autoPreviewCancellation.Dispose();
+            }
+            _autoPreviewCancellation = new CancellationTokenSource();
+            CancellationToken token = _autoPreviewCancellation.Token;
+
+            RunAutoFeaturePreviewAsync(snapshot, generation, token);
+        }
+
+        private async void RunAutoFeaturePreviewAsync(
+            TemplateEditorState snapshot,
+            int generation,
+            CancellationToken token)
+        {
+            try
+            {
+                PreviewImageLease lease;
+                if (_previewImageHolder == null || !_previewImageHolder.TryAcquire(out lease))
+                {
+                    return;
+                }
+
+                TemplateFeatureResult result;
+                using (lease)
+                {
+                    result = await Service.ExtractFeaturesAsync(lease.Image, snapshot, token);
+                }
+
+                if (!CanUpdateUi || token.IsCancellationRequested || _busy || _state.TemplateRoi == null)
+                {
+                    return;
+                }
+
+                if (result != null && result.Success)
+                {
+                    ApplyFeaturePreviewResult(result, false);
+                    if (generation == _autoPreviewGeneration)
+                    {
+                        SetStatus(
+                            string.Format(
+                                "已提取 {0} 个特征点（自适应/当前阈值：{1:0.#}/{2:0.#}，最小对比度 {3}）。",
+                                _state.FeaturePoints.Count,
+                                _state.Parameters.EdgeLowThreshold,
+                                _state.Parameters.EdgeHighThreshold,
+                                _state.Parameters.MinimumContrast),
+                            false);
+                    }
+                }
+                else if (result != null && generation == _autoPreviewGeneration)
+                {
+                    _state.FeaturePoints = new List<ImageCoordinate>();
+                    _state.ModelContours = new List<List<ImageCoordinate>>();
+                    UpdateEditorOverlay();
+                    SetStatus(result.Message ?? "当前模板区域未检测到足够特征点。", false);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception exception)
+            {
+                if (CanUpdateUi && generation == _autoPreviewGeneration)
+                {
+                    SetStatus("特征预览异常：" + exception.Message, false);
+                }
+            }
+            finally
+            {
+                _autoPreviewRunning = false;
+                if (CanUpdateUi && !_busy && _autoPreviewPending)
+                {
+                    StartNextAutoPreview();
+                }
+            }
+        }
+
+        private void CancelAutoPreview()
+        {
+            _autoPreviewGeneration++;
+            _autoPreviewPending = false;
+            _autoPreviewTimer.Stop();
+            if (_autoPreviewCancellation != null && !_autoPreviewCancellation.IsCancellationRequested)
+            {
+                try { _autoPreviewCancellation.Cancel(); }
+                catch (ObjectDisposedException) { }
+            }
+        }
+
+        private void ApplyFeaturePreviewResult(TemplateFeatureResult result, bool pushUndo)
+        {
+            if (result == null) return;
+            if (pushUndo && result.RecommendedParameters != null)
+            {
+                PushUndoState();
+            }
+
+            _state.FeaturePoints = result.FeaturePoints ?? new List<ImageCoordinate>();
+            _state.ModelContours = result.Contours ?? new List<List<ImageCoordinate>>();
+            if (result.RecommendedParameters != null)
+            {
+                SyncResolvedThresholdsQuietly(result.RecommendedParameters);
+            }
+            UpdateEditorOverlay();
         }
 
         private async Task RunBusyOperationAsync(string status, Func<CancellationToken, Task> operation)
@@ -1150,12 +1419,11 @@ namespace NinePointRotationCalibration.WinForms.Forms
         private void SetBusyState(bool busy)
         {
             _progressBar.Visible = busy;
-            _extractButton.Enabled = !busy && Service != null && _modelTypeCombo.SelectedIndex == 0;
-            _createButton.Enabled = !busy && Service != null;
-            _testButton.Enabled = !busy && Service != null;
             _okButton.Enabled = !busy;
             _parameterTabs.Enabled = !busy;
             _canvas.Enabled = !busy;
+            UpdateActionButtonsEnabled();
+            UpdateRoiToolbarButtons();
         }
 
         private void CancelCurrentOperation()
@@ -1171,6 +1439,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
             CanvasRuntimeOverlay overlay = new CanvasRuntimeOverlay();
             if (result.Success)
             {
+                AddContourPoints(overlay, result.MatchedContours, Color.Lime);
                 overlay.Points.Add(new CanvasPointOverlay
                 {
                     Position = result.Position,
@@ -1275,12 +1544,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
         private void SelectTool(CanvasEditTool tool)
         {
             _canvas.Tool = tool;
-            _selectToolButton.Checked = tool == CanvasEditTool.Select;
-            _templateToolButton.Checked = tool == CanvasEditTool.DrawTemplateRoi;
-            _searchToolButton.Checked = tool == CanvasEditTool.DrawSearchRoi;
-            _detectionToolButton.Checked = tool == CanvasEditTool.DrawDetectionRoi;
-            _eraseToolButton.Checked = tool == CanvasEditTool.EraseMask;
-            _restoreToolButton.Checked = tool == CanvasEditTool.RestoreMask;
+            SyncToolButtonCheckedState(tool);
             if (tool == CanvasEditTool.DrawTemplateRoi)
             {
                 _canvas.SelectedRoi = CanvasRoiTarget.Template;
@@ -1295,6 +1559,17 @@ namespace NinePointRotationCalibration.WinForms.Forms
             }
         }
 
+        private void SyncToolButtonCheckedState(CanvasEditTool tool)
+        {
+            _selectToolButton.Checked = tool == CanvasEditTool.Select;
+            _templateToolButton.Checked = tool == CanvasEditTool.DrawTemplateRoi;
+            _searchToolButton.Checked = tool == CanvasEditTool.DrawSearchRoi;
+            _detectionToolButton.Checked = tool == CanvasEditTool.DrawDetectionRoi;
+            _eraseToolButton.Checked = tool == CanvasEditTool.EraseMask;
+            _restoreToolButton.Checked = tool == CanvasEditTool.RestoreMask;
+            UpdateRoiToolbarButtons();
+        }
+
         private void UpdateRoiToolSelection()
         {
             if (_canvas.Tool != CanvasEditTool.Select)
@@ -1305,6 +1580,189 @@ namespace NinePointRotationCalibration.WinForms.Forms
             _templateToolButton.Checked = false;
             _searchToolButton.Checked = false;
             _detectionToolButton.Checked = false;
+        }
+
+        private void AddOrSelectRoi(CanvasRoiTarget target)
+        {
+            if (_busy || _referenceImage == null)
+            {
+                return;
+            }
+
+            RotatedRectangle existing = GetStateRoi(target);
+            if (existing != null)
+            {
+                _canvas.SelectedRoi = target;
+                SelectTool(CanvasEditTool.Select);
+                if (target == CanvasRoiTarget.Template && !HasAnyOverlayFeatures(_state))
+                {
+                    RequestAutoFeaturePreview(true);
+                }
+                UpdateRoiToolbarButtons();
+                return;
+            }
+
+            PushUndoState();
+            RotatedRectangle created = CreateDefaultRoiForTarget(target);
+            if (target == CanvasRoiTarget.Template)
+            {
+                _state.TemplateRoi = created;
+                _canvas.TemplateRoi = created;
+                if (!_state.AnchorLocked && _state.ReferenceAnchor.Row == 0.0 && _state.ReferenceAnchor.Column == 0.0)
+                {
+                    SetReferenceAnchorInternal(new ImageCoordinate(created.CenterRow, created.CenterColumn));
+                }
+                _canvas.SelectedRoi = CanvasRoiTarget.Template;
+                SelectTool(CanvasEditTool.Select);
+                MarkChanged(true);
+                RequestAutoFeaturePreview(true);
+                SetStatus("已添加模板 ROI，正在自动提取特征点...", false);
+            }
+            else if (target == CanvasRoiTarget.Search)
+            {
+                _state.SearchRoi = created;
+                _canvas.SearchRoi = created;
+                _canvas.SelectedRoi = CanvasRoiTarget.Search;
+                SelectTool(CanvasEditTool.Select);
+                MarkChanged(false);
+                SetStatus("已添加搜索 ROI。", false);
+            }
+            else if (target == CanvasRoiTarget.Detection && _enableDetectionRoi)
+            {
+                _state.DetectionRoi = created;
+                _canvas.DetectionRoi = created;
+                _canvas.SelectedRoi = CanvasRoiTarget.Detection;
+                SelectTool(CanvasEditTool.Select);
+                MarkChanged(false);
+                SetStatus("已添加检测 ROI。", false);
+            }
+
+            UpdateRoiToolbarButtons();
+        }
+
+        private void DeleteSelectedRoi()
+        {
+            if (_busy)
+            {
+                return;
+            }
+
+            if (_canvas.DeleteSelectedRoi())
+            {
+                SetStatus("已删除选中 ROI。", false);
+                UpdateRoiToolbarButtons();
+            }
+        }
+
+        private RotatedRectangle CreateDefaultRoiForTarget(CanvasRoiTarget target)
+        {
+            if (target == CanvasRoiTarget.Search)
+            {
+                return CreateFullImageSearchRoi(_referenceImage.Size);
+            }
+
+            if (target == CanvasRoiTarget.Detection && _state.TemplateRoi != null)
+            {
+                return _state.TemplateRoi.DeepClone();
+            }
+
+            // 以当前画布视野中心为默认中心落点，方便用户在放大查看单块板时就地加框
+            PointF viewportClientCenter = new PointF(
+                Math.Max(0.0f, _canvas.ClientSize.Width * 0.5f),
+                Math.Max(0.0f, _canvas.ClientSize.Height * 0.5f));
+            ImageCoordinate viewCenter = _canvas.ClientToImage(viewportClientCenter);
+            double halfWidth = Math.Max(10.0, _referenceImage.Width * 0.12);
+            double halfHeight = Math.Max(10.0, _referenceImage.Height * 0.14);
+            double centerRow = viewCenter.Row > 0.0 && viewCenter.Row < _referenceImage.Height
+                ? Math.Max(halfHeight, Math.Min(_referenceImage.Height - 1.0 - halfHeight, viewCenter.Row))
+                : _referenceImage.Height * 0.5;
+            double centerColumn = viewCenter.Column > 0.0 && viewCenter.Column < _referenceImage.Width
+                ? Math.Max(halfWidth, Math.Min(_referenceImage.Width - 1.0 - halfWidth, viewCenter.Column))
+                : _referenceImage.Width * 0.5;
+            return new RotatedRectangle(centerRow, centerColumn, halfWidth, halfHeight, 0.0);
+        }
+
+        private static RotatedRectangle CreateFullImageSearchRoi(Size imageSize)
+        {
+            return new RotatedRectangle(
+                imageSize.Height * 0.5,
+                imageSize.Width * 0.5,
+                Math.Max(20.0, (imageSize.Width * 0.5) - 1.0),
+                Math.Max(20.0, (imageSize.Height * 0.5) - 1.0),
+                0.0);
+        }
+
+        private RotatedRectangle GetStateRoi(CanvasRoiTarget target)
+        {
+            if (target == CanvasRoiTarget.Template) return _state.TemplateRoi;
+            if (target == CanvasRoiTarget.Search) return _state.SearchRoi;
+            if (target == CanvasRoiTarget.Detection && _enableDetectionRoi) return _state.DetectionRoi;
+            return null;
+        }
+
+        private void UpdateRoiToolbarButtons()
+        {
+            _addTemplateRoiButton.Text = _state.TemplateRoi == null ? "+ 模板ROI" : "选中模板";
+            _addSearchRoiButton.Text = _state.SearchRoi == null ? "+ 搜索ROI" : "选中搜索";
+            _addDetectionRoiButton.Text = _state.DetectionRoi == null ? "+ 检测ROI" : "选中检测";
+
+            CanvasRoiTarget selected = _canvas.SelectedRoi;
+            bool locked = (selected == CanvasRoiTarget.Template && _state.TemplateRoiLocked) ||
+                          (selected == CanvasRoiTarget.Search && _state.SearchRoiLocked);
+            _deleteRoiButton.Enabled = !_busy && selected != CanvasRoiTarget.None && GetStateRoi(selected) != null && !locked;
+        }
+
+        private void SetReferenceAnchorInternal(ImageCoordinate anchor)
+        {
+            _state.ReferenceAnchor = anchor;
+            _canvas.ReferenceAnchor = anchor;
+            bool wasLoading = _loadingControls;
+            _loadingControls = true;
+            try
+            {
+                SetNumeric(_anchorRowInput, anchor.Row);
+                SetNumeric(_anchorColumnInput, anchor.Column);
+            }
+            finally
+            {
+                _loadingControls = wasLoading;
+            }
+        }
+
+        private void UpdateFilteredFeatureOverlay(RotatedRectangle activeRoi)
+        {
+            if (activeRoi == null)
+            {
+                _canvas.EditorOverlay = new CanvasRuntimeOverlay();
+                return;
+            }
+
+            IEnumerable<List<ImageCoordinate>> contours = _state.ModelContours;
+            if (contours == null || !_state.ModelContours.Any(item => item != null && item.Count > 0))
+            {
+                contours = new[] { _state.FeaturePoints ?? new List<ImageCoordinate>() };
+            }
+
+            CanvasRuntimeOverlay overlay = new CanvasRuntimeOverlay();
+            foreach (List<ImageCoordinate> contour in contours)
+            {
+                if (contour == null) continue;
+                foreach (ImageCoordinate point in contour)
+                {
+                    if (IsFinite(point.Row) && IsFinite(point.Column) && activeRoi.Contains(point))
+                    {
+                        AddPreviewPoint(overlay, point, Color.Cyan);
+                    }
+                }
+            }
+            _canvas.EditorOverlay = overlay;
+        }
+
+        private static bool HasAnyOverlayFeatures(TemplateEditorState state)
+        {
+            if (state == null) return false;
+            if (state.FeaturePoints != null && state.FeaturePoints.Count > 0) return true;
+            return state.ModelContours != null && state.ModelContours.Any(item => item != null && item.Count > 0);
         }
 
         private void ClearMask(object sender, EventArgs eventArgs)
@@ -1318,6 +1776,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
             _state.MaskStrokes.Clear();
             _canvas.SetMaskStrokes(_state.MaskStrokes);
             MarkChanged(true);
+            RequestAutoFeaturePreview(true);
         }
 
         private void InvertMask(object sender, EventArgs eventArgs)
@@ -1325,6 +1784,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
             PushUndoState();
             _state.MaskInverted = !_state.MaskInverted;
             MarkChanged(true);
+            RequestAutoFeaturePreview(true);
             SetStatus(_state.MaskInverted ? "掩膜已反选。" : "掩膜已恢复正常包含关系。", false);
         }
 
@@ -1391,6 +1851,10 @@ namespace NinePointRotationCalibration.WinForms.Forms
             _state = _undoStack.Pop();
             LoadStateToControls(false);
             RaiseEditorStateChanged();
+            if (_state.TemplateRoi != null && !HasAnyOverlayFeatures(_state))
+            {
+                RequestAutoFeaturePreview(true);
+            }
         }
 
         private void RedoEdit(object sender, EventArgs eventArgs)
@@ -1404,6 +1868,10 @@ namespace NinePointRotationCalibration.WinForms.Forms
             _state = _redoStack.Pop();
             LoadStateToControls(false);
             RaiseEditorStateChanged();
+            if (_state.TemplateRoi != null && !HasAnyOverlayFeatures(_state))
+            {
+                RequestAutoFeaturePreview(true);
+            }
         }
 
         private void EditorKeyDown(object sender, KeyEventArgs eventArgs)
@@ -1447,15 +1915,21 @@ namespace NinePointRotationCalibration.WinForms.Forms
 
         private void UpdateModelState()
         {
-            if (!_state.HasModel)
+            if (_state.TemplateRoi == null)
             {
-                _modelStateLabel.Text = "未创建模型";
+                _modelStateLabel.Text = "未添加模板 ROI（请点击「+ 模板ROI」或「框选模板」）";
+                _modelStateLabel.ForeColor = Color.White;
+                _modelStateLabel.BackColor = Color.FromArgb(100, 116, 139);
+            }
+            else if (!_state.HasModel)
+            {
+                _modelStateLabel.Text = "未创建模型（已显示实时特征，可点击「创建模型」或直接「确认」）";
                 _modelStateLabel.ForeColor = Color.White;
                 _modelStateLabel.BackColor = Color.FromArgb(165, 94, 36);
             }
             else if (_state.ModelDirty)
             {
-                _modelStateLabel.Text = "参数已修改，需要重新创建模型";
+                _modelStateLabel.Text = "参数已修改，需重建模型（确认/测试将自动重建）";
                 _modelStateLabel.ForeColor = Color.White;
                 _modelStateLabel.BackColor = Color.FromArgb(183, 74, 52);
             }
@@ -1466,9 +1940,17 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 _modelStateLabel.BackColor = Color.FromArgb(39, 132, 87);
             }
 
-            _extractButton.Enabled = !_busy && Service != null && _modelTypeCombo.SelectedIndex == 0;
-            _createButton.Enabled = !_busy && Service != null;
-            _testButton.Enabled = !_busy && Service != null && _state.HasModel && !_state.ModelDirty;
+            UpdateActionButtonsEnabled();
+        }
+
+        private void UpdateActionButtonsEnabled()
+        {
+            bool hasTemplate = _state.TemplateRoi != null &&
+                               _state.TemplateRoi.HalfWidth >= 2.0 &&
+                               _state.TemplateRoi.HalfHeight >= 2.0;
+            _extractButton.Enabled = !_busy && Service != null && hasTemplate && _modelTypeCombo.SelectedIndex == 0;
+            _createButton.Enabled = !_busy && Service != null && hasTemplate;
+            _testButton.Enabled = !_busy && Service != null && hasTemplate;
         }
 
         private void UpdateHistoryButtons()
@@ -1518,19 +2000,28 @@ namespace NinePointRotationCalibration.WinForms.Forms
             _minimumContourLengthInput.Enabled = edgeContoursEnabled;
             _featurePointSpacingInput.Enabled = edgeContoursEnabled;
             _maximumFeaturePointCountInput.Enabled = edgeContoursEnabled;
-            _extractButton.Enabled = !_busy && Service != null && isShapeModel;
+            UpdateActionButtonsEnabled();
         }
 
-        private void ConfirmEditor(object sender, EventArgs eventArgs)
+        private async void ConfirmEditor(object sender, EventArgs eventArgs)
         {
             ReadParametersFromControls();
+            EnsureCompanionRois();
             if (!ValidateGeometry(out string message))
             {
                 MessageBox.Show(this, message, "模板参数", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
 
-            if (!_state.HasModel || _state.ModelDirty)
+            if (Service != null && (!_state.HasModel || _state.ModelDirty))
+            {
+                bool built = await BuildModelCoreAsync();
+                if (!built || !CanUpdateUi)
+                {
+                    return;
+                }
+            }
+            else if (!_state.HasModel || _state.ModelDirty)
             {
                 DialogResult answer = MessageBox.Show(
                     this,
@@ -1552,11 +2043,54 @@ namespace NinePointRotationCalibration.WinForms.Forms
             Close();
         }
 
-        private bool ValidateGeometry(out string message)
+        private void EnsureCompanionRois()
+        {
+            if (_state.TemplateRoi == null || _referenceImage == null)
+            {
+                return;
+            }
+
+            ImageCoordinate templateCenter = new ImageCoordinate(
+                _state.TemplateRoi.CenterRow,
+                _state.TemplateRoi.CenterColumn);
+            if (_state.SearchRoi == null ||
+                _state.SearchRoi.HalfWidth < 2.0 ||
+                _state.SearchRoi.HalfHeight < 2.0 ||
+                !_state.SearchRoi.Contains(templateCenter))
+            {
+                _state.SearchRoi = CreateFullImageSearchRoi(_referenceImage.Size);
+                _canvas.SearchRoi = _state.SearchRoi;
+                AppendOperationLog(true, "未配置覆盖模板中心的搜索 ROI，已自动补全全图搜索 ROI。");
+            }
+
+            if (_enableDetectionRoi &&
+                (_state.DetectionRoi == null ||
+                 _state.DetectionRoi.HalfWidth < 2.0 ||
+                 _state.DetectionRoi.HalfHeight < 2.0))
+            {
+                _state.DetectionRoi = _state.TemplateRoi.DeepClone();
+                _canvas.DetectionRoi = _state.DetectionRoi;
+                AppendOperationLog(true, "未配置检测 ROI，已按模板 ROI 自动初始化。");
+            }
+
+            UpdateRoiToolbarButtons();
+        }
+
+        private bool ValidateFeatureGeometry(out string message)
         {
             if (_state.TemplateRoi == null || _state.TemplateRoi.HalfWidth < 2.0 || _state.TemplateRoi.HalfHeight < 2.0)
             {
-                message = "请设置有效的模板 ROI。";
+                message = "请先点击「+ 模板ROI」或「框选模板」设置有效的模板 ROI。";
+                return false;
+            }
+
+            return ValidateParameterConstraints(out message);
+        }
+
+        private bool ValidateGeometry(out string message)
+        {
+            if (!ValidateFeatureGeometry(out message))
+            {
                 return false;
             }
 
@@ -1581,6 +2115,12 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 return false;
             }
 
+            message = null;
+            return true;
+        }
+
+        private bool ValidateParameterConstraints(out string message)
+        {
             if (_state.Parameters.AngleExtentDegrees <= 0.0)
             {
                 message = "角度范围必须大于 0°。";
@@ -1696,34 +2236,97 @@ namespace NinePointRotationCalibration.WinForms.Forms
             Size imageSize,
             bool enableDetectionRoi)
         {
-            if (state.TemplateRoi == null)
+            // 默认不自动创建模板/搜索/检测 ROI，保留由用户显式添加或框选；
+            // 若已有模板 ROI 但尚未设置基准中心，则自动将其置于模板 ROI 中心。
+            if (state.TemplateRoi != null &&
+                state.ReferenceAnchor.Row == 0.0 &&
+                state.ReferenceAnchor.Column == 0.0)
             {
-                state.TemplateRoi = new RotatedRectangle(
-                    imageSize.Height / 2.0,
-                    imageSize.Width / 2.0,
-                    Math.Max(10.0, imageSize.Width * 0.15),
-                    Math.Max(10.0, imageSize.Height * 0.15),
-                    0.0);
+                state.ReferenceAnchor = new ImageCoordinate(
+                    state.TemplateRoi.CenterRow,
+                    state.TemplateRoi.CenterColumn);
+            }
+        }
+
+        /// <summary>线程安全的后台预览图像引用计数持有器，避免每次拖拽重复复制大尺寸 Bitmap。</summary>
+        private sealed class PreviewImageHolder : IDisposable
+        {
+            private readonly object _sync = new object();
+            private Bitmap _bitmap;
+            private int _refCount;
+            private bool _disposed;
+
+            public PreviewImageHolder(Bitmap source)
+            {
+                _bitmap = new Bitmap(source);
             }
 
-            if (state.SearchRoi == null)
+            public bool TryAcquire(out PreviewImageLease lease)
             {
-                state.SearchRoi = new RotatedRectangle(
-                    imageSize.Height / 2.0,
-                    imageSize.Width / 2.0,
-                    Math.Max(20.0, imageSize.Width * 0.42),
-                    Math.Max(20.0, imageSize.Height * 0.42),
-                    0.0);
+                lock (_sync)
+                {
+                    if (_disposed || _bitmap == null)
+                    {
+                        lease = null;
+                        return false;
+                    }
+
+                    _refCount++;
+                    lease = new PreviewImageLease(this, _bitmap);
+                    return true;
+                }
             }
 
-            if (enableDetectionRoi && state.DetectionRoi == null)
+            public void Release()
             {
-                state.DetectionRoi = state.TemplateRoi.DeepClone();
+                Bitmap toDispose = null;
+                lock (_sync)
+                {
+                    if (_refCount > 0) _refCount--;
+                    if (_disposed && _refCount == 0 && _bitmap != null)
+                    {
+                        toDispose = _bitmap;
+                        _bitmap = null;
+                    }
+                }
+                if (toDispose != null) toDispose.Dispose();
             }
 
-            if (state.ReferenceAnchor.Row == 0.0 && state.ReferenceAnchor.Column == 0.0)
+            public void Dispose()
             {
-                state.ReferenceAnchor = new ImageCoordinate(state.TemplateRoi.CenterRow, state.TemplateRoi.CenterColumn);
+                Bitmap toDispose = null;
+                lock (_sync)
+                {
+                    if (_disposed) return;
+                    _disposed = true;
+                    if (_refCount == 0 && _bitmap != null)
+                    {
+                        toDispose = _bitmap;
+                        _bitmap = null;
+                    }
+                }
+                if (toDispose != null) toDispose.Dispose();
+            }
+        }
+
+        private sealed class PreviewImageLease : IDisposable
+        {
+            private PreviewImageHolder _owner;
+
+            public PreviewImageLease(PreviewImageHolder owner, Bitmap image)
+            {
+                _owner = owner;
+                Image = image;
+            }
+
+            public Bitmap Image { get; private set; }
+
+            public void Dispose()
+            {
+                PreviewImageHolder owner = _owner;
+                _owner = null;
+                Image = null;
+                if (owner != null) owner.Release();
             }
         }
 

@@ -12,7 +12,10 @@ namespace NinePointRotationCalibration.Halcon
     /// 使用有序、过滤后的 XLD 边缘轮廓构建新形状模板；
     /// 既有图像域形状模板与 NCC 模板仍委托给传统引擎保持兼容。
     /// </summary>
-    public sealed class XldTemplateMatchingEngine : ITemplateMatchingEngine, IGrayImageTemplateMatchingEngine
+    public sealed class XldTemplateMatchingEngine :
+        ITemplateMatchingEngine,
+        IGrayImageTemplateMatchingEngine,
+        IFeaturePreviewTemplateMatchingEngine
     {
         private const string XldMetric = "ignore_local_polarity";
         private readonly HalconTemplateEngine _legacyEngine = new HalconTemplateEngine();
@@ -43,6 +46,47 @@ namespace NinePointRotationCalibration.Halcon
             }
 
             return BuildXldShapeTemplate(referenceImage, definition);
+        }
+
+        /// <summary>使用已转换的灰度图快速提取 XLD 或传统模式特征预览，跳过耗时建模与磁盘写入。</summary>
+        public TemplateBuildResult PreviewFeatures(HalconGrayImage grayImage, TemplateDefinition definition)
+        {
+            ThrowIfDisposed();
+            if (grayImage == null)
+            {
+                return TemplateBuildResult.Failure(CalibrationErrorCode.ParameterInvalid, "Gray image is null.");
+            }
+            if (definition == null)
+            {
+                return TemplateBuildResult.Failure(CalibrationErrorCode.ParameterInvalid, "Template definition is null.");
+            }
+
+            if (definition.ModelType != TemplateModelType.Shape)
+            {
+                return _legacyEngine.PreviewFeatures(grayImage, definition);
+            }
+
+            ShapeFeatureExtractionSettings extraction = definition.ShapeParameters == null
+                ? null
+                : definition.ShapeParameters.FeatureExtraction;
+            if (extraction == null || extraction.Mode == ShapeFeatureExtractionMode.LegacyImageDomain)
+            {
+                return _legacyEngine.PreviewFeatures(grayImage, definition);
+            }
+
+            if (extraction.Mode != ShapeFeatureExtractionMode.EdgeContours)
+            {
+                return TemplateBuildResult.Failure(
+                    CalibrationErrorCode.ParameterInvalid,
+                    "Unsupported shape feature extraction mode: " + extraction.Mode + ".");
+            }
+
+            return BuildOrPreviewXld(
+                grayImage.Image,
+                grayImage.Width,
+                grayImage.Height,
+                definition,
+                false);
         }
 
         /// <summary>在图像中定位得分最高的单个模板匹配目标。</summary>
@@ -110,6 +154,59 @@ namespace NinePointRotationCalibration.Halcon
                     stopwatch);
             }
 
+            try
+            {
+                using (HImage gray = HalconImageConverter.ToGrayHImage(referenceImage))
+                {
+                    return BuildOrPreviewXldCore(
+                        gray,
+                        referenceImage.Width,
+                        referenceImage.Height,
+                        definition,
+                        true,
+                        stopwatch);
+                }
+            }
+            catch (Exception exception)
+            {
+                return Complete(
+                    TemplateBuildResult.Failure(MapErrorCode(exception), FormatException(exception)),
+                    stopwatch);
+            }
+        }
+
+        private static TemplateBuildResult BuildOrPreviewXld(
+            HImage gray,
+            int imageWidth,
+            int imageHeight,
+            TemplateDefinition definition,
+            bool buildModel)
+        {
+            Stopwatch stopwatch = Stopwatch.StartNew();
+            if (gray == null)
+            {
+                return Complete(
+                    TemplateBuildResult.Failure(CalibrationErrorCode.ParameterInvalid, "Gray image is null."),
+                    stopwatch);
+            }
+
+            return BuildOrPreviewXldCore(
+                gray,
+                imageWidth,
+                imageHeight,
+                definition,
+                buildModel,
+                stopwatch);
+        }
+
+        private static TemplateBuildResult BuildOrPreviewXldCore(
+            HImage gray,
+            int imageWidth,
+            int imageHeight,
+            TemplateDefinition definition,
+            bool buildModel,
+            Stopwatch stopwatch)
+        {
             HShapeModel shapeModel = null;
             try
             {
@@ -124,11 +221,10 @@ namespace NinePointRotationCalibration.Halcon
                 output.ShapeParameters.FeatureExtraction = extraction;
                 output.ShapeParameters.Metric = XldMetric;
 
-                using (HImage gray = HalconImageConverter.ToGrayHImage(referenceImage))
                 using (HRegion effectiveRegion = HalconRegionBuilder.BuildEffectiveRegion(
                     output,
-                    referenceImage.Width,
-                    referenceImage.Height))
+                    imageWidth,
+                    imageHeight))
                 using (HImage reduced = gray.ReduceDomain(effectiveRegion))
                 {
                     double effectiveArea;
@@ -146,8 +242,8 @@ namespace NinePointRotationCalibration.Halcon
                         && output.ReferenceAnchor.Column == 0.0
                         && !output.IsReferenceAnchorLocked;
 
-                    output.ReferenceImageWidth = referenceImage.Width;
-                    output.ReferenceImageHeight = referenceImage.Height;
+                    output.ReferenceImageWidth = imageWidth;
+                    output.ReferenceImageHeight = imageHeight;
                     output.DomainCenter = new ImagePoint(domainRow, domainColumn);
                     // 模型参考中心必须固定为用户定义的 ROI 中心；
                     // 旋转 ROI 被图像边缘裁剪或存在掩膜挖孔时，有效域质心会发生偏移，导致特征预览漂移。
@@ -186,32 +282,39 @@ namespace NinePointRotationCalibration.Halcon
                         reduced,
                         extraction,
                         output.TemplateRoi);
-                    using (HXLDCont xldContours = XldFeatureExtractor.CreateXld(sampledContours))
+                    if (buildModel)
                     {
-                        shapeModel = CreateShapeModel(xldContours, output.ShapeParameters);
+                        using (HXLDCont xldContours = XldFeatureExtractor.CreateXld(sampledContours))
+                        {
+                            shapeModel = CreateShapeModel(xldContours, output.ShapeParameters);
+                        }
+
+                        SetModelOrigin(
+                            shapeModel,
+                            sampledContours,
+                            templateCenter.Row,
+                            templateCenter.Column);
+
+                        HShapeModel writeModel = shapeModel;
+                        byte[] modelData = HalconModelFile.Write(".shm", writeModel.WriteShapeModel);
+                        output.SetModelData(modelData, TryGetHalconVersion());
                     }
 
-                    SetModelOrigin(
-                        shapeModel,
-                        sampledContours,
-                        templateCenter.Row,
-                        templateCenter.Column);
-
-                    HShapeModel writeModel = shapeModel;
-                    byte[] modelData = HalconModelFile.Write(".shm", writeModel.WriteShapeModel);
-                    output.SetModelData(modelData, TryGetHalconVersion());
-
+                    string actionPrefix = buildModel ? "已提取" : "已预览";
                     string message = usedAutoThreshold
                         ? string.Format(
                             CultureInfo.InvariantCulture,
-                            "已提取 {0} 段有序 XLD 轮廓（自适应阈值 Canny {1:0.#}/{2:0.#}，最小对比度 {3}）。",
+                            "{0} {1} 段有序 XLD 轮廓（自适应阈值 Canny {2:0.#}/{3:0.#}，最小对比度 {4}）。",
+                            actionPrefix,
                             sampledContours.Count,
                             extraction.EdgeLowThreshold,
                             extraction.EdgeHighThreshold,
                             output.ShapeParameters.MinContrast)
                         : string.Format(
                             CultureInfo.InvariantCulture,
-                            "Template model was created from {0} ordered XLD contour segments.",
+                            buildModel
+                                ? "Template model was created from {0} ordered XLD contour segments."
+                                : "Previewed {0} ordered XLD contour segments.",
                             sampledContours.Count);
 
                     return Complete(new TemplateBuildResult

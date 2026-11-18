@@ -70,6 +70,8 @@ namespace NinePointRotationCalibration.Station.Views
         private double _rightTeachR;
         private CameraUiState _cameraUiState = CameraUiState.Disconnected;
         private TcpUiState _tcpUiState = TcpUiState.NotListening;
+        private bool _dualViewActive;
+        private bool _syncingViewports;
 
         public MainForm()
         {
@@ -98,6 +100,18 @@ namespace NinePointRotationCalibration.Station.Views
         public ImageViewport Viewport
         {
             get { return imageViewport; }
+        }
+
+        [Browsable(false)]
+        public ImageViewport EffectViewport
+        {
+            get { return effectViewport; }
+        }
+
+        [Browsable(false)]
+        public bool IsDetectionDualViewActive
+        {
+            get { return _dualViewActive; }
         }
 
         [Browsable(false)]
@@ -368,6 +382,90 @@ namespace NinePointRotationCalibration.Station.Views
         public void SetImageInformation(string text)
         {
             RunOnUiThread(delegate { lblImageInfo.Text = string.IsNullOrWhiteSpace(text) ? "无图像" : text; });
+        }
+
+        public void SetEffectViewportInformation(string text)
+        {
+            RunOnUiThread(delegate
+            {
+                if (lblEffectViewportInfo != null)
+                {
+                    lblEffectViewportInfo.Text = string.IsNullOrWhiteSpace(text) ? "等待图像" : text;
+                }
+            });
+        }
+
+        /// <summary>切换检测页上下双图像窗口（上：原图窗口；下：检测效果图窗口）的展开与折叠状态。</summary>
+        public void SetDetectionDualViewActive(bool active)
+        {
+            RunOnUiThread(delegate
+            {
+                _dualViewActive = active;
+                if (pnlSourceViewportHeader != null)
+                {
+                    pnlSourceViewportHeader.Visible = active;
+                }
+
+                if (imageSplit != null)
+                {
+                    imageSplit.Panel2Collapsed = !active;
+                    if (active)
+                    {
+                        BalanceImageSplit();
+                    }
+                }
+
+                Control hudParent = active ? (Control)effectViewport : imageViewport;
+                if (lblInspectionHud != null && hudParent != null && !ReferenceEquals(lblInspectionHud.Parent, hudParent))
+                {
+                    lblInspectionHud.Parent = hudParent;
+                    lblInspectionHud.BringToFront();
+                }
+
+                if (active && imageViewport.HasImage && effectViewport.HasImage)
+                {
+                    SyncLinkedViewport(imageViewport, effectViewport);
+                }
+            });
+        }
+
+        private void BalanceImageSplit()
+        {
+            if (imageSplit == null || imageSplit.IsDisposed || imageSplit.Panel2Collapsed)
+            {
+                return;
+            }
+
+            int available = imageSplit.Height - imageSplit.SplitterWidth;
+            int min1 = imageSplit.Panel1MinSize;
+            int max1 = available - imageSplit.Panel2MinSize;
+            if (max1 >= min1)
+            {
+                imageSplit.SplitterDistance = Math.Max(min1, Math.Min(max1, available / 2));
+            }
+        }
+
+        private void SyncLinkedViewport(ImageViewport source, ImageViewport target)
+        {
+            if (_syncingViewports || !_dualViewActive || source == null || target == null)
+            {
+                return;
+            }
+
+            if (!source.HasImage || !target.HasImage)
+            {
+                return;
+            }
+
+            _syncingViewports = true;
+            try
+            {
+                target.SyncViewFrom(source);
+            }
+            finally
+            {
+                _syncingViewports = false;
+            }
         }
 
         public void SelectCalibrationPoint(int pointNumber)
@@ -808,12 +906,24 @@ namespace NinePointRotationCalibration.Station.Views
                 if (handler != null) handler(this, EventArgs.Empty);
                 RaiseUiAction("camera.snapshot", btnSnapshot);
             };
-            btnFit.Click += delegate { imageViewport.FitImage(); };
-            btnActualPixels.Click += delegate { imageViewport.ShowActualPixels(); };
+            btnFit.Click += delegate
+            {
+                imageViewport.FitImage();
+                if (effectViewport.HasImage) effectViewport.FitImage();
+            };
+            btnActualPixels.Click += delegate
+            {
+                imageViewport.ShowActualPixels();
+                if (effectViewport.HasImage) effectViewport.ShowActualPixels();
+            };
             btnClearLog.Click += delegate { rtbLog.Clear(); };
             tabWork.DrawItem += TabWork_DrawItem;
             imageViewport.ImagePositionChanged += ImageViewport_ImagePositionChanged;
             imageViewport.ImageAvailabilityChanged += ImageViewport_ImageAvailabilityChanged;
+            imageViewport.ViewChanged += delegate { SyncLinkedViewport(imageViewport, effectViewport); };
+            effectViewport.ImagePositionChanged += ImageViewport_ImagePositionChanged;
+            effectViewport.ViewChanged += delegate { SyncLinkedViewport(effectViewport, imageViewport); };
+            dgvDetectionResults.SelectionChanged += delegate { RaiseUiAction("detection.rowSelected", dgvDetectionResults); };
             chkCameraEnabled.CheckedChanged += FeatureToggle_CheckedChanged;
             chkCalibrationEnabled.CheckedChanged += FeatureToggle_CheckedChanged;
 

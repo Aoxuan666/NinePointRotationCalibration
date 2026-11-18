@@ -11,7 +11,10 @@ namespace NinePointRotationCalibration.Halcon
     /// 负责 HALCON 模板句柄的生命周期管理与匹配计算。
     /// 由于原生模型句柄非线程安全，单实例调用通过锁串行化。
     /// </summary>
-    public sealed class HalconTemplateEngine : ITemplateMatchingEngine, IGrayImageTemplateMatchingEngine
+    public sealed class HalconTemplateEngine :
+        ITemplateMatchingEngine,
+        IGrayImageTemplateMatchingEngine,
+        IFeaturePreviewTemplateMatchingEngine
     {
         private readonly object _syncRoot = new object();
         private HShapeModel _shapeModel;
@@ -135,6 +138,87 @@ namespace NinePointRotationCalibration.Halcon
         public TemplateBuildResult Teach(Bitmap referenceImage, TemplateDefinition definition)
         {
             return BuildTemplate(referenceImage, definition);
+        }
+
+        /// <summary>使用已转换的灰度图快速预览图像域 Shape/NCC 特征轮廓，跳过建模与序列化。</summary>
+        public TemplateBuildResult PreviewFeatures(HalconGrayImage grayImage, TemplateDefinition definition)
+        {
+            Stopwatch stopwatch = Stopwatch.StartNew();
+            if (grayImage == null)
+            {
+                return Complete(TemplateBuildResult.Failure(CalibrationErrorCode.ParameterInvalid, "Gray image is null."), stopwatch);
+            }
+
+            if (definition == null)
+            {
+                return Complete(TemplateBuildResult.Failure(CalibrationErrorCode.ParameterInvalid, "Template definition is null."), stopwatch);
+            }
+
+            lock (_syncRoot)
+            {
+                ThrowIfDisposed();
+                TemplateDefinition output = definition.DeepClone();
+                try
+                {
+                    ValidateBuildParameters(output);
+                    using (HRegion effectiveRegion = HalconRegionBuilder.BuildEffectiveRegion(
+                        output,
+                        grayImage.Width,
+                        grayImage.Height))
+                    using (HImage reduced = grayImage.Image.ReduceDomain(effectiveRegion))
+                    {
+                        double area;
+                        double domainRow;
+                        double domainColumn;
+                        HalconRegionBuilder.GetAreaCenter(effectiveRegion, out area, out domainRow, out domainColumn);
+
+                        bool anchorWasUninitialized = output.ReferenceImageWidth <= 0
+                            && output.ReferenceImageHeight <= 0
+                            && output.ReferenceAnchor.Row == 0.0
+                            && output.ReferenceAnchor.Column == 0.0
+                            && !output.IsReferenceAnchorLocked;
+
+                        output.ReferenceImageWidth = grayImage.Width;
+                        output.ReferenceImageHeight = grayImage.Height;
+                        output.DomainCenter = new ImagePoint(domainRow, domainColumn);
+                        output.ModelReference = new ImagePose(domainRow, domainColumn, 0.0);
+                        if (anchorWasUninitialized)
+                        {
+                            output.ReferenceAnchor = output.DomainCenter;
+                        }
+
+                        List<List<ImagePoint>> contours;
+                        string previewMessage;
+                        if (output.ModelType == TemplateModelType.Shape)
+                        {
+                            contours = InspectShapeContours(reduced, output.ShapeParameters, out previewMessage);
+                        }
+                        else if (output.ModelType == TemplateModelType.Ncc)
+                        {
+                            contours = HalconRegionBuilder.ExtractRegionContours(effectiveRegion);
+                            previewMessage = "NCC 模板区域特征预览完成。";
+                        }
+                        else
+                        {
+                            throw new ArgumentOutOfRangeException("ModelType", "Unsupported model type: " + output.ModelType + ".");
+                        }
+
+                        return Complete(new TemplateBuildResult
+                        {
+                            Success = true,
+                            ErrorCode = CalibrationErrorCode.None,
+                            Message = previewMessage,
+                            Template = output,
+                            EffectiveArea = area,
+                            ContourSegments = contours
+                        }, stopwatch);
+                    }
+                }
+                catch (Exception exception)
+                {
+                    return Complete(TemplateBuildResult.Failure(MapErrorCode(exception), FormatException(exception)), stopwatch);
+                }
+            }
         }
 
         /// <summary>在图像中定位得分最高的单个模板匹配目标。</summary>
@@ -490,32 +574,125 @@ namespace NinePointRotationCalibration.Halcon
             _cachedRelativeContours = relativeContours ?? new List<List<ImagePoint>>();
         }
 
+        private static HTuple ResolveShapeContrast(
+            HImage reduced,
+            ShapeModelParameters parameters,
+            string metric,
+            bool forPreview,
+            out string statusMessage)
+        {
+            if (!parameters.AutoThreshold)
+            {
+                statusMessage = forPreview
+                    ? "图像域 Shape 特征预览完成。"
+                    : "Template model was created successfully.";
+                return new HTuple(parameters.Contrast);
+            }
+
+            AdaptiveTemplateThresholds resolved = HalconAutoThresholdResolver.Resolve(reduced, parameters, metric);
+            parameters.Contrast = resolved.ContrastHigh;
+            parameters.MinContrast = Math.Min(resolved.MinContrast, resolved.ContrastHigh);
+            statusMessage = string.Format(
+                CultureInfo.InvariantCulture,
+                "{0}（自适应滞后对比度 {1}/{2}，最小对比度 {3}）。",
+                forPreview ? "图像域 Shape 特征预览完成" : "图像域 Shape 建模完成",
+                resolved.ContrastLow,
+                resolved.ContrastHigh,
+                parameters.MinContrast);
+            return new HTuple(resolved.ContrastLow, resolved.ContrastHigh);
+        }
+
+        private static List<List<ImagePoint>> InspectShapeContours(
+            HImage reduced,
+            ShapeModelParameters parameters,
+            out string previewMessage)
+        {
+            string metric = DefaultIfBlank(parameters.Metric, "use_polarity");
+            HTuple contrastTuple = ResolveShapeContrast(reduced, parameters, metric, true, out previewMessage);
+            List<List<ImagePoint>> contours = TryInspectWithContrast(reduced, contrastTuple);
+            if (contours.Count == 0 && parameters.AutoThreshold)
+            {
+                previewMessage = "图像域 Shape 特征预览完成（已回退至 HALCON 原生 auto 对比度）。";
+                using (HShapeModel fallbackModel = CreateShapeModelCore(
+                    reduced,
+                    parameters,
+                    metric,
+                    new HTuple("auto"),
+                    new HTuple("auto")))
+                using (HXLDCont xld = fallbackModel.GetShapeModelContours(1))
+                {
+                    double area;
+                    double row;
+                    double column;
+                    using (HRegion domain = reduced.GetDomain())
+                    {
+                        HalconRegionBuilder.GetAreaCenter(domain, out area, out row, out column);
+                    }
+                    return HalconContourConverter.Transform(HalconContourConverter.Extract(xld), row, column, 0.0);
+                }
+            }
+
+            if (contours.Count == 0)
+            {
+                throw new ModelStateException(
+                    CalibrationErrorCode.ParameterInvalid,
+                    "当前模板区域未检测到足够对比度边缘特征。");
+            }
+
+            return contours;
+        }
+
+        private static List<List<ImagePoint>> TryInspectWithContrast(HImage reduced, HTuple contrastTuple)
+        {
+            HRegion modelRegion = null;
+            try
+            {
+                using (contrastTuple)
+                using (HImage modelImage = reduced.InspectShapeModel(out modelRegion, 1, contrastTuple))
+                {
+                    if (modelRegion == null || modelRegion.CountObj() == 0)
+                        return new List<List<ImagePoint>>();
+
+                    double area = modelRegion.AreaCenter(out double _, out double _);
+                    if (!IsFinite(area) || area <= 0.0)
+                        return new List<List<ImagePoint>>();
+
+                    using (HRegion skeleton = modelRegion.Skeleton())
+                    using (HXLDCont xld = skeleton.GenContoursSkeletonXld(1, "filter"))
+                    {
+                        List<List<ImagePoint>> extracted = HalconContourConverter.Extract(xld);
+                        if (extracted.Count > 0) return extracted;
+                    }
+
+                    return HalconRegionBuilder.ExtractRegionContours(modelRegion);
+                }
+            }
+            catch (HOperatorException)
+            {
+                return new List<List<ImagePoint>>();
+            }
+            finally
+            {
+                if (modelRegion != null) modelRegion.Dispose();
+            }
+        }
+
         private static HShapeModel CreateShapeModel(
             HImage reduced,
             ShapeModelParameters parameters,
             out string buildMessage)
         {
             string metric = DefaultIfBlank(parameters.Metric, "use_polarity");
+            HTuple contrastTuple = ResolveShapeContrast(reduced, parameters, metric, false, out buildMessage);
             if (!parameters.AutoThreshold)
             {
-                buildMessage = "Template model was created successfully.";
                 return CreateShapeModelCore(
                     reduced,
                     parameters,
                     metric,
-                    new HTuple(parameters.Contrast),
+                    contrastTuple,
                     new HTuple(parameters.MinContrast));
             }
-
-            AdaptiveTemplateThresholds resolved = HalconAutoThresholdResolver.Resolve(reduced, parameters, metric);
-            parameters.Contrast = resolved.ContrastHigh;
-            parameters.MinContrast = Math.Min(resolved.MinContrast, resolved.ContrastHigh);
-            buildMessage = string.Format(
-                CultureInfo.InvariantCulture,
-                "图像域 Shape 建模完成（自适应滞后对比度 {0}/{1}，最小对比度 {2}）。",
-                resolved.ContrastLow,
-                resolved.ContrastHigh,
-                parameters.MinContrast);
 
             try
             {
@@ -523,7 +700,7 @@ namespace NinePointRotationCalibration.Halcon
                     reduced,
                     parameters,
                     metric,
-                    new HTuple(resolved.ContrastLow, resolved.ContrastHigh),
+                    contrastTuple,
                     new HTuple(parameters.MinContrast));
             }
             catch (HOperatorException)

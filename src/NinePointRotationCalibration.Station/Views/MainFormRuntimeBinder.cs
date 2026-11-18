@@ -42,6 +42,9 @@ namespace NinePointRotationCalibration.Station.Views
         private List<ViewportPointOverlay> _lastInspectionPoints = new List<ViewportPointOverlay>();
         private List<ViewportRoiOverlay> _lastInspectionRois = new List<ViewportRoiOverlay>();
         private List<ViewportContourOverlay> _lastInspectionContours = new List<ViewportContourOverlay>();
+        private List<ViewportContourOverlay> _lastMatchedBoardContours = new List<ViewportContourOverlay>();
+        private List<int> _lastInspectionBoardIndices = new List<int>();
+        private int _selectedInspectionBoardIndex = -1;
         private long _lastInspectionOverlayGeneration = -1;
         private DisplayMode _displayMode;
         private long _displayGeneration;
@@ -221,17 +224,26 @@ namespace NinePointRotationCalibration.Station.Views
 
         private void WorkTabs_SelectedIndexChanged(object sender, EventArgs e)
         {
-            if (_disposed || _view.WorkTabs.SelectedTab == null ||
-                string.Equals(_view.WorkTabs.SelectedTab.Name, "tabDetection", StringComparison.Ordinal))
-                return;
+            if (_disposed || _view.WorkTabs.SelectedTab == null) return;
 
-            // 切离检测页时退出主画面二值预览，并递增显示代次使在途异步预览结果失效
+            bool enteringDetection = string.Equals(
+                _view.WorkTabs.SelectedTab.Name,
+                "tabDetection",
+                StringComparison.Ordinal);
             try
             {
+                if (enteringDetection)
+                {
+                    _view.SetDetectionDualViewActive(true);
+                    _view.Viewport.ClearOverlays();
+                    RenderDetectionDualViewOnTabEnter();
+                    return;
+                }
+
+                // 切离检测页时折叠检测效果图窗口，取消在途重绘，并恢复单窗口锁定帧叠加层
                 CancelBinaryPreview();
-                lock (_displaySync) _displayGeneration++;
-                CheckBox binaryToggle = FindControl<CheckBox>("chkBinaryPreview");
-                if (binaryToggle.Checked) binaryToggle.Checked = false;
+                _view.SetDetectionDualViewActive(false);
+                RestoreSingleViewportOverlays();
             }
             catch (ObjectDisposedException)
             {
@@ -332,8 +344,7 @@ namespace NinePointRotationCalibration.Station.Views
                         OpenBlobDebugWindow();
                         return;
                     case "detection.binaryPreview":
-                        if (IsBinaryPreviewEnabled()) ScheduleBinaryPreview(false);
-                        else RestoreSourceDisplay();
+                        if (_view.IsDetectionDualViewActive) ScheduleBinaryPreview(false);
                         return;
                     case "detection.previewParameters":
                         if (e.Source != null && string.Equals(
@@ -344,7 +355,10 @@ namespace NinePointRotationCalibration.Station.Views
                             FindControl<NumericUpDown>("nudBrightThreshold").Enabled =
                                 !FindControl<CheckBox>("chkAutoThreshold").Checked;
                         }
-                        if (IsBinaryPreviewEnabled()) ScheduleBinaryPreview(true);
+                        if (_view.IsDetectionDualViewActive) ScheduleBinaryPreview(true);
+                        return;
+                    case "detection.rowSelected":
+                        if (_view.IsDetectionDualViewActive) HighlightSelectedDetectionRow();
                         return;
                     case "tcp.start":
                         await RunOperationAsync(

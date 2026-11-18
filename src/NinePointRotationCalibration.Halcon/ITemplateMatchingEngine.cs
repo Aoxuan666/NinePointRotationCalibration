@@ -17,4 +17,11 @@ namespace NinePointRotationCalibration.Halcon
         /// <summary>清除已缓存的原生 HALCON 模板句柄。</summary>
         void ClearCache();
     }
+
+    /// <summary>快速提取模板特征预览轮廓的扩展接口，无需创建或序列化完整匹配模型。</summary>
+    public interface IFeaturePreviewTemplateMatchingEngine
+    {
+        /// <summary>使用已转换的灰度图快速提取模板边缘特征与推荐阈值。</summary>
+        TemplateBuildResult PreviewFeatures(HalconGrayImage grayImage, TemplateDefinition definition);
+    }
 }

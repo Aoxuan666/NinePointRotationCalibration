@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Drawing.Imaging;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using NinePointRotationCalibration.Halcon;
@@ -19,6 +21,11 @@ namespace NinePointRotationCalibration
         private readonly ITemplateMatchingEngine _engine;
         private readonly ICalibrationGeometryBackend _calibrationGeometryBackend;
         private readonly CalibrationJob _baseline;
+        private readonly object _grayCacheSync = new object();
+        private HalconGrayImage _cachedGrayImage;
+        private int _cachedWidth;
+        private int _cachedHeight;
+        private ulong _cachedSignature;
 
         public SdkCalibrationWorkflow(ITemplateMatchingEngine engine, CalibrationJob baseline)
         {
@@ -43,7 +50,20 @@ namespace NinePointRotationCalibration
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 TemplateDefinition template = CoreUiMapper.ToCoreTemplate(state, _baseline.Template, image.Width, image.Height);
-                Halcon.TemplateBuildResult build = _engine.BuildTemplate(image, template);
+                Halcon.TemplateBuildResult build;
+                IFeaturePreviewTemplateMatchingEngine previewEngine = _engine as IFeaturePreviewTemplateMatchingEngine;
+                if (previewEngine != null)
+                {
+                    lock (_grayCacheSync)
+                    {
+                        HalconGrayImage gray = GetOrUpdateGrayCacheLocked(image);
+                        build = previewEngine.PreviewFeatures(gray, template);
+                    }
+                }
+                else
+                {
+                    build = _engine.BuildTemplate(image, template);
+                }
                 cancellationToken.ThrowIfCancellationRequested();
                 if (!build.Success)
                 {
@@ -101,7 +121,7 @@ namespace NinePointRotationCalibration
             }, cancellationToken);
         }
 
-        /// <summary>测试模板匹配，仅返回定位姿态，避免不必要的轮廓转换。</summary>
+        /// <summary>测试模板匹配，返回定位姿态与变换后的匹配轮廓。</summary>
         public Task<TemplateTestResult> TestMatchAsync(
             Bitmap image,
             TemplateEditorState state,
@@ -111,8 +131,7 @@ namespace NinePointRotationCalibration
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 TemplateDefinition template = CoreUiMapper.ToCoreTemplate(state, _baseline.Template, image.Width, image.Height);
-                // 测试匹配只需要姿态，跳过轮廓转换可避免每次测试都分配并绘制大量点。
-                TemplateMatchResult match = _engine.Locate(image, template, false);
+                TemplateMatchResult match = _engine.Locate(image, template, true);
                 cancellationToken.ThrowIfCancellationRequested();
                 return CoreUiMapper.FromCoreTemplateTest(match);
             }, cancellationToken);
@@ -173,7 +192,78 @@ namespace NinePointRotationCalibration
 
         public void Dispose()
         {
-            // 共享引擎由 SDK 统一管理，关闭窗口时不能释放它。
+            // 共享引擎由 SDK 统一管理，关闭窗口时不能释放它；仅释放工作流局部持有的灰度缓存。
+            lock (_grayCacheSync)
+            {
+                if (_cachedGrayImage != null)
+                {
+                    _cachedGrayImage.Dispose();
+                    _cachedGrayImage = null;
+                }
+                _cachedWidth = 0;
+                _cachedHeight = 0;
+                _cachedSignature = 0;
+            }
+        }
+
+        private HalconGrayImage GetOrUpdateGrayCacheLocked(Bitmap image)
+        {
+            ulong signature = ComputeBitmapSignature(image);
+            if (_cachedGrayImage != null &&
+                _cachedWidth == image.Width &&
+                _cachedHeight == image.Height &&
+                _cachedSignature == signature)
+            {
+                return _cachedGrayImage;
+            }
+
+            if (_cachedGrayImage != null)
+            {
+                _cachedGrayImage.Dispose();
+                _cachedGrayImage = null;
+            }
+
+            _cachedGrayImage = HalconGrayImage.FromBitmap(image);
+            _cachedWidth = image.Width;
+            _cachedHeight = image.Height;
+            _cachedSignature = signature;
+            return _cachedGrayImage;
+        }
+
+        private static ulong ComputeBitmapSignature(Bitmap image)
+        {
+            const ulong fnvOffset = 14695981039346656037UL;
+            const ulong fnvPrime = 1099511628211UL;
+            ulong hash = fnvOffset;
+            hash = (hash ^ (ulong)image.Width) * fnvPrime;
+            hash = (hash ^ (ulong)image.Height) * fnvPrime;
+            hash = (hash ^ (ulong)image.PixelFormat) * fnvPrime;
+
+            int bytesPerPixel = Math.Max(1, Image.GetPixelFormatSize(image.PixelFormat) / 8);
+            Rectangle bounds = new Rectangle(0, 0, image.Width, image.Height);
+            BitmapData data = image.LockBits(bounds, ImageLockMode.ReadOnly, image.PixelFormat);
+            try
+            {
+                int rows = Math.Min(16, image.Height);
+                int cols = Math.Min(16, image.Width);
+                for (int r = 0; r < rows; r++)
+                {
+                    int y = (int)((long)r * image.Height / rows);
+                    IntPtr rowPtr = IntPtr.Add(data.Scan0, y * data.Stride);
+                    for (int c = 0; c < cols; c++)
+                    {
+                        int x = (int)((long)c * image.Width / cols);
+                        byte sample = Marshal.ReadByte(rowPtr, x * bytesPerPixel);
+                        hash = (hash ^ sample) * fnvPrime;
+                    }
+                }
+            }
+            finally
+            {
+                image.UnlockBits(data);
+            }
+
+            return hash;
         }
 
         private static TemplateEditorParameters MergeResolvedThresholds(

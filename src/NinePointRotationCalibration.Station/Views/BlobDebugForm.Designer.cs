@@ -30,9 +30,7 @@ namespace NinePointRotationCalibration.Station.Views
         private Button btnActualPixels;
         private Button btnApply;
         private Button btnCancel;
-        private TabControl tabPreview;
-        private TabPage tabSourceImage;
-        private TabPage tabBinaryImage;
+        private SplitContainer previewSplit;
         private ImageViewport sourceViewport;
         private ImageViewport binaryViewport;
         private DataGridView dgvBlobs;
@@ -101,7 +99,7 @@ namespace NinePointRotationCalibration.Station.Views
             root.Controls.Add(BuildFooter(), 0, 1);
             Controls.Add(root);
 
-            previewTimer.Interval = 250;
+            previewTimer.Interval = 40;
             ResumeLayout(false);
         }
 
@@ -247,24 +245,28 @@ namespace NinePointRotationCalibration.Station.Views
             toolbar.Controls.Add(btnFit, 1, 0);
             toolbar.Controls.Add(btnActualPixels, 2, 0);
 
-            tabPreview = new TabControl();
-            tabPreview.Dock = DockStyle.Fill;
-            tabPreview.Name = "tabPreview";
-            tabPreview.Padding = new Point(12, 5);
+            previewSplit = new SplitContainer();
+            previewSplit.BackColor = Color.FromArgb(45, 52, 60);
+            previewSplit.Dock = DockStyle.Fill;
+            previewSplit.IsSplitterFixed = false;
+            previewSplit.Margin = Padding.Empty;
+            previewSplit.Name = "previewSplit";
+            previewSplit.Orientation = Orientation.Horizontal;
+            previewSplit.Size = new Size(988, 520);
+            previewSplit.Panel1MinSize = 110;
+            previewSplit.Panel2MinSize = 110;
+            previewSplit.SplitterDistance = 250;
+            previewSplit.SplitterWidth = 5;
 
-            tabSourceImage = CreatePreviewPage("tabSourceImage", "原图");
             sourceViewport = new ImageViewport();
             sourceViewport.Dock = DockStyle.Fill;
             sourceViewport.Name = "sourceViewport";
-            tabSourceImage.Controls.Add(sourceViewport);
+            previewSplit.Panel1.Controls.Add(CreateViewportPane("原图窗口（原始像素对比）", sourceViewport));
 
-            tabBinaryImage = CreatePreviewPage("tabBinaryImage", "局部二值图");
             binaryViewport = new ImageViewport();
             binaryViewport.Dock = DockStyle.Fill;
             binaryViewport.Name = "binaryViewport";
-            tabBinaryImage.Controls.Add(binaryViewport);
-            tabPreview.Controls.Add(tabSourceImage);
-            tabPreview.Controls.Add(tabBinaryImage);
+            previewSplit.Panel2.Controls.Add(CreateViewportPane("局部二值效果图窗口（ROI 分割 / 轮廓叠加）", binaryViewport));
 
             dgvBlobs = new DataGridView();
             ConfigureGrid(dgvBlobs);
@@ -278,7 +280,7 @@ namespace NinePointRotationCalibration.Station.Views
             dgvBlobs.Columns.Add(stateColumn);
 
             layout.Controls.Add(toolbar, 0, 0);
-            layout.Controls.Add(tabPreview, 0, 1);
+            layout.Controls.Add(previewSplit, 0, 1);
             layout.Controls.Add(dgvBlobs, 0, 2);
             parent.Controls.Add(layout);
         }
@@ -410,15 +412,24 @@ namespace NinePointRotationCalibration.Station.Views
             return button;
         }
 
-        private static TabPage CreatePreviewPage(string name, string text)
+        private static Control CreateViewportPane(string headerText, ImageViewport viewport)
         {
-            TabPage page = new TabPage();
-            page.BackColor = Color.Black;
-            page.Name = name;
-            page.Padding = Padding.Empty;
-            page.Text = text;
-            page.UseVisualStyleBackColor = false;
-            return page;
+            Panel container = new Panel();
+            container.BackColor = Color.Black;
+            container.Dock = DockStyle.Fill;
+
+            Label header = new Label();
+            header.BackColor = Color.FromArgb(24, 32, 44);
+            header.Dock = DockStyle.Top;
+            header.ForeColor = Color.FromArgb(203, 213, 225);
+            header.Height = 22;
+            header.Padding = new Padding(8, 0, 0, 0);
+            header.Text = headerText;
+            header.TextAlign = ContentAlignment.MiddleLeft;
+
+            container.Controls.Add(viewport);
+            container.Controls.Add(header);
+            return container;
         }
 
         private static void ConfigureGrid(DataGridView grid)

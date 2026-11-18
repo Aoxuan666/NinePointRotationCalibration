@@ -29,7 +29,12 @@ using UiImageCoordinate = NinePointRotationCalibration.WinForms.Geometry.ImageCo
 using UiRotatedRectangle = NinePointRotationCalibration.WinForms.Geometry.RotatedRectangle;
 using UiTemplateEditorForm = NinePointRotationCalibration.WinForms.Forms.TemplateEditorForm;
 using UiTemplateEditorState = NinePointRotationCalibration.WinForms.Models.TemplateEditorState;
+using UiTemplateEditorService = NinePointRotationCalibration.WinForms.Services.ITemplateEditorService;
+using UiTemplateFeatureResult = NinePointRotationCalibration.WinForms.Models.TemplateFeatureResult;
+using UiTemplateBuildResult = NinePointRotationCalibration.WinForms.Models.TemplateBuildResult;
+using UiTemplateTestResult = NinePointRotationCalibration.WinForms.Models.TemplateTestResult;
 using UiCanvasRoiTarget = NinePointRotationCalibration.WinForms.Models.CanvasRoiTarget;
+using UiRoiChangedEventArgs = NinePointRotationCalibration.WinForms.Models.RoiChangedEventArgs;
 using UiCalibrationResultView = NinePointRotationCalibration.WinForms.Models.CalibrationResultView;
 
 namespace NinePointRotationCalibration.Station.Tests
@@ -133,6 +138,8 @@ namespace NinePointRotationCalibration.Station.Tests
             Run("Camera tab layout prevents clipping and wires switches cleanly", TestCameraTabLayoutAndSwitches);
             Run("Calibration RMS mapper and MainForm summary/diagnostics work cleanly", TestCalibrationRmsUiAndMapper);
             Run("Adaptive template thresholds build and match across low-contrast, MockPCB, and UI workflow", TestAdaptiveTemplateThresholdsEndToEnd);
+            Run("Template editor starts without default ROIs and auto-extracts/refreshes features", TestTemplateEditorEmptyDefaultAndAutoFeatureExtraction);
+            Run("Detection tab displays synchronized top-source and bottom-effect viewports", TestDetectionDualViewportsAndSmoothBinaryPreview);
 
             Console.WriteLine();
             Console.WriteLine("Passed: {0}; Failed: {1}", _passed, _failed);
@@ -3010,6 +3017,463 @@ namespace NinePointRotationCalibration.Station.Tests
                             "TemplateEditorForm must display resolved auto EdgeHighThreshold");
                     }
                 }
+            }
+        }
+
+        private static void TestTemplateEditorEmptyDefaultAndAutoFeatureExtraction()
+        {
+            using (Bitmap syntheticBoard = new Bitmap(800, 600, PixelFormat.Format24bppRgb))
+            {
+                using (Graphics g = Graphics.FromImage(syntheticBoard))
+                {
+                    g.Clear(Color.FromArgb(24, 30, 38));
+                    using (Brush padBrush = new SolidBrush(Color.FromArgb(220, 228, 238)))
+                    using (Pen framePen = new Pen(Color.FromArgb(215, 225, 235), 4.0f))
+                    {
+                        g.DrawRectangle(framePen, 160, 140, 480, 320);
+                        for (int x = 200; x <= 560; x += 60)
+                        {
+                            for (int y = 180; y <= 380; y += 60)
+                            {
+                                g.FillRectangle(padBrush, x, y, 28, 22);
+                            }
+                        }
+                    }
+                }
+
+                using (TestPreviewEditorService service = new TestPreviewEditorService())
+                using (UiTemplateEditorForm editor = new UiTemplateEditorForm(
+                    syntheticBoard,
+                    new UiTemplateEditorState(),
+                    service,
+                    true))
+                {
+                    editor.ShowInTaskbar = false;
+                    editor.StartPosition = FormStartPosition.Manual;
+                    editor.Location = new Point(-20000, -20000);
+                    UiTemplateEditorState confirmedState = null;
+                    DialogResult confirmedDialog = DialogResult.None;
+                    editor.FormClosing += delegate
+                    {
+                        confirmedState = editor.ResultState;
+                        confirmedDialog = editor.DialogResult;
+                    };
+
+                    editor.Show();
+                    Application.DoEvents();
+
+                    UiCalibrationCanvas canvas = GetPrivateField<UiCalibrationCanvas>(editor, "_canvas");
+                    ToolStripButton addTemplateButton = GetPrivateField<ToolStripButton>(editor, "_addTemplateRoiButton");
+                    ToolStripButton addSearchButton = GetPrivateField<ToolStripButton>(editor, "_addSearchRoiButton");
+                    ToolStripButton addDetectionButton = GetPrivateField<ToolStripButton>(editor, "_addDetectionRoiButton");
+                    ToolStripButton deleteButton = GetPrivateField<ToolStripButton>(editor, "_deleteRoiButton");
+                    Button okButton = GetPrivateField<Button>(editor, "_okButton");
+
+                    // 1. 新建模板打开时默认不生成模板 ROI / 搜索 ROI / 检测 ROI，按钮文字处于待添加态
+                    True(canvas.TemplateRoi == null && canvas.SearchRoi == null && canvas.DetectionRoi == null,
+                        "new template editor must start without default template, search, or detection ROI");
+                    True(canvas.EditorOverlay.Points.Count == 0,
+                        "empty editor must not render stale feature points before ROI is added");
+                    True(addTemplateButton.Text == "+ 模板ROI" &&
+                         addSearchButton.Text == "+ 搜索ROI" &&
+                         addDetectionButton.Text == "+ 检测ROI",
+                        "toolbar must display explicit + ROI buttons before ROIs exist");
+
+                    // 2. 点击 + 模板ROI 后自动选中模板并触发实时特征提取，无需手动点击提取按钮
+                    addTemplateButton.PerformClick();
+                    True(PumpUntil(() => canvas.EditorOverlay.Points.Count > 0 && service.ExtractCallCount >= 1, 8000),
+                        "adding template ROI must automatically extract and display feature points");
+                    True(canvas.TemplateRoi != null && canvas.SearchRoi == null,
+                        "adding template ROI must keep search ROI unset until added or confirmed");
+                    True(addTemplateButton.Text == "选中模板",
+                        "template button text must switch to selection label once ROI exists");
+
+                    int extractCountAfterAdd = service.ExtractCallCount;
+                    double meanColumnBeforeDrag = canvas.EditorOverlay.Points.Average(point => point.Position.Column);
+
+                    // 3. 拖动模板 ROI（先本地即时裁剪，释放鼠标后触发 HALCON 刷新）
+                    UiRotatedRectangle moved = canvas.TemplateRoi.DeepClone();
+                    moved.CenterColumn += 120.0;
+                    canvas.TemplateRoi = moved;
+                    MethodInfo roiChanged = typeof(UiTemplateEditorForm).GetMethod(
+                        "CanvasRoiChanged",
+                        BindingFlags.Instance | BindingFlags.NonPublic);
+                    True(roiChanged != null, "TemplateEditorForm.CanvasRoiChanged must exist");
+                    roiChanged.Invoke(editor, new object[] { canvas, new UiRoiChangedEventArgs(UiCanvasRoiTarget.Template, moved, false) });
+                    True(canvas.EditorOverlay.Points.All(point => point.Position.Column >= moved.CenterColumn - moved.HalfWidth - 2.0),
+                        "dragging template ROI must immediately clip stale feature points outside new ROI");
+
+                    roiChanged.Invoke(editor, new object[] { canvas, new UiRoiChangedEventArgs(UiCanvasRoiTarget.Template, moved, true) });
+                    True(PumpUntil(() => service.ExtractCallCount > extractCountAfterAdd, 8000),
+                        "finalizing dragged template ROI must trigger updated feature extraction");
+                    double meanColumnAfterDrag = canvas.EditorOverlay.Points.Average(point => point.Position.Column);
+                    True(meanColumnAfterDrag > meanColumnBeforeDrag + 5.0,
+                        "extracted feature points must track moved template ROI center");
+
+                    // 4. 删除选中的模板 ROI 应同步清空特征显示
+                    canvas.SelectedRoi = UiCanvasRoiTarget.Template;
+                    deleteButton.PerformClick();
+                    Application.DoEvents();
+                    True(canvas.TemplateRoi == null && canvas.EditorOverlay.Points.Count == 0,
+                        "deleting selected template ROI must clear ROI and displayed features");
+
+                    // 5. 仅添加模板 ROI（留空 SearchRoi）直接点击确定时，应自动补全搜索/检测 ROI 并自动构建模型
+                    addTemplateButton.PerformClick();
+                    True(PumpUntil(() => canvas.EditorOverlay.Points.Count > 0, 8000),
+                        "re-adding template ROI must auto-extract features again");
+                    okButton.PerformClick();
+                    True(PumpUntil(() => confirmedDialog == DialogResult.OK && confirmedState != null, 8000),
+                        "confirming with missing SearchRoi must auto-populate ROI and auto-build model");
+                    True(confirmedState.SearchRoi != null &&
+                         confirmedState.DetectionRoi != null &&
+                         confirmedState.ModelData != null &&
+                         confirmedState.ModelData.Length > 0,
+                        "confirmed result must carry auto-populated SearchRoi, DetectionRoi, and built ModelData");
+                }
+            }
+        }
+
+        private static void TestDetectionDualViewportsAndSmoothBinaryPreview()
+        {
+            string directory = Path.Combine(
+                Path.GetTempPath(),
+                "NinePointRotationCalibration.Station.Tests",
+                Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+            try
+            {
+                StationOptions options = CreateTestOptions(
+                    directory,
+                    Path.Combine(directory, "detection.json"),
+                    Path.Combine(directory, "positioning.nprcal"));
+                options.CameraEnabled = false;
+                using (StationRuntime runtime = CreateRuntime(
+                    Path.Combine(directory, "station.json"),
+                    options))
+                using (MainForm form = new MainForm())
+                using (MainFormRuntimeBinder binder = new MainFormRuntimeBinder(form, runtime))
+                {
+                    form.ShowInTaskbar = false;
+                    form.StartPosition = FormStartPosition.Manual;
+                    form.Location = new Point(-20000, -20000);
+                    form.Show();
+                    Application.DoEvents();
+
+                    SplitContainer imageSplit = form.Controls.Find("imageSplit", true).OfType<SplitContainer>().Single();
+                    Panel sourceHeader = form.Controls.Find("pnlSourceViewportHeader", true).OfType<Panel>().Single();
+                    CheckBox binaryCheck = form.Controls.Find("chkBinaryPreview", true).OfType<CheckBox>().Single();
+                    NumericUpDown minArea = form.Controls.Find("nudMinimumBlobArea", true).OfType<NumericUpDown>().Single();
+                    NumericUpDown maxArea = form.Controls.Find("nudMaximumBlobArea", true).OfType<NumericUpDown>().Single();
+                    NumericUpDown rectangularity = form.Controls.Find("nudRectangularity", true).OfType<NumericUpDown>().Single();
+
+                    True(!form.IsDetectionDualViewActive && imageSplit.Panel2Collapsed && !sourceHeader.Visible,
+                        "non-detection tabs must keep dual viewport collapsed");
+                    True(binaryCheck.Checked,
+                        "localized binary preview on effect viewport must default to enabled");
+                    True(string.Equals(minArea.Tag as string, "detection.previewParameters", StringComparison.Ordinal) &&
+                         string.Equals(maxArea.Tag as string, "detection.previewParameters", StringComparison.Ordinal) &&
+                         string.Equals(rectangularity.Tag as string, "detection.previewParameters", StringComparison.Ordinal),
+                        "all blob area and rectangularity controls must trigger real-time effect preview");
+
+                    // 切换到检测页，验证上下双窗口（上原图 / 下效果图）激活与布局
+                    form.WorkTabs.SelectedTab = form.WorkTabs.TabPages["tabDetection"];
+                    Application.DoEvents();
+                    True(form.IsDetectionDualViewActive &&
+                         !imageSplit.Panel2Collapsed &&
+                         imageSplit.Orientation == Orientation.Horizontal &&
+                         sourceHeader.Visible &&
+                         form.EffectViewport.Visible,
+                        "selecting tabDetection must expand vertically stacked source and effect viewports");
+
+                    using (Bitmap sourceBmp = new Bitmap(240, 180, PixelFormat.Format24bppRgb))
+                    {
+                        using (Graphics g = Graphics.FromImage(sourceBmp))
+                        {
+                            g.Clear(Color.FromArgb(90, 90, 90));
+                            using (Pen defectPen = new Pen(Color.FromArgb(250, 250, 250), 8.0f))
+                            {
+                                g.DrawLine(defectPen, 105, 75, 135, 105);
+                                g.DrawLine(defectPen, 135, 75, 105, 105);
+                            }
+                        }
+
+                        using (FrameEventArgs inspectionFrame = new FrameEventArgs(
+                            new Bitmap(sourceBmp),
+                            "offline-inspection"))
+                        {
+                            InvokeBinder(binder, "Runtime_FrameReady", runtime, inspectionFrame);
+                        }
+
+                        InspectionResult result = new InspectionResult
+                        {
+                            Executed = true,
+                            Success = true,
+                            Pass = false,
+                            ExpectedCount = 1,
+                            ActualCount = 1,
+                            Message = "NG",
+                            Items = new List<BoardInspectionItem>
+                            {
+                                new BoardInspectionItem
+                                {
+                                    BoardIndex = 1,
+                                    MatchScore = 0.96,
+                                    ImageColumn = 120.0,
+                                    ImageRow = 90.0,
+                                    ImageAngleDegrees = 0.0,
+                                    HasManualMark = true,
+                                    DetectionRegion = new DetectionRoi
+                                    {
+                                        ReferenceCenterRow = 90.0,
+                                        ReferenceCenterColumn = 120.0,
+                                        PhiDegrees = 0.0,
+                                        HalfWidth = 50.0,
+                                        HalfHeight = 50.0
+                                    },
+                                    Blobs = new List<BlobFinding>
+                                    {
+                                        new BlobFinding
+                                        {
+                                            Area = 900.0,
+                                            Contour = new List<PointF>
+                                            {
+                                                new PointF(105.0f, 75.0f),
+                                                new PointF(135.0f, 75.0f),
+                                                new PointF(135.0f, 105.0f),
+                                                new PointF(105.0f, 105.0f)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        };
+                        InvokeBinder(binder, "Runtime_InspectionCompleted", runtime, new InspectionEventArgs(result));
+
+                        // 等待 EffectViewport 生成局部二值分割效果图（ROI 内黑底白斑，ROI 外及顶部原图窗口保持灰底）
+                        True(PumpUntil(() =>
+                        {
+                            if (!form.Viewport.HasImage || !form.EffectViewport.HasImage) return false;
+                            using (Bitmap effectSnap = form.EffectViewport.Snapshot())
+                            {
+                                if (effectSnap == null) return false;
+                                Color insideBg = effectSnap.GetPixel(75, 45);
+                                Color insideSpot = effectSnap.GetPixel(120, 90);
+                                return insideBg.R < 15 && insideSpot.R > 240 &&
+                                       GetViewportContourOverlayCount(form.EffectViewport) >= 1;
+                            }
+                        }, 8000), "bottom effect viewport must display localized binary segmentation and blob contours");
+
+                        using (Bitmap topSnap = form.Viewport.Snapshot())
+                        using (Bitmap bottomSnap = form.EffectViewport.Snapshot())
+                        {
+                            Color topRoiBg = topSnap.GetPixel(75, 45);
+                            Color bottomOutsideRoi = bottomSnap.GetPixel(15, 15);
+                            True(Math.Abs(topRoiBg.R - 90) <= 2,
+                                "top source viewport must preserve clean original gray pixels inside ROI");
+                            True(Math.Abs(bottomOutsideRoi.R - 90) <= 2,
+                                "bottom effect viewport must preserve original source pixels outside detection ROI");
+                            True(GetViewportContourOverlayCount(form.Viewport) == 0,
+                                "top source viewport must remain free of noisy overlays during dual-view detection");
+                        }
+
+                        // 切换仅原图叠加模式时，底部窗口恢复原图但保留轮廓/ROI 叠加，且不会影响顶部窗口
+                        binaryCheck.Checked = false;
+                        True(PumpUntil(() =>
+                        {
+                            using (Bitmap effectSnap = form.EffectViewport.Snapshot())
+                            {
+                                return effectSnap != null && Math.Abs(effectSnap.GetPixel(75, 45).R - 90) <= 2;
+                            }
+                        }, 8000), "unchecking binary preview must show source image + overlays in bottom effect viewport");
+                        True(GetViewportContourOverlayCount(form.EffectViewport) >= 1 &&
+                             GetViewportRoiOverlayCount(form.EffectViewport) == 1,
+                            "effect viewport must keep defect contour and ROI box overlays");
+
+                        // 重新勾选局部二值后切回，验证效果图平滑恢复且切离检测页保留偏好设置与锁定原图
+                        binaryCheck.Checked = true;
+                        True(PumpUntil(() =>
+                        {
+                            using (Bitmap effectSnap = form.EffectViewport.Snapshot())
+                            {
+                                return effectSnap != null && effectSnap.GetPixel(75, 45).R < 15;
+                            }
+                        }, 8000), "re-enabling binary preview must smoothly restore localized binary segmentation");
+
+                        // 缩放同步检查
+                        form.Viewport.ShowActualPixels();
+                        True(PumpUntil(() => Math.Abs(form.Viewport.EffectiveScale - form.EffectViewport.EffectiveScale) < 1e-3f, 3000),
+                            "zooming top source viewport must synchronize bottom effect viewport scale");
+
+                        // 切出检测页后折叠下窗口但保留原图与勾选偏好
+                        form.WorkTabs.SelectedIndex = 0;
+                        Application.DoEvents();
+                        True(!form.IsDetectionDualViewActive && imageSplit.Panel2Collapsed &&
+                             binaryCheck.Checked && GetLockedDisplayImage(binder) != null,
+                            "leaving detection tab must collapse effect viewport while keeping locked image and toggle preference");
+
+                        // 同时验证独立 BlobDebugForm 的上下双视口结构
+                        using (BlobDebugForm debugForm = new BlobDebugForm(
+                            sourceBmp,
+                            null,
+                            new DetectionProfile { TemplateMatchingEnabled = false }))
+                        {
+                            SplitContainer previewSplit = debugForm.Controls.Find("previewSplit", true).OfType<SplitContainer>().Single();
+                            ImageViewport debugTop = debugForm.Controls.Find("sourceViewport", true).OfType<ImageViewport>().Single();
+                            ImageViewport debugBottom = debugForm.Controls.Find("binaryViewport", true).OfType<ImageViewport>().Single();
+                            True(previewSplit.Orientation == Orientation.Horizontal &&
+                                 previewSplit.Panel1.Contains(debugTop) &&
+                                 previewSplit.Panel2.Contains(debugBottom) &&
+                                 debugForm.Controls.Find("tabPreview", true).Length == 0,
+                                "BlobDebugForm must use stacked top-source and bottom-binary dual viewports");
+                        }
+                    }
+                }
+            }
+            finally
+            {
+                if (Directory.Exists(directory)) Directory.Delete(directory, true);
+            }
+        }
+
+        private static int GetViewportRoiOverlayCount(ImageViewport viewport)
+        {
+            FieldInfo field = typeof(ImageViewport).GetField(
+                "_rois",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            True(field != null, "viewport roi overlays must be accessible to display tests");
+            System.Collections.ICollection rois = field.GetValue(viewport) as System.Collections.ICollection;
+            return rois == null ? 0 : rois.Count;
+        }
+
+        private static bool PumpUntil(Func<bool> condition, int timeoutMilliseconds)
+        {
+            DateTime deadline = DateTime.UtcNow.AddMilliseconds(timeoutMilliseconds);
+            while (DateTime.UtcNow < deadline)
+            {
+                Application.DoEvents();
+                if (condition()) return true;
+                Thread.Sleep(15);
+            }
+            Application.DoEvents();
+            return condition();
+        }
+
+        private sealed class TestPreviewEditorService : UiTemplateEditorService, IDisposable
+        {
+            private readonly XldTemplateMatchingEngine _engine = new XldTemplateMatchingEngine();
+            private readonly object _sync = new object();
+            private HalconGrayImage _cachedGray;
+            private int _extractCallCount;
+
+            public int ExtractCallCount
+            {
+                get { return Volatile.Read(ref _extractCallCount); }
+            }
+
+            public Task<UiTemplateFeatureResult> ExtractFeaturesAsync(
+                Bitmap image,
+                UiTemplateEditorState state,
+                CancellationToken cancellationToken)
+            {
+                return Task.Run(() =>
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    Interlocked.Increment(ref _extractCallCount);
+                    TemplateDefinition template = UiCoreUiMapper.ToCoreTemplate(
+                        state,
+                        new TemplateDefinition(),
+                        image.Width,
+                        image.Height);
+                    TemplateBuildResult build;
+                    lock (_sync)
+                    {
+                        if (_cachedGray == null || _cachedGray.Width != image.Width || _cachedGray.Height != image.Height)
+                        {
+                            if (_cachedGray != null) _cachedGray.Dispose();
+                            _cachedGray = HalconGrayImage.FromBitmap(image);
+                        }
+                        build = ((IFeaturePreviewTemplateMatchingEngine)_engine).PreviewFeatures(_cachedGray, template);
+                    }
+                    if (!build.Success)
+                    {
+                        return new UiTemplateFeatureResult { Success = false, Message = build.Message };
+                    }
+                    List<List<UiImageCoordinate>> contours = (build.ContourSegments ?? new List<List<ImagePoint>>())
+                        .Select(seg => seg.Select(p => new UiImageCoordinate(p.Row, p.Column)).ToList())
+                        .ToList();
+                    List<UiImageCoordinate> points = contours.SelectMany(seg => seg).Take(4000).ToList();
+                    return new UiTemplateFeatureResult
+                    {
+                        Success = true,
+                        Message = build.Message,
+                        Contours = contours,
+                        FeaturePoints = points
+                    };
+                }, cancellationToken);
+            }
+
+            public Task<UiTemplateBuildResult> CreateModelAsync(
+                Bitmap image,
+                UiTemplateEditorState state,
+                CancellationToken cancellationToken)
+            {
+                return Task.Run(() =>
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    TemplateDefinition template = UiCoreUiMapper.ToCoreTemplate(
+                        state,
+                        new TemplateDefinition(),
+                        image.Width,
+                        image.Height);
+                    TemplateBuildResult build = _engine.BuildTemplate(image, template);
+                    if (!build.Success || build.Template == null)
+                    {
+                        return new UiTemplateBuildResult { Success = false, Message = build.Message };
+                    }
+                    return new UiTemplateBuildResult
+                    {
+                        Success = true,
+                        Message = build.Message,
+                        ModelData = build.Template.ModelData,
+                        ModelFormat = "shm",
+                        ModelHash = build.Template.ModelHash,
+                        ReferenceImageWidth = build.Template.ReferenceImageWidth,
+                        ReferenceImageHeight = build.Template.ReferenceImageHeight,
+                        HalconVersion = build.Template.HalconVersion,
+                        Contours = (build.ContourSegments ?? new List<List<ImagePoint>>())
+                            .Select(seg => seg.Select(p => new UiImageCoordinate(p.Row, p.Column)).ToList())
+                            .ToList()
+                    };
+                }, cancellationToken);
+            }
+
+            public Task<UiTemplateTestResult> TestMatchAsync(
+                Bitmap image,
+                UiTemplateEditorState state,
+                CancellationToken cancellationToken)
+            {
+                return Task.Run(() =>
+                {
+                    TemplateDefinition template = UiCoreUiMapper.ToCoreTemplate(
+                        state,
+                        new TemplateDefinition(),
+                        image.Width,
+                        image.Height);
+                    return UiCoreUiMapper.FromCoreTemplateTest(_engine.Locate(image, template, true));
+                }, cancellationToken);
+            }
+
+            public void Dispose()
+            {
+                lock (_sync)
+                {
+                    if (_cachedGray != null)
+                    {
+                        _cachedGray.Dispose();
+                        _cachedGray = null;
+                    }
+                }
+                _engine.Dispose();
             }
         }
 
