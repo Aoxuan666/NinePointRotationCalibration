@@ -307,6 +307,7 @@ namespace NinePointRotationCalibration.Station.Views
                     _lastInspectionCompletedGeneration = _displayGeneration;
                     if (!_view.IsDetectionDualViewActive)
                     {
+                        InvalidateEffectRenderCache();
                         _view.Viewport.SetPointOverlays(null);
                         _view.Viewport.SetRoiOverlays(null);
                         _view.Viewport.SetContourOverlays(contours);

@@ -6,6 +6,7 @@ using System.Globalization;
 using System.Linq;
 using System.Windows.Forms;
 using NinePointRotationCalibration.Station.Controls;
+using NinePointRotationCalibration.WinForms.Controls;
 
 namespace NinePointRotationCalibration.Station.Views
 {
@@ -71,6 +72,9 @@ namespace NinePointRotationCalibration.Station.Views
         private CameraUiState _cameraUiState = CameraUiState.Disconnected;
         private TcpUiState _tcpUiState = TcpUiState.NotListening;
         private bool _dualViewActive;
+        private bool _dualViewStateInitialized;
+        private bool _suppressImageSplitBalance;
+        private bool _warmingTabs;
         private bool _syncingViewports;
         private bool _logCollapsed;
         private bool _userExpandedLogInDualView;
@@ -78,6 +82,12 @@ namespace NinePointRotationCalibration.Station.Views
         public MainForm()
         {
             InitializeComponent();
+            UiRenderOptimizer.EnableDoubleBufferingRecursive(this);
+            BufferedTabControl bufferedTabs = tabWork as BufferedTabControl;
+            if (bufferedTabs != null)
+            {
+                bufferedTabs.TransitionScopeFactory = CreateWorkTabTransitionScope;
+            }
             InitializeCalibrationRows();
             WireUiEvents();
             toolTip.SetToolTip(
@@ -114,6 +124,12 @@ namespace NinePointRotationCalibration.Station.Views
         public bool IsDetectionDualViewActive
         {
             get { return _dualViewActive; }
+        }
+
+        [Browsable(false)]
+        public bool IsWarmingTabs
+        {
+            get { return _warmingTabs; }
         }
 
         [Browsable(false)]
@@ -402,49 +418,78 @@ namespace NinePointRotationCalibration.Station.Views
         {
             RunOnUiThread(delegate
             {
+                if (_dualViewStateInitialized && _dualViewActive == active)
+                {
+                    return;
+                }
+
+                _dualViewStateInitialized = true;
                 _dualViewActive = active;
-                if (pnlSourceViewportHeader != null)
-                {
-                    pnlSourceViewportHeader.Visible = active;
-                }
 
-                // 进入检测双视图时自动折叠底部日志以释放纵深空间；切离时恢复显示
-                if (active)
+                _suppressImageSplitBalance = true;
+                using (UiRenderOptimizer.BeginFreezeScope(this))
                 {
-                    if (!_userExpandedLogInDualView) SetLogCollapsed(true);
-                }
-                else
-                {
-                    _userExpandedLogInDualView = false;
-                    SetLogCollapsed(false);
-                }
+                    if (imageSplit != null) imageSplit.SuspendLayout();
+                    if (workspaceSplit != null) workspaceSplit.SuspendLayout();
+                    if (rootLayout != null) rootLayout.SuspendLayout();
+                    SuspendLayout();
+                    try
+                    {
+                        if (pnlSourceViewportHeader != null)
+                        {
+                            pnlSourceViewportHeader.Visible = active;
+                        }
 
-                if (imageSplit != null)
-                {
-                    imageSplit.Panel2Collapsed = !active;
+                        // 进入检测双视图时自动折叠底部日志以释放纵深空间；切离时恢复显示
+                        if (active)
+                        {
+                            if (!_userExpandedLogInDualView) SetLogCollapsed(true);
+                        }
+                        else
+                        {
+                            _userExpandedLogInDualView = false;
+                            SetLogCollapsed(false);
+                        }
+
+                        if (imageSplit != null)
+                        {
+                            imageSplit.Panel2Collapsed = !active;
+                        }
+
+                        Control hudParent = active ? (Control)effectViewport : imageViewport;
+                        if (lblInspectionHud != null && hudParent != null && !ReferenceEquals(lblInspectionHud.Parent, hudParent))
+                        {
+                            lblInspectionHud.Parent = hudParent;
+                            lblInspectionHud.BringToFront();
+                        }
+                    }
+                    finally
+                    {
+                        _suppressImageSplitBalance = false;
+                        if (imageSplit != null) imageSplit.ResumeLayout(true);
+                        if (workspaceSplit != null) workspaceSplit.ResumeLayout(true);
+                        if (rootLayout != null) rootLayout.ResumeLayout(true);
+                        ResumeLayout(true);
+                    }
+
                     if (active)
                     {
                         BalanceImageSplit();
+                        if (imageViewport.HasImage && effectViewport.HasImage)
+                        {
+                            SyncLinkedViewport(imageViewport, effectViewport);
+                        }
                     }
-                }
-
-                Control hudParent = active ? (Control)effectViewport : imageViewport;
-                if (lblInspectionHud != null && hudParent != null && !ReferenceEquals(lblInspectionHud.Parent, hudParent))
-                {
-                    lblInspectionHud.Parent = hudParent;
-                    lblInspectionHud.BringToFront();
-                }
-
-                if (active && imageViewport.HasImage && effectViewport.HasImage)
-                {
-                    SyncLinkedViewport(imageViewport, effectViewport);
                 }
             });
         }
 
         private void BalanceImageSplit()
         {
-            if (imageSplit == null || imageSplit.IsDisposed || imageSplit.Panel2Collapsed)
+            if (_suppressImageSplitBalance ||
+                imageSplit == null ||
+                imageSplit.IsDisposed ||
+                imageSplit.Panel2Collapsed)
             {
                 return;
             }
@@ -465,13 +510,16 @@ namespace NinePointRotationCalibration.Station.Views
         {
             if (imageSplit == null || imageSplit.IsDisposed) return;
 
-            bool toVertical = imageSplit.Orientation == Orientation.Horizontal;
-            imageSplit.Orientation = toVertical ? Orientation.Vertical : Orientation.Horizontal;
-            if (btnToggleDualLayout != null)
+            using (UiRenderOptimizer.BeginFreezeScope(imageSplit, imageSplit))
             {
-                btnToggleDualLayout.Text = toVertical ? "⇅ 切换上下" : "⇄ 切换左右";
+                bool toVertical = imageSplit.Orientation == Orientation.Horizontal;
+                imageSplit.Orientation = toVertical ? Orientation.Vertical : Orientation.Horizontal;
+                if (btnToggleDualLayout != null)
+                {
+                    btnToggleDualLayout.Text = toVertical ? "⇅ 切换上下" : "⇄ 切换左右";
+                }
+                BalanceImageSplit();
             }
-            BalanceImageSplit();
             if (_dualViewActive && imageViewport.HasImage && effectViewport.HasImage)
             {
                 SyncLinkedViewport(imageViewport, effectViewport);
@@ -494,15 +542,38 @@ namespace NinePointRotationCalibration.Station.Views
             {
                 rootLayout.RowStyles[2].Height = collapsed ? 32.0F : 128.0F;
             }
-            if (_dualViewActive)
+            if (_dualViewActive && !_suppressImageSplitBalance)
             {
                 BalanceImageSplit();
+            }
+        }
+
+        protected override void OnLoad(EventArgs e)
+        {
+            base.OnLoad(e);
+            ClampToWorkingArea();
+            if (rootLayout != null) rootLayout.PerformLayout();
+            if (workspaceSplit != null) workspaceSplit.PerformLayout();
+            if (tabWork != null) tabWork.PerformLayout();
+            _warmingTabs = true;
+            try
+            {
+                UiRenderOptimizer.WarmUpTabControlPages(tabWork);
+            }
+            finally
+            {
+                _warmingTabs = false;
             }
         }
 
         protected override void OnShown(EventArgs e)
         {
             base.OnShown(e);
+            ClampToWorkingArea();
+        }
+
+        private void ClampToWorkingArea()
+        {
             if (StartPosition == FormStartPosition.Manual) return;
 
             Rectangle workingArea = Screen.FromControl(this).WorkingArea;
@@ -516,6 +587,20 @@ namespace NinePointRotationCalibration.Station.Views
                     targetWidth,
                     targetHeight);
             }
+        }
+
+        private IDisposable CreateWorkTabTransitionScope(TabPage fromTab, TabPage toTab)
+        {
+            if (_warmingTabs) return null;
+            bool involvesDetection =
+                (fromTab != null && string.Equals(fromTab.Name, "tabDetection", StringComparison.Ordinal)) ||
+                (toTab != null && string.Equals(toTab.Name, "tabDetection", StringComparison.Ordinal));
+            if (involvesDetection)
+            {
+                return UiRenderOptimizer.BeginFreezeScope(this, imageSplit, workspaceSplit, rootLayout, this);
+            }
+
+            return UiRenderOptimizer.BeginFreezeScope(tabWork, tabWork);
         }
 
         private void SyncLinkedViewport(ImageViewport source, ImageViewport target)

@@ -28,9 +28,12 @@ namespace NinePointRotationCalibration.Station.Views
 
         private void RenderDetectionDualViewOnTabEnter()
         {
-            Bitmap sourceCopy;
+            long currentGeneration;
+            long overlayGeneration;
             bool isLive;
             bool hasCurrentOverlay;
+            bool hasLockedImage;
+            List<DetectionRoi> cachedRegions;
             List<ViewportRoiOverlay> cachedRois;
             List<ViewportContourOverlay> cachedContours;
             List<ViewportContourOverlay> matchedContours;
@@ -38,12 +41,14 @@ namespace NinePointRotationCalibration.Station.Views
             int selectedBoard;
             lock (_displaySync)
             {
+                currentGeneration = _displayGeneration;
+                overlayGeneration = _lastInspectionOverlayGeneration;
                 isLive = _displayMode == DisplayMode.LivePreview;
-                sourceCopy = _displayMode == DisplayMode.LockedFrame && _lockedDisplayImage != null
-                    ? new Bitmap(_lockedDisplayImage)
-                    : null;
-                hasCurrentOverlay = _lastInspectionOverlayGeneration == _displayGeneration &&
+                hasLockedImage = _displayMode == DisplayMode.LockedFrame && _lockedDisplayImage != null;
+                hasCurrentOverlay = hasLockedImage &&
+                                    _lastInspectionOverlayGeneration == _displayGeneration &&
                                     _lastDetectionRegions.Count > 0;
+                cachedRegions = hasCurrentOverlay ? _lastDetectionRegions : null;
                 cachedRois = hasCurrentOverlay ? CloneRoiList(_lastInspectionRois) : new List<ViewportRoiOverlay>();
                 cachedContours = hasCurrentOverlay ? CloneContourList(_lastInspectionContours) : new List<ViewportContourOverlay>();
                 matchedContours = hasCurrentOverlay ? CloneContourList(_lastMatchedBoardContours) : new List<ViewportContourOverlay>();
@@ -51,7 +56,7 @@ namespace NinePointRotationCalibration.Station.Views
                 selectedBoard = _selectedInspectionBoardIndex;
             }
 
-            if (sourceCopy == null)
+            if (!hasLockedImage)
             {
                 _view.EffectViewport.ClearImage();
                 _view.EffectViewport.ClearOverlays();
@@ -59,7 +64,48 @@ namespace NinePointRotationCalibration.Station.Views
                 return;
             }
 
-            // 先秒速同步显示当前帧，避免切页瞬间底部视口空白，随后异步刷新最新分割效果与叠加层
+            DetectionProfile profile = ReadDetectionProfileFromView();
+            bool binaryEnabled = IsBinaryPreviewEnabled();
+            int expectedCount = Decimal.ToInt32(_view.ExpectedBoardCountInput.Value);
+            CalibrationJob job = _runtime.GetPositioningJobSnapshot();
+            string currentKey = BuildEffectPreviewKey(
+                currentGeneration,
+                hasCurrentOverlay ? overlayGeneration : -1,
+                hasCurrentOverlay && cachedRegions != null ? cachedRegions.Count : 0,
+                profile,
+                binaryEnabled,
+                expectedCount,
+                job);
+
+            // 若当前图像、检测参数、模板和叠加层与已渲染效果图完全一致，直接复用底图与叠加层，实现零重绘秒切
+            if (_view.EffectViewport.HasImage &&
+                _renderedEffectGeneration == currentGeneration &&
+                string.Equals(_renderedEffectKey, currentKey, StringComparison.Ordinal))
+            {
+                if (hasCurrentOverlay)
+                {
+                    _view.EffectViewport.SetRoiOverlays(ApplySelectedRoiHighlight(cachedRois, boardIndices, selectedBoard));
+                }
+                _view.SetEffectViewportInformation(string.IsNullOrWhiteSpace(_renderedEffectInfoText)
+                    ? "检测效果图已就绪"
+                    : _renderedEffectInfoText);
+                SyncEffectViewportViewDeferred();
+                return;
+            }
+
+            Bitmap sourceCopy;
+            lock (_displaySync)
+            {
+                if (_displayMode != DisplayMode.LockedFrame ||
+                    _lockedDisplayImage == null ||
+                    _displayGeneration != currentGeneration)
+                {
+                    return;
+                }
+                sourceCopy = new Bitmap(_lockedDisplayImage);
+            }
+
+            // 缓存未命中时先秒速同步显示当前帧，切页绘制完成后再在后台生成最新分割效果与叠加层
             _view.EffectViewport.SetImageOwned(sourceCopy);
             if (hasCurrentOverlay)
             {
@@ -76,7 +122,7 @@ namespace NinePointRotationCalibration.Station.Views
             }
             SyncEffectViewportViewDeferred();
             _view.SetEffectViewportInformation("检测效果图刷新中...");
-            ScheduleBinaryPreview(false);
+            TriggerEffectPreviewOnUi(false);
         }
 
         private void RestoreSingleViewportOverlays()
@@ -126,7 +172,7 @@ namespace NinePointRotationCalibration.Station.Views
         private void TriggerEffectPreviewOnUi(bool debounce)
         {
             if (_disposed || !_view.IsDetectionDualViewActive) return;
-            if (_view.IsHandleCreated && _view.InvokeRequired)
+            if (_view.IsHandleCreated)
             {
                 try
                 {
@@ -204,9 +250,10 @@ namespace NinePointRotationCalibration.Station.Views
 
                 DetectionProfile profile = ReadDetectionProfileFromView();
                 bool binaryEnabled = IsBinaryPreviewEnabled();
+                int expectedCount = Decimal.ToInt32(_view.ExpectedBoardCountInput.Value);
+                CalibrationJob job = _runtime.GetPositioningJobSnapshot();
                 if (profile.TemplateMatchingEnabled && regions.Count == 0)
                 {
-                    CalibrationJob job = _runtime.GetPositioningJobSnapshot();
                     bool alreadyInspectedCurrentFrame;
                     lock (_displaySync) alreadyInspectedCurrentFrame = _lastInspectionCompletedGeneration == generation;
                     if (alreadyInspectedCurrentFrame || job == null || job.Template == null || !job.Template.HasUsableModel)
@@ -215,6 +262,7 @@ namespace NinePointRotationCalibration.Station.Views
                         lock (_displaySync) stillCurrent = generation == _displayGeneration;
                         if (stillCurrent && !cancellation.IsCancellationRequested && _view.IsDetectionDualViewActive)
                         {
+                            InvalidateEffectRenderCache();
                             _view.EffectViewport.SetImageOwned(source);
                             source = null;
                             _view.EffectViewport.ClearOverlays();
@@ -228,7 +276,7 @@ namespace NinePointRotationCalibration.Station.Views
 
                     _view.SetEffectViewportInformation("正在定位检测区域...");
                     _view.SetOperationStatus("正在定位检测 ROI...", true, false);
-                    int maximumMatches = Decimal.ToInt32(_view.ExpectedBoardCountInput.Value) + 1;
+                    int maximumMatches = expectedCount + 1;
                     TemplateMatchCollectionResult matchResult = await Task
                         .Run(() => _runtime.LocatePositioningForPreview(source, maximumMatches))
                         .ConfigureAwait(true);
@@ -254,6 +302,7 @@ namespace NinePointRotationCalibration.Station.Views
                         lock (_displaySync) stillCurrent = generation == _displayGeneration;
                         if (stillCurrent && !cancellation.IsCancellationRequested && _view.IsDetectionDualViewActive)
                         {
+                            InvalidateEffectRenderCache();
                             _view.EffectViewport.SetImageOwned(source);
                             source = null;
                             _view.EffectViewport.ClearOverlays();
@@ -298,12 +347,15 @@ namespace NinePointRotationCalibration.Station.Views
                 }
                 if (!string.IsNullOrWhiteSpace(preview.ErrorMessage))
                 {
+                    InvalidateEffectRenderCache();
                     _view.SetEffectViewportInformation("检测效果图更新失败");
                     _view.SetOperationStatus("检测效果图更新失败：" + preview.ErrorMessage, false, true);
                     preview.Dispose();
                     return;
                 }
 
+                long overlayGenAfter;
+                int regionCountAfter;
                 lock (_displaySync)
                 {
                     if (generation == _displayGeneration)
@@ -312,8 +364,11 @@ namespace NinePointRotationCalibration.Station.Views
                         _lastInspectionContours = CloneContourList(preview.BlobContours);
                         _lastInspectionOverlayGeneration = generation;
                     }
+                    overlayGenAfter = _lastInspectionOverlayGeneration == generation ? generation : -1;
+                    regionCountAfter = overlayGenAfter == generation ? _lastDetectionRegions.Count : 0;
                 }
 
+                string effectInfo = BuildEffectInfoText(profile, binaryEnabled, preview.BlobCount);
                 _view.EffectViewport.SetImageOwned(preview.TakeImage());
                 _view.EffectViewport.SetPointOverlays(null);
                 _view.EffectViewport.SetContourOverlays(preview.EffectContours);
@@ -322,8 +377,18 @@ namespace NinePointRotationCalibration.Station.Views
                     boardIndices,
                     selectedBoardIndex));
                 SyncEffectViewportViewDeferred();
-                _view.SetEffectViewportInformation(BuildEffectInfoText(profile, binaryEnabled, preview.BlobCount));
+                _view.SetEffectViewportInformation(effectInfo);
                 _view.SetOperationStatus(binaryEnabled ? "检测效果图（局部二值）已更新" : "检测效果图（原图叠加）已更新", false, false);
+                _renderedEffectGeneration = generation;
+                _renderedEffectKey = BuildEffectPreviewKey(
+                    generation,
+                    overlayGenAfter,
+                    regionCountAfter,
+                    profile,
+                    binaryEnabled,
+                    expectedCount,
+                    job);
+                _renderedEffectInfoText = effectInfo;
                 preview.Dispose();
             }
             catch (Exception exception)
@@ -784,6 +849,49 @@ namespace NinePointRotationCalibration.Station.Views
             _selectedInspectionBoardIndex = -1;
             _lastInspectionOverlayGeneration = -1;
             _lastInspectionCompletedGeneration = -1;
+            InvalidateEffectRenderCache();
+        }
+
+        private void InvalidateEffectRenderCache()
+        {
+            _renderedEffectGeneration = -1;
+            _renderedEffectKey = null;
+            _renderedEffectInfoText = null;
+        }
+
+        private static string BuildEffectPreviewKey(
+            long generation,
+            long overlayGeneration,
+            int regionCount,
+            DetectionProfile profile,
+            bool binaryEnabled,
+            int expectedCount,
+            CalibrationJob positioningJob)
+        {
+            DetectionProfile safe = profile ?? new DetectionProfile();
+            TemplateDefinition template = positioningJob == null ? null : positioningJob.Template;
+            long templateRevision = template == null ? 0L : template.Revision;
+            string modelHash = template == null ? string.Empty : (template.ModelHash ?? string.Empty);
+            return string.Format(
+                CultureInfo.InvariantCulture,
+                "{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}|{8}|{9}|{10:0.####}|{11:0.####}|{12:0.####}|{13}|{14}|{15}|{16}",
+                generation,
+                overlayGeneration,
+                regionCount,
+                binaryEnabled ? 1 : 0,
+                expectedCount,
+                safe.TemplateMatchingEnabled ? 1 : 0,
+                safe.FollowTemplateTransform ? 1 : 0,
+                safe.AutoThreshold ? 1 : 0,
+                safe.DetectDarkForeground ? 1 : 0,
+                safe.BrightThreshold,
+                safe.MinimumBlobArea,
+                safe.MaximumBlobArea,
+                safe.RectangleFillThreshold,
+                safe.RectangleFilterEnabled ? 1 : 0,
+                safe.FillHoles ? 1 : 0,
+                safe.MorphologyRadius,
+                templateRevision + ":" + modelHash);
         }
 
         private void DisplayImageCore(Bitmap image, string source, DateTime capturedAtUtc)

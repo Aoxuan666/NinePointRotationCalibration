@@ -84,6 +84,10 @@
       <Project>{BCE21A3F-A5B1-4FAA-AC5B-56CD08878646}</Project>
       <Name>NinePointRotationCalibration.Sdk</Name>
     </ProjectReference>
+    <ProjectReference Include="..\NinePointRotationCalibration.WinForms\NinePointRotationCalibration.WinForms.csproj">
+      <Project>{1AD2C488-3717-4F4B-81FE-2A756CF1590C}</Project>
+      <Name>NinePointRotationCalibration.WinForms</Name>
+    </ProjectReference>
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 </Project>

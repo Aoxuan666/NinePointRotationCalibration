@@ -11,6 +11,7 @@ using System.Threading.Tasks;
 using System.Windows.Forms;
 using NinePointRotationCalibration.Halcon;
 using NinePointRotationCalibration.Station.Controls;
+using NinePointRotationCalibration.WinForms.Controls;
 using NinePointRotationCalibration.Station.Models;
 using NinePointRotationCalibration.Station.Services;
 using NinePointRotationCalibration.Station.Services.Inspection;
@@ -184,6 +185,7 @@ namespace NinePointRotationCalibration.Station.Views
             panel.SuspendLayout();
             try
             {
+                UiRenderOptimizer.EnableDoubleBufferingRecursive(panel);
                 panel.Controls.Clear();
                 int rowWidth = GetCameraFeatureRowWidth(panel);
                 Dictionary<string, CameraFeatureValue> supported = (parameters == null || parameters.Features == null)
@@ -194,6 +196,7 @@ namespace NinePointRotationCalibration.Station.Views
                 {
                     Control input = CreateFeatureInput(feature);
                     if (input == null) continue;
+                    UiRenderOptimizer.EnableDoubleBufferingRecursive(input);
                     input.Tag = feature.Clone();
                     if (input.Controls.Count > 1) input.Controls[1].Tag = feature.Clone();
                     input.Margin = new Padding(0, 2, 0, 2);
@@ -214,6 +217,17 @@ namespace NinePointRotationCalibration.Station.Views
         {
             if (panel == null || panel.IsDisposed || panel.Controls.Count == 0) return;
             int rowWidth = GetCameraFeatureRowWidth(panel);
+            bool anyChanged = false;
+            foreach (Control child in panel.Controls)
+            {
+                if (child.Width != rowWidth)
+                {
+                    anyChanged = true;
+                    break;
+                }
+            }
+            if (!anyChanged) return;
+
             panel.SuspendLayout();
             try
             {

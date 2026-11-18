@@ -47,6 +47,9 @@ namespace NinePointRotationCalibration.Station.Views
         private int _selectedInspectionBoardIndex = -1;
         private long _lastInspectionOverlayGeneration = -1;
         private long _lastInspectionCompletedGeneration = -1;
+        private long _renderedEffectGeneration = -1;
+        private string _renderedEffectKey;
+        private string _renderedEffectInfoText;
         private DisplayMode _displayMode;
         private long _displayGeneration;
         private long _inspectionFrameGeneration = -1;
@@ -228,7 +231,7 @@ namespace NinePointRotationCalibration.Station.Views
 
         private void WorkTabs_SelectedIndexChanged(object sender, EventArgs e)
         {
-            if (_disposed || _view.WorkTabs.SelectedTab == null) return;
+            if (_disposed || _view.IsWarmingTabs || _view.WorkTabs.SelectedTab == null) return;
 
             bool enteringDetection = string.Equals(
                 _view.WorkTabs.SelectedTab.Name,
@@ -241,6 +244,12 @@ namespace NinePointRotationCalibration.Station.Views
                     _view.SetDetectionDualViewActive(true);
                     _view.Viewport.ClearOverlays();
                     RenderDetectionDualViewOnTabEnter();
+                    return;
+                }
+
+                // 在非检测页之间切换时无需重复折叠视口或重绘叠加层，保证切页瞬时完成
+                if (!_view.IsDetectionDualViewActive)
+                {
                     return;
                 }
 

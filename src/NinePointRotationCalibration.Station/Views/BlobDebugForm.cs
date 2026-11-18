@@ -11,6 +11,7 @@ using System.Threading.Tasks;
 using System.Windows.Forms;
 using NinePointRotationCalibration.Halcon;
 using NinePointRotationCalibration.Station.Controls;
+using NinePointRotationCalibration.WinForms.Controls;
 using NinePointRotationCalibration.Station.Models;
 using NinePointRotationCalibration.Station.Services.Inspection;
 
@@ -56,6 +57,7 @@ namespace NinePointRotationCalibration.Station.Views
             _blobAnalyzer = new BoardBlobAnalyzer();
 
             InitializeComponent();
+            UiRenderOptimizer.EnableDoubleBufferingRecursive(this);
             ApplyProfileToControls(_appliedProfile);
             WireEvents();
             sourceViewport.SetImage(_sourceImage);
@@ -854,13 +856,16 @@ namespace NinePointRotationCalibration.Station.Views
         {
             if (previewSplit == null || previewSplit.IsDisposed) return;
 
-            bool toVertical = previewSplit.Orientation == Orientation.Horizontal;
-            previewSplit.Orientation = toVertical ? Orientation.Vertical : Orientation.Horizontal;
-            if (btnToggleLayout != null)
+            using (UiRenderOptimizer.BeginFreezeScope(previewSplit, previewSplit))
             {
-                btnToggleLayout.Text = toVertical ? "⇅ 切换上下" : "⇄ 切换左右";
+                bool toVertical = previewSplit.Orientation == Orientation.Horizontal;
+                previewSplit.Orientation = toVertical ? Orientation.Vertical : Orientation.Horizontal;
+                if (btnToggleLayout != null)
+                {
+                    btnToggleLayout.Text = toVertical ? "⇅ 切换上下" : "⇄ 切换左右";
+                }
+                BalancePreviewSplit();
             }
-            BalancePreviewSplit();
             SyncLinkedViewport(sourceViewport, binaryViewport);
         }
 

@@ -3063,6 +3063,12 @@ namespace NinePointRotationCalibration.Station.Tests
                     editor.Show();
                     Application.DoEvents();
 
+                    TabControl parameterTabs = GetPrivateField<TabControl>(editor, "_parameterTabs");
+                    True(parameterTabs != null &&
+                         parameterTabs.TabPages.Count == 4 &&
+                         parameterTabs.TabPages.Cast<TabPage>().All(p => p.IsHandleCreated),
+                        "TemplateEditorForm must pre-warm handles for every parameter tab on load");
+
                     UiCalibrationCanvas canvas = GetPrivateField<UiCalibrationCanvas>(editor, "_canvas");
                     ToolStripButton addTemplateButton = GetPrivateField<ToolStripButton>(editor, "_addTemplateRoiButton");
                     ToolStripButton addSearchButton = GetPrivateField<ToolStripButton>(editor, "_addSearchRoiButton");
@@ -3159,6 +3165,15 @@ namespace NinePointRotationCalibration.Station.Tests
                     form.Location = new Point(-20000, -20000);
                     form.Show();
                     Application.DoEvents();
+
+                    // 启动预热验证：所有未点击切换的标签页及内部复杂容器句柄应在加载阶段提前就绪，避免切页时现加载
+                    FlowLayoutPanel advancedCamPanel = form.Controls.Find("flpCameraAdvancedParameters", true).OfType<FlowLayoutPanel>().Single();
+                    True(form.WorkTabs.TabPages.Count == 6 &&
+                         form.WorkTabs.TabPages.Cast<TabPage>().All(p => p.IsHandleCreated) &&
+                         form.DetectionResultGrid.IsHandleCreated &&
+                         advancedCamPanel.IsHandleCreated &&
+                         advancedCamPanel.Controls.Cast<Control>().All(c => c.IsHandleCreated),
+                        "MainForm must pre-warm handles and layout for every unselected tab page on load");
 
                     SplitContainer imageSplit = form.Controls.Find("imageSplit", true).OfType<SplitContainer>().Single();
                     Panel sourceHeader = form.Controls.Find("pnlSourceViewportHeader", true).OfType<Panel>().Single();
@@ -3324,13 +3339,33 @@ namespace NinePointRotationCalibration.Station.Tests
                         True(PumpUntil(() => Math.Abs(form.Viewport.EffectiveScale - form.EffectViewport.EffectiveScale) < 1e-3f, 3000),
                             "zooming top source viewport must synchronize bottom effect viewport scale");
 
-                        // 切出检测页后折叠下窗口，恢复日志高度并保留原图与勾选偏好
+                        // 切出检测页后折叠下窗口，恢复日志高度并保留原图与勾选偏好；随后切回检测页验证零重绘秒切缓存命中
                         form.WorkTabs.SelectedIndex = 0;
                         Application.DoEvents();
                         True(!form.IsDetectionDualViewActive && imageSplit.Panel2Collapsed &&
                              rootLayout.RowStyles[2].Height >= 100.0F &&
                              binaryCheck.Checked && GetLockedDisplayImage(binder) != null,
                             "leaving detection tab must collapse effect viewport, restore log height, and keep locked image");
+
+                        // 非检测页间互相切换时应瞬时完成且不误触双视口状态
+                        form.WorkTabs.SelectedTab = form.WorkTabs.TabPages["tabCamera"];
+                        form.WorkTabs.SelectedTab = form.WorkTabs.TabPages["tabTeaching"];
+                        Application.DoEvents();
+                        True(!form.IsDetectionDualViewActive && form.WorkTabs.SelectedTab.Name == "tabTeaching",
+                            "switching between non-detection tabs must remain single-view and responsive");
+
+                        // 再次切回检测页：参数/图像均未变化时应直接命中缓存效果图，不闪烁“刷新中”也不退回原图
+                        Label effectInfoLabel = form.Controls.Find("lblEffectViewportInfo", true).OfType<Label>().Single();
+                        form.WorkTabs.SelectedTab = form.WorkTabs.TabPages["tabDetection"];
+                        Application.DoEvents();
+                        using (Bitmap cachedEffectSnap = form.EffectViewport.Snapshot())
+                        {
+                            True(form.IsDetectionDualViewActive &&
+                                 cachedEffectSnap != null &&
+                                 cachedEffectSnap.GetPixel(75, 45).R < 15 &&
+                                 effectInfoLabel.Text.IndexOf("刷新中", StringComparison.Ordinal) < 0,
+                                "returning to detection tab with unchanged image/settings must hit effect cache instantly");
+                        }
 
                         // 同时验证独立 BlobDebugForm 的双视口高度优化及上下/左右一键切换
                         using (BlobDebugForm debugForm = new BlobDebugForm(

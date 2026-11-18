@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Drawing;
 using System.Windows.Forms;
 using NinePointRotationCalibration.Station.Controls;
+using NinePointRotationCalibration.WinForms.Controls;
 
 namespace NinePointRotationCalibration.Station.Views
 {
@@ -317,6 +318,7 @@ namespace NinePointRotationCalibration.Station.Views
             lblEffectViewportTitle.Text = "检测效果图窗口";
             lblEffectViewportTitle.TextAlign = ContentAlignment.MiddleLeft;
             lblEffectViewportInfo = new Label();
+            lblEffectViewportInfo.Name = "lblEffectViewportInfo";
             lblEffectViewportInfo.AutoEllipsis = true;
             lblEffectViewportInfo.Dock = DockStyle.Fill;
             lblEffectViewportInfo.Font = new Font("Microsoft YaHei UI", 8.0F, FontStyle.Regular, GraphicsUnit.Point, 134);
@@ -378,7 +380,7 @@ namespace NinePointRotationCalibration.Station.Views
             imageLayout.Controls.Add(imageFooter, 0, 1);
             workspaceSplit.Panel1.Controls.Add(imageLayout);
 
-            tabWork = new TabControl();
+            tabWork = new BufferedTabControl();
             tabWork.Dock = DockStyle.Fill;
             tabWork.DrawMode = TabDrawMode.OwnerDrawFixed;
             tabWork.Font = new Font(Font.FontFamily, 9.0F, FontStyle.Bold);

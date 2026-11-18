@@ -234,8 +234,9 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 Width = 130
             };
 
-            _parameterTabs = new TabControl { Dock = DockStyle.Fill };
+            _parameterTabs = new BufferedTabControl { Dock = DockStyle.Fill };
             BuildLayout();
+            UiRenderOptimizer.EnableDoubleBufferingRecursive(this);
             WireEvents();
             LoadStateToControls(true);
             SelectTool(CanvasEditTool.Select);
@@ -338,6 +339,18 @@ namespace NinePointRotationCalibration.WinForms.Forms
             }
 
             base.Dispose(disposing);
+        }
+
+        protected override void OnLoad(EventArgs eventArgs)
+        {
+            base.OnLoad(eventArgs);
+            if (!_initialBoundsConstrained && StartPosition != FormStartPosition.Manual)
+            {
+                _initialBoundsConstrained = true;
+                ConstrainToWorkingArea();
+            }
+
+            UiRenderOptimizer.WarmUpTabControlPages(_parameterTabs);
         }
 
         protected override void OnFormClosing(FormClosingEventArgs eventArgs)

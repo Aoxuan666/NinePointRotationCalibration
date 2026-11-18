@@ -45,6 +45,9 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Adapters\CoreUiMapper.cs" />
+    <Compile Include="Controls\BufferedTabControl.cs">
+      <SubType>Component</SubType>
+    </Compile>
     <Compile Include="Controls\CalibrationCanvas.cs">
       <SubType>Component</SubType>
     </Compile>
