@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
+using System.Globalization;
 using System.Linq;
 using HalconDotNet;
 
@@ -162,6 +163,25 @@ namespace NinePointRotationCalibration.Halcon
                         output.ReferenceAnchor = templateCenter;
                     }
 
+                    bool usedAutoThreshold = extraction.AutoThreshold || output.ShapeParameters.AutoThreshold;
+                    if (usedAutoThreshold)
+                    {
+                        AdaptiveTemplateThresholds resolved = HalconAutoThresholdResolver.Resolve(
+                            reduced,
+                            output.ShapeParameters,
+                            output.ShapeParameters.Metric);
+                        if (extraction.AutoThreshold)
+                        {
+                            extraction.EdgeLowThreshold = resolved.EdgeLowThreshold;
+                            extraction.EdgeHighThreshold = resolved.EdgeHighThreshold;
+                        }
+                        if (output.ShapeParameters.AutoThreshold)
+                        {
+                            output.ShapeParameters.MinContrast = resolved.MinContrast;
+                            output.ShapeParameters.Contrast = Math.Max(resolved.ContrastHigh, resolved.MinContrast);
+                        }
+                    }
+
                     List<List<ImagePoint>> sampledContours = XldFeatureExtractor.Extract(
                         reduced,
                         extraction,
@@ -181,13 +201,24 @@ namespace NinePointRotationCalibration.Halcon
                     byte[] modelData = HalconModelFile.Write(".shm", writeModel.WriteShapeModel);
                     output.SetModelData(modelData, TryGetHalconVersion());
 
+                    string message = usedAutoThreshold
+                        ? string.Format(
+                            CultureInfo.InvariantCulture,
+                            "已提取 {0} 段有序 XLD 轮廓（自适应阈值 Canny {1:0.#}/{2:0.#}，最小对比度 {3}）。",
+                            sampledContours.Count,
+                            extraction.EdgeLowThreshold,
+                            extraction.EdgeHighThreshold,
+                            output.ShapeParameters.MinContrast)
+                        : string.Format(
+                            CultureInfo.InvariantCulture,
+                            "Template model was created from {0} ordered XLD contour segments.",
+                            sampledContours.Count);
+
                     return Complete(new TemplateBuildResult
                     {
                         Success = true,
                         ErrorCode = CalibrationErrorCode.None,
-                        Message = string.Format(
-                            "Template model was created from {0} ordered XLD contour segments.",
-                            sampledContours.Count),
+                        Message = message,
                         Template = output,
                         EffectiveArea = effectiveArea,
                         // 编辑器预览保留图像坐标下的原始采样点；GetShapeModelContours() 返回的是应用模型原点后的局部坐标，直接显示会偏移。
@@ -286,15 +317,18 @@ namespace NinePointRotationCalibration.Halcon
             output.Mode = ShapeFeatureExtractionMode.EdgeContours;
             if (!IsFinite(output.EdgeSigma) || output.EdgeSigma <= 0.0)
                 output.EdgeSigma = defaults.EdgeSigma;
-            if (!IsFinite(output.EdgeLowThreshold) || output.EdgeLowThreshold <= 0.0)
-                output.EdgeLowThreshold = defaults.EdgeLowThreshold;
-            if (!IsFinite(output.EdgeHighThreshold) || output.EdgeHighThreshold <= 0.0)
-                output.EdgeHighThreshold = defaults.EdgeHighThreshold;
-            if (output.EdgeHighThreshold <= output.EdgeLowThreshold)
+            if (!output.AutoThreshold)
             {
-                throw new ArgumentException(
-                    "Edge high threshold must be greater than the low threshold.",
-                    "FeatureExtraction.EdgeHighThreshold");
+                if (!IsFinite(output.EdgeLowThreshold) || output.EdgeLowThreshold <= 0.0)
+                    output.EdgeLowThreshold = defaults.EdgeLowThreshold;
+                if (!IsFinite(output.EdgeHighThreshold) || output.EdgeHighThreshold <= 0.0)
+                    output.EdgeHighThreshold = defaults.EdgeHighThreshold;
+                if (output.EdgeHighThreshold <= output.EdgeLowThreshold)
+                {
+                    throw new ArgumentException(
+                        "Edge high threshold must be greater than the low threshold.",
+                        "FeatureExtraction.EdgeHighThreshold");
+                }
             }
             if (!IsFinite(output.MinimumContourLengthPixels) || output.MinimumContourLengthPixels <= 0.0)
                 output.MinimumContourLengthPixels = defaults.MinimumContourLengthPixels;
@@ -411,12 +445,53 @@ namespace NinePointRotationCalibration.Halcon
             if (settings == null) throw new ArgumentNullException(nameof(settings));
             if (templateRoi == null) throw new ArgumentNullException(nameof(templateRoi));
 
+            List<List<ImagePoint>> sampled = TryExtractWithThresholds(
+                reducedImage,
+                settings,
+                templateRoi,
+                settings.EdgeLowThreshold,
+                settings.EdgeHighThreshold);
+            if (sampled != null)
+            {
+                return sampled;
+            }
+
+            if (settings.AutoThreshold)
+            {
+                // 若主自适应阈值在极弱对比或细线条场景未抓到足够轮廓，自动放宽一次门限并回写实测阈值
+                double relaxedLow = Math.Max(2.0, Math.Round(settings.EdgeLowThreshold * 0.55, 1));
+                double relaxedHigh = Math.Max(relaxedLow + 2.0, Math.Round(settings.EdgeHighThreshold * 0.55, 1));
+                sampled = TryExtractWithThresholds(
+                    reducedImage,
+                    settings,
+                    templateRoi,
+                    relaxedLow,
+                    relaxedHigh);
+                if (sampled != null)
+                {
+                    settings.EdgeLowThreshold = relaxedLow;
+                    settings.EdgeHighThreshold = relaxedHigh;
+                    return sampled;
+                }
+            }
+
+            throw new XldFeatureExtractionException(
+                "No usable Canny XLD contours were found in the effective template ROI.");
+        }
+
+        private static List<List<ImagePoint>> TryExtractWithThresholds(
+            HImage reducedImage,
+            ShapeFeatureExtractionSettings settings,
+            RegionDefinition templateRoi,
+            double edgeLowThreshold,
+            double edgeHighThreshold)
+        {
             // 通过 Canny 亚像素边缘提取并剔除过短碎段，再按长度与局部覆盖面积综合评分降序筛选。
             double contourSelectionLength = Math.Max(
                 settings.MinimumContourLengthPixels,
                 Math.Max(6.0, settings.PointSpacingPixels * 1.5));
-            using (HTuple low = new HTuple(settings.EdgeLowThreshold))
-            using (HTuple high = new HTuple(settings.EdgeHighThreshold))
+            using (HTuple low = new HTuple(edgeLowThreshold))
+            using (HTuple high = new HTuple(edgeHighThreshold))
             using (HXLDCont edges = reducedImage.EdgesSubPix("canny", settings.EdgeSigma, low, high))
             using (HXLDCont selected = edges.SelectShapeXld(
                 "contlength",
@@ -436,8 +511,7 @@ namespace NinePointRotationCalibration.Halcon
 
                 if (sources.Count == 0)
                 {
-                    throw new XldFeatureExtractionException(
-                        "No usable Canny XLD contours were found in the effective template ROI.");
+                    return null;
                 }
 
                 double modelPointSpacing = Math.Max(0.5, settings.PointSpacingPixels * 0.15);
@@ -448,8 +522,7 @@ namespace NinePointRotationCalibration.Halcon
 
                 if (sampled.Count == 0 || CountPoints(sampled) < 4)
                 {
-                    throw new XldFeatureExtractionException(
-                        "Too few ordered XLD feature points remain after contour filtering.");
+                    return null;
                 }
 
                 return sampled;
@@ -623,12 +696,14 @@ namespace NinePointRotationCalibration.Halcon
                 {
                     return new List<ImagePoint> { result[0] };
                 }
+
                 List<ImagePoint> limited = new List<ImagePoint>(maximumCount);
                 double step = (double)(result.Count - 1) / (maximumCount - 1);
                 for (int index = 0; index < maximumCount; index++)
                 {
                     limited.Add(result[(int)Math.Round(index * step)]);
                 }
+
                 result = limited;
             }
 

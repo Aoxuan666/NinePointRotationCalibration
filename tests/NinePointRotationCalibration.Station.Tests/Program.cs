@@ -132,6 +132,7 @@ namespace NinePointRotationCalibration.Station.Tests
             Run("Positioning template owns and migrates detection ROI", TestPositioningJobLoadRoi);
             Run("Camera tab layout prevents clipping and wires switches cleanly", TestCameraTabLayoutAndSwitches);
             Run("Calibration RMS mapper and MainForm summary/diagnostics work cleanly", TestCalibrationRmsUiAndMapper);
+            Run("Adaptive template thresholds build and match across low-contrast, MockPCB, and UI workflow", TestAdaptiveTemplateThresholdsEndToEnd);
 
             Console.WriteLine();
             Console.WriteLine("Passed: {0}; Failed: {1}", _passed, _failed);
@@ -1089,13 +1090,15 @@ namespace NinePointRotationCalibration.Station.Tests
             MatchParameters match = new MatchParameters();
             UiTemplateEditorState editor = new UiTemplateEditorState();
 
+            True(shape.AutoThreshold, "shape parameters must enable adaptive auto threshold by default");
+            True(shape.FeatureExtraction.AutoThreshold, "XLD feature extraction must enable adaptive auto threshold by default");
             True(shape.NumLevels == 5, "shape pyramid levels must match the reference default");
             Near(-0.3, shape.AngleStartRad, 0.0, "shape angle start default");
             Near(0.6, shape.AngleExtentRad, 0.0, "shape angle extent default");
-            True(shape.MinContrast == 20, "XLD minimum contrast must match the reference default");
+            True(shape.MinContrast == 10, "XLD minimum contrast fallback must match default");
             Near(1.2, shape.FeatureExtraction.EdgeSigma, 0.0, "Canny sigma default");
-            Near(60.0, shape.FeatureExtraction.EdgeLowThreshold, 0.0, "Canny low threshold default");
-            Near(100.0, shape.FeatureExtraction.EdgeHighThreshold, 0.0, "Canny high threshold default");
+            Near(20.0, shape.FeatureExtraction.EdgeLowThreshold, 0.0, "Canny low threshold fallback default");
+            Near(45.0, shape.FeatureExtraction.EdgeHighThreshold, 0.0, "Canny high threshold fallback default");
             Near(6.0, shape.FeatureExtraction.PointSpacingPixels, 0.0, "feature distance default");
             True(shape.FeatureExtraction.MaximumPointCount == 20000,
                 "feature point limit must match the reference default");
@@ -1108,6 +1111,7 @@ namespace NinePointRotationCalibration.Station.Tests
             Near(0.85, match.Greediness, 0.0, "match greediness default");
             True(match.SubPixel == "interpolation", "match subpixel default");
 
+            True(editor.Parameters.AutoThreshold, "editor parameters must enable adaptive auto threshold by default");
             True(editor.Parameters.NumLevels == 5, "editor pyramid levels default");
             True(editor.Parameters.MatchNumLevels == 0, "editor search pyramid defaults to automatic");
             Near(-0.3 * 180.0 / Math.PI, editor.Parameters.AngleStartDegrees, 1e-12,
@@ -1118,8 +1122,12 @@ namespace NinePointRotationCalibration.Station.Tests
                 "editor search angle start default");
             Near(10.0, editor.Parameters.MatchAngleExtentDegrees, 1e-12,
                 "editor search angle extent default");
-            Near(20.0, editor.Parameters.MinimumContrast, 0.0,
-                "editor minimum contrast default");
+            Near(10.0, editor.Parameters.MinimumContrast, 0.0,
+                "editor minimum contrast fallback default");
+            Near(20.0, editor.Parameters.EdgeLowThreshold, 0.0,
+                "editor edge low threshold fallback default");
+            Near(45.0, editor.Parameters.EdgeHighThreshold, 0.0,
+                "editor edge high threshold fallback default");
             Near(0.5, editor.Parameters.MinimumScore, 0.0, "editor minimum score default");
             Near(0.3, editor.Parameters.MaximumOverlap, 0.0,
                 "editor maximum overlap default");
@@ -1373,21 +1381,35 @@ namespace NinePointRotationCalibration.Station.Tests
                 ComboBox metric = GetPrivateField<ComboBox>(form, "_metricCombo");
                 ComboBox subPixel = GetPrivateField<ComboBox>(form, "_subPixelCombo");
                 CheckBox edgeContours = GetPrivateField<CheckBox>(form, "_edgeContourModeCheck");
+                CheckBox autoThreshold = GetPrivateField<CheckBox>(form, "_autoThresholdCheck");
                 NumericUpDown contrast = GetPrivateField<NumericUpDown>(form, "_contrastInput");
                 NumericUpDown minimumContrast = GetPrivateField<NumericUpDown>(form, "_minimumContrastInput");
+                NumericUpDown edgeLow = GetPrivateField<NumericUpDown>(form, "_edgeLowThresholdInput");
+                NumericUpDown edgeHigh = GetPrivateField<NumericUpDown>(form, "_edgeHighThresholdInput");
 
+                True(autoThreshold.Enabled && autoThreshold.Checked,
+                    "Shape mode must enable and check adaptive auto threshold by default");
                 True(Convert.ToString(metric.SelectedItem) == "ignore_local_polarity",
                     "XLD mode must expose its fixed local-polarity metric");
-                True(!metric.Enabled && !contrast.Enabled,
-                    "XLD mode must disable metric and image-domain contrast controls");
-                True(minimumContrast.Enabled,
-                    "XLD mode must keep minimum contrast available for CreateShapeModelXld");
+                True(!metric.Enabled && !contrast.Enabled && !minimumContrast.Enabled &&
+                     !edgeLow.Enabled && !edgeHigh.Enabled,
+                    "XLD mode with auto threshold must lock manual threshold/contrast inputs");
+
+                autoThreshold.Checked = false;
+                True(!contrast.Enabled && minimumContrast.Enabled && edgeLow.Enabled && edgeHigh.Enabled,
+                    "disabling auto threshold in XLD mode must unlock Canny thresholds and MinContrast");
 
                 edgeContours.Checked = false;
-                True(metric.Enabled && contrast.Enabled && minimumContrast.Enabled,
-                    "legacy Shape mode must enable its metric and contrast controls");
+                True(metric.Enabled && contrast.Enabled && minimumContrast.Enabled &&
+                     !edgeLow.Enabled && !edgeHigh.Enabled,
+                    "legacy Shape manual mode must enable metric, contrast, and MinContrast controls");
                 True(Convert.ToString(metric.SelectedItem) == "ignore_global_polarity",
                     "legacy Shape mode must restore its saved metric");
+
+                autoThreshold.Checked = true;
+                True(!contrast.Enabled && !minimumContrast.Enabled,
+                    "enabling auto threshold in legacy Shape mode must lock contrast controls");
+                autoThreshold.Checked = false;
 
                 modelType.SelectedIndex = 1;
                 True(Convert.ToString(metric.SelectedItem) == "ignore_color_polarity",
@@ -1395,8 +1417,8 @@ namespace NinePointRotationCalibration.Station.Tests
                 True(subPixel.Items.Count == 2 &&
                      Convert.ToString(subPixel.SelectedItem) == "interpolation",
                     "NCC mode must expose only its supported subpixel choices");
-                True(metric.Enabled && contrast.Enabled && minimumContrast.Enabled,
-                    "NCC mode must not inherit XLD control disabling");
+                True(!autoThreshold.Enabled && metric.Enabled && contrast.Enabled && minimumContrast.Enabled,
+                    "NCC mode must disable Shape auto-threshold toggle without inheriting XLD control disabling");
 
                 modelType.SelectedIndex = 0;
                 True(Convert.ToString(metric.SelectedItem) == "ignore_global_polarity",
@@ -2857,6 +2879,136 @@ namespace NinePointRotationCalibration.Station.Tests
                 finally
                 {
                     form.Close();
+                }
+            }
+        }
+
+        private static Bitmap CreateLowContrastBoardImage(
+            double centerRow,
+            double centerColumn,
+            double angleDegrees,
+            int backgroundGray,
+            int boardGray,
+            int padGray)
+        {
+            Bitmap bitmap = new Bitmap(260, 240, PixelFormat.Format24bppRgb);
+            using (Graphics graphics = Graphics.FromImage(bitmap))
+            {
+                graphics.Clear(Color.FromArgb(backgroundGray, backgroundGray, backgroundGray));
+                graphics.SmoothingMode = SmoothingMode.None;
+                graphics.PixelOffsetMode = PixelOffsetMode.None;
+                graphics.TranslateTransform((float)centerColumn, (float)centerRow);
+                graphics.RotateTransform((float)angleDegrees);
+
+                using (Brush boardBrush = new SolidBrush(Color.FromArgb(boardGray, boardGray, boardGray)))
+                using (Brush padBrush = new SolidBrush(Color.FromArgb(padGray, padGray, padGray)))
+                {
+                    graphics.FillRectangle(boardBrush, -44.0f, -34.0f, 88.0f, 68.0f);
+                    graphics.FillRectangle(padBrush, -28.0f, -18.0f, 20.0f, 16.0f);
+                    graphics.FillEllipse(padBrush, 8.0f, -6.0f, 18.0f, 18.0f);
+                }
+            }
+
+            return bitmap;
+        }
+
+        private static void TestAdaptiveTemplateThresholdsEndToEnd()
+        {
+            // 1. 低对比度哑光板（对比度仅 ~32 灰度级，且运行时照度进一步降至 ~20）使用默认自适应阈值应建模并命中
+            using (Bitmap lowTrain = CreateLowContrastBoardImage(110.0, 115.0, 0.0, 40, 72, 92))
+            using (Bitmap lowRunDim = CreateLowContrastBoardImage(132.0, 148.0, 12.0, 25, 45, 58))
+            using (XldTemplateMatchingEngine xldEngine = new XldTemplateMatchingEngine())
+            {
+                TemplateDefinition xldDef = new TemplateDefinition
+                {
+                    ModelType = TemplateModelType.Shape,
+                    TemplateRoi = RectangleRegion(110.0, 115.0, 56.0, 46.0, 0.0)
+                };
+                xldDef.MatchParameters.AngleStartRad = -20.0 * Math.PI / 180.0;
+                xldDef.MatchParameters.AngleExtentRad = 40.0 * Math.PI / 180.0;
+                xldDef.MatchParameters.MinScore = 0.55;
+
+                TemplateBuildResult xldBuild = xldEngine.BuildTemplate(lowTrain, xldDef);
+                True(xldBuild.Success && xldBuild.Template != null,
+                    "XLD adaptive threshold must build low-contrast board without manual tuning: " + xldBuild.Message);
+                True(xldBuild.Template.ShapeParameters.FeatureExtraction.EdgeHighThreshold < 80.0,
+                    "adaptive high threshold must adjust downward on low-contrast boards");
+                True(xldBuild.Template.ShapeParameters.MinContrast < 15,
+                    "adaptive min contrast must adjust downward on low-contrast boards");
+
+                TemplateMatchResult xldMatch = xldEngine.Locate(lowRunDim, xldBuild.Template, false);
+                True(xldMatch.Success, "dimmed low-contrast target must match with adaptive MinContrast: " + xldMatch.Message);
+                Near(132.0, xldMatch.Anchor.Row, 2.0, "adaptive XLD match row");
+                Near(148.0, xldMatch.Anchor.Column, 2.0, "adaptive XLD match column");
+
+                // 2. 传统图像域 Shape 模式下默认自适应对比度同样应成功建图并匹配
+                TemplateDefinition legacyDef = new TemplateDefinition
+                {
+                    ModelType = TemplateModelType.Shape,
+                    TemplateRoi = RectangleRegion(110.0, 115.0, 56.0, 46.0, 0.0)
+                };
+                legacyDef.ShapeParameters.Metric = "ignore_global_polarity";
+                legacyDef.ShapeParameters.FeatureExtraction.Mode = ShapeFeatureExtractionMode.LegacyImageDomain;
+                legacyDef.MatchParameters.AngleStartRad = -20.0 * Math.PI / 180.0;
+                legacyDef.MatchParameters.AngleExtentRad = 40.0 * Math.PI / 180.0;
+                legacyDef.MatchParameters.MinScore = 0.55;
+
+                TemplateBuildResult legacyBuild = xldEngine.BuildTemplate(lowTrain, legacyDef);
+                True(legacyBuild.Success, "legacy adaptive Shape must succeed on low-contrast board: " + legacyBuild.Message);
+                TemplateMatchResult legacyMatch = xldEngine.Locate(lowRunDim, legacyBuild.Template, false);
+                True(legacyMatch.Success, "legacy adaptive Shape must locate dimmed target: " + legacyMatch.Message);
+
+                // 3. 关闭自动阈值切换为手动模式时，必须严格尊重手动门限（过高手动阈值应明确失败）
+                TemplateDefinition manualDef = xldDef.DeepClone();
+                manualDef.ShapeParameters.AutoThreshold = false;
+                manualDef.ShapeParameters.FeatureExtraction.AutoThreshold = false;
+                manualDef.ShapeParameters.FeatureExtraction.EdgeLowThreshold = 150.0;
+                manualDef.ShapeParameters.FeatureExtraction.EdgeHighThreshold = 200.0;
+                TemplateBuildResult manualBuild = xldEngine.BuildTemplate(lowTrain, manualDef);
+                True(!manualBuild.Success, "manual high threshold must not be overridden when AutoThreshold is disabled");
+            }
+
+            // 4. 在真实 Mock PCB 图像下：自适应阈值应提取出板边与焊盘在内的丰富轮廓并支持界面参数双向同步
+            using (MockCameraDevice camera = new MockCameraDevice())
+            using (NinePointRotationCalibrationSdk sdk = new NinePointRotationCalibrationSdk())
+            {
+                camera.ConnectAsync(MockCameraDevice.DefaultDeviceId, CancellationToken.None).GetAwaiter().GetResult();
+                using (CameraFrame frame = camera.CaptureAsync(CancellationToken.None).GetAwaiter().GetResult())
+                {
+                    TemplateDefinition mockDef = new TemplateDefinition
+                    {
+                        ModelType = TemplateModelType.Shape,
+                        TemplateRoi = RectangleRegion(305.0, 200.0, 175.0, 145.0, 0.0)
+                    };
+                    TemplateBuildResult mockBuild = sdk.BuildTemplate(frame.Image, mockDef);
+                    True(mockBuild.Success, "Mock PCB auto-threshold build failed: " + mockBuild.Message);
+                    True(mockBuild.ContourSegments.Count >= 10,
+                        "adaptive threshold must preserve internal PCB pads and features (contours=" +
+                        mockBuild.ContourSegments.Count + ")");
+                    True(mockBuild.Template.ShapeParameters.FeatureExtraction.EdgeHighThreshold < 65.0,
+                        "Mock PCB adaptive high threshold should adapt below fixed 100");
+
+                    // 映射至 WinForms 模型及模板编辑器并验证自整定结果双向同步
+                    UiTemplateEditorState uiState = UiCoreUiMapper.FromCoreTemplate(mockBuild.Template);
+                    True(uiState.Parameters.AutoThreshold, "mapper must retain AutoThreshold=true");
+                    Near(
+                        mockBuild.Template.ShapeParameters.FeatureExtraction.EdgeLowThreshold,
+                        uiState.Parameters.EdgeLowThreshold,
+                        1e-6,
+                        "mapper must carry resolved auto EdgeLowThreshold to UI");
+
+                    using (UiTemplateEditorForm editor = new UiTemplateEditorForm(frame.Image, uiState))
+                    {
+                        CheckBox autoCheck = GetPrivateField<CheckBox>(editor, "_autoThresholdCheck");
+                        NumericUpDown edgeHighInput = GetPrivateField<NumericUpDown>(editor, "_edgeHighThresholdInput");
+                        True(autoCheck.Checked && !edgeHighInput.Enabled,
+                            "TemplateEditorForm must bind AutoThreshold checkbox and lock manual input");
+                        Near(
+                            mockBuild.Template.ShapeParameters.FeatureExtraction.EdgeHighThreshold,
+                            (double)edgeHighInput.Value,
+                            0.1,
+                            "TemplateEditorForm must display resolved auto EdgeHighThreshold");
+                    }
                 }
             }
         }

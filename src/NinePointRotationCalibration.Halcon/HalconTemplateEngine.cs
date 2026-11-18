@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
+using System.Globalization;
 using HalconDotNet;
 
 namespace NinePointRotationCalibration.Halcon
@@ -71,9 +72,10 @@ namespace NinePointRotationCalibration.Halcon
 
                         byte[] modelData;
                         List<List<ImagePoint>> relativeContours;
+                        string buildMessage = "Template model was created successfully.";
                         if (output.ModelType == TemplateModelType.Shape)
                         {
-                            shapeModel = CreateShapeModel(reduced, output.ShapeParameters);
+                            shapeModel = CreateShapeModel(reduced, output.ShapeParameters, out buildMessage);
                             using (HXLDCont contours = shapeModel.GetShapeModelContours(1))
                             {
                                 relativeContours = HalconContourConverter.Extract(contours);
@@ -110,7 +112,7 @@ namespace NinePointRotationCalibration.Halcon
                         {
                             Success = true,
                             ErrorCode = CalibrationErrorCode.None,
-                            Message = "Template model was created successfully.",
+                            Message = buildMessage,
                             Template = output,
                             EffectiveArea = area,
                             ContourSegments = referenceContours
@@ -488,16 +490,70 @@ namespace NinePointRotationCalibration.Halcon
             _cachedRelativeContours = relativeContours ?? new List<List<ImagePoint>>();
         }
 
-        private static HShapeModel CreateShapeModel(HImage reduced, ShapeModelParameters parameters)
+        private static HShapeModel CreateShapeModel(
+            HImage reduced,
+            ShapeModelParameters parameters,
+            out string buildMessage)
+        {
+            string metric = DefaultIfBlank(parameters.Metric, "use_polarity");
+            if (!parameters.AutoThreshold)
+            {
+                buildMessage = "Template model was created successfully.";
+                return CreateShapeModelCore(
+                    reduced,
+                    parameters,
+                    metric,
+                    new HTuple(parameters.Contrast),
+                    new HTuple(parameters.MinContrast));
+            }
+
+            AdaptiveTemplateThresholds resolved = HalconAutoThresholdResolver.Resolve(reduced, parameters, metric);
+            parameters.Contrast = resolved.ContrastHigh;
+            parameters.MinContrast = Math.Min(resolved.MinContrast, resolved.ContrastHigh);
+            buildMessage = string.Format(
+                CultureInfo.InvariantCulture,
+                "图像域 Shape 建模完成（自适应滞后对比度 {0}/{1}，最小对比度 {2}）。",
+                resolved.ContrastLow,
+                resolved.ContrastHigh,
+                parameters.MinContrast);
+
+            try
+            {
+                return CreateShapeModelCore(
+                    reduced,
+                    parameters,
+                    metric,
+                    new HTuple(resolved.ContrastLow, resolved.ContrastHigh),
+                    new HTuple(parameters.MinContrast));
+            }
+            catch (HOperatorException)
+            {
+                // 若滞后阈值过严导致边缘点数不足，回退到 HALCON 原生全自动对比度参数
+                buildMessage = "图像域 Shape 建模完成（已回退至 HALCON 原生 auto 对比度）。";
+                return CreateShapeModelCore(
+                    reduced,
+                    parameters,
+                    metric,
+                    new HTuple("auto"),
+                    new HTuple("auto"));
+            }
+        }
+
+        private static HShapeModel CreateShapeModelCore(
+            HImage reduced,
+            ShapeModelParameters parameters,
+            string metric,
+            HTuple contrastTuple,
+            HTuple minContrastTuple)
         {
             HShapeModel model = new HShapeModel();
             try
             {
+                using (contrastTuple)
+                using (minContrastTuple)
                 using (HTuple levels = AutoOrPositive(parameters.NumLevels))
                 using (HTuple angleStep = AutoOrPositive(parameters.AngleStepRad))
                 using (HTuple optimization = new HTuple(DefaultIfBlank(parameters.Optimization, "auto")))
-                using (HTuple contrast = new HTuple(parameters.Contrast))
-                using (HTuple minContrast = new HTuple(parameters.MinContrast))
                 {
                     model.CreateShapeModel(
                         reduced,
@@ -506,9 +562,9 @@ namespace NinePointRotationCalibration.Halcon
                         parameters.AngleExtentRad,
                         angleStep,
                         optimization,
-                        DefaultIfBlank(parameters.Metric, "use_polarity"),
-                        contrast,
-                        minContrast);
+                        metric,
+                        contrastTuple,
+                        minContrastTuple);
                 }
 
                 return model;
@@ -630,7 +686,9 @@ namespace NinePointRotationCalibration.Halcon
                 ValidateAngleRange(parameters.AngleStartRad, parameters.AngleExtentRad, "Shape model");
                 if (parameters.NumLevels < 0) throw new ArgumentOutOfRangeException("NumLevels");
                 if (parameters.AngleStepRad < 0.0 || !IsFinite(parameters.AngleStepRad)) throw new ArgumentOutOfRangeException("AngleStepRad");
-                if (parameters.Contrast <= 0) throw new ArgumentOutOfRangeException("Contrast");
+                if (!parameters.AutoThreshold && parameters.Contrast <= 0)
+                    throw new ArgumentOutOfRangeException("Contrast");
+                if (parameters.Contrast < 0) throw new ArgumentOutOfRangeException("Contrast");
                 if (parameters.MinContrast < 0) throw new ArgumentOutOfRangeException("MinContrast");
             }
             else if (definition.ModelType == TemplateModelType.Ncc)

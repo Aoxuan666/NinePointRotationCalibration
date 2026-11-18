@@ -33,7 +33,7 @@ namespace NinePointRotationCalibration
             get { return this; }
         }
 
-        /// <summary>提取模板轮廓并生成用于界面预览的特征点。</summary>
+        /// <summary>提取模板轮廓并生成用于界面预览的特征点（回传自适应阈值计算结果）。</summary>
         public Task<TemplateFeatureResult> ExtractFeaturesAsync(
             Bitmap image,
             TemplateEditorState state,
@@ -54,15 +54,15 @@ namespace NinePointRotationCalibration
                 return new TemplateFeatureResult
                 {
                     Success = true,
-                    Message = "模板特征提取完成。",
+                    Message = string.IsNullOrWhiteSpace(build.Message) ? "模板特征提取完成。" : build.Message,
                     Contours = contours,
                     FeaturePoints = SampleFeaturePoints(contours, 4000),
-                    RecommendedParameters = state.Parameters == null ? null : state.Parameters.DeepClone()
+                    RecommendedParameters = MergeResolvedThresholds(state == null ? null : state.Parameters, build.Template)
                 };
             }, cancellationToken);
         }
 
-        /// <summary>根据编辑参数创建 HALCON 模板模型。</summary>
+        /// <summary>根据编辑参数创建 HALCON 模板模型（回传实际生效的自适应阈值参数）。</summary>
         public Task<UiTemplateBuildResult> CreateModelAsync(
             Bitmap image,
             TemplateEditorState state,
@@ -95,7 +95,8 @@ namespace NinePointRotationCalibration
                     ReferenceImageWidth = output.ReferenceImageWidth,
                     ReferenceImageHeight = output.ReferenceImageHeight,
                     HalconVersion = output.HalconVersion,
-                    Contours = ToUiContours(build.ContourSegments)
+                    Contours = ToUiContours(build.ContourSegments),
+                    ResolvedParameters = MergeResolvedThresholds(state == null ? null : state.Parameters, output)
                 };
             }, cancellationToken);
         }
@@ -173,6 +174,28 @@ namespace NinePointRotationCalibration
         public void Dispose()
         {
             // 共享引擎由 SDK 统一管理，关闭窗口时不能释放它。
+        }
+
+        private static TemplateEditorParameters MergeResolvedThresholds(
+            TemplateEditorParameters source,
+            TemplateDefinition resolvedTemplate)
+        {
+            TemplateEditorParameters copy = source == null
+                ? new TemplateEditorParameters()
+                : source.DeepClone();
+            if (resolvedTemplate != null && resolvedTemplate.ShapeParameters != null)
+            {
+                ShapeModelParameters shape = resolvedTemplate.ShapeParameters;
+                copy.Contrast = shape.Contrast;
+                copy.MinimumContrast = shape.MinContrast;
+                if (shape.FeatureExtraction != null)
+                {
+                    copy.EdgeLowThreshold = shape.FeatureExtraction.EdgeLowThreshold;
+                    copy.EdgeHighThreshold = shape.FeatureExtraction.EdgeHighThreshold;
+                }
+            }
+
+            return copy;
         }
 
         private static ImageCoordinate ToUiPoint(ImagePoint point)

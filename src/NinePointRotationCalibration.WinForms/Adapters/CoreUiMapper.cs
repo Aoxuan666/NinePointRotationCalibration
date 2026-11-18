@@ -68,10 +68,14 @@ namespace NinePointRotationCalibration.WinForms.Adapters
             if (extraction == null)
             {
                 state.Parameters.FeatureExtractionMode = Core.ShapeFeatureExtractionMode.LegacyImageDomain;
+                state.Parameters.AutoThreshold = shape.AutoThreshold;
             }
             else
             {
                 state.Parameters.FeatureExtractionMode = extraction.Mode;
+                state.Parameters.AutoThreshold = extraction.Mode == Core.ShapeFeatureExtractionMode.EdgeContours
+                    ? extraction.AutoThreshold || shape.AutoThreshold
+                    : shape.AutoThreshold;
                 state.Parameters.EdgeSigma = extraction.EdgeSigma;
                 state.Parameters.EdgeLowThreshold = extraction.EdgeLowThreshold;
                 state.Parameters.EdgeHighThreshold = extraction.EdgeHighThreshold;
@@ -197,11 +201,13 @@ namespace NinePointRotationCalibration.WinForms.Adapters
             template.ShapeParameters.Metric = parameters.FeatureExtractionMode == Core.ShapeFeatureExtractionMode.EdgeContours
                 ? EdgeContourMetric
                 : shapeMetric;
+            template.ShapeParameters.AutoThreshold = parameters.AutoThreshold;
             template.ShapeParameters.Contrast = (int)Math.Round(parameters.Contrast);
             template.ShapeParameters.MinContrast = (int)Math.Round(parameters.MinimumContrast);
             template.ShapeParameters.FeatureExtraction = new Core.ShapeFeatureExtractionSettings
             {
                 Mode = parameters.FeatureExtractionMode,
+                AutoThreshold = parameters.AutoThreshold,
                 EdgeSigma = parameters.EdgeSigma,
                 EdgeLowThreshold = parameters.EdgeLowThreshold,
                 EdgeHighThreshold = parameters.EdgeHighThreshold,

@@ -19,9 +19,10 @@ namespace NinePointRotationCalibration
         public ShapeFeatureExtractionSettings()
         {
             Mode = ShapeFeatureExtractionMode.EdgeContours;
+            AutoThreshold = true;
             EdgeSigma = 1.2;
-            EdgeLowThreshold = 60.0;
-            EdgeHighThreshold = 100.0;
+            EdgeLowThreshold = 20.0;
+            EdgeHighThreshold = 45.0;
             MinimumContourLengthPixels = 9.0;
             PointSpacingPixels = 6.0;
             MaximumPointCount = 20000;
@@ -29,6 +30,10 @@ namespace NinePointRotationCalibration
 
         [field: OptionalField]
         public ShapeFeatureExtractionMode Mode { get; set; }
+
+        /// <summary>启用基于图像对比度与噪声估计的自适应边缘阈值（默认开启）。</summary>
+        [field: OptionalField]
+        public bool AutoThreshold { get; set; }
 
         [field: OptionalField]
         public double EdgeSigma { get; set; }
@@ -141,8 +146,9 @@ namespace NinePointRotationCalibration
             AngleStepRad = 0.0;
             Optimization = "auto";
             Metric = "ignore_local_polarity";
+            AutoThreshold = true;
             Contrast = 30;
-            MinContrast = 20;
+            MinContrast = 10;
             FeatureExtraction = new ShapeFeatureExtractionSettings();
         }
 
@@ -152,6 +158,11 @@ namespace NinePointRotationCalibration
         public double AngleStepRad { get; set; }
         public string Optimization { get; set; }
         public string Metric { get; set; }
+
+        /// <summary>启用 HALCON 自适应对比度与最小对比度（默认开启）。</summary>
+        [field: OptionalField]
+        public bool AutoThreshold { get; set; }
+
         public int Contrast { get; set; }
         public int MinContrast { get; set; }
 

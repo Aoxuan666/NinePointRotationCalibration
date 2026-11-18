@@ -124,6 +124,10 @@ namespace NinePointRotationCalibration.Station.Views
 
             SetPathPair("txtCalibrationTemplatePath", "txtCalibrationFile", options.CalibrationJobPath);
             SetPathPair("txtPositioningTemplatePath", "txtPositioningFile", options.PositioningJobPath);
+            CalibrationJob initialCalibrationJob = _runtime.GetCalibrationJobSnapshot();
+            CalibrationJob initialPositioningJob = _runtime.GetPositioningJobSnapshot();
+            UpdateTemplateStatusLabel(false, initialCalibrationJob == null ? null : initialCalibrationJob.Template);
+            UpdateTemplateStatusLabel(true, initialPositioningJob == null ? null : initialPositioningJob.Template);
             SetText("txtTeachingFile", options.TeachingPath);
             SetText("txtDetectionProfile", options.DetectionProfilePath);
             SetText("txtImageArchive", options.ImageArchiveDirectory);

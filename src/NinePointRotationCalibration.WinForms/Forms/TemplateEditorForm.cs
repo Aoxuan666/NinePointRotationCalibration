@@ -40,6 +40,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
         private readonly List<AdvancedRow> _teachAdvancedRows = new List<AdvancedRow>();
         private readonly List<AdvancedRow> _matchAdvancedRows = new List<AdvancedRow>();
         private readonly ComboBox _modelTypeCombo;
+        private readonly CheckBox _autoThresholdCheck;
         private readonly NumericUpDown _levelsInput;
         private readonly NumericUpDown _matchLevelsInput;
         private readonly NumericUpDown _angleStartInput;
@@ -133,6 +134,12 @@ namespace NinePointRotationCalibration.WinForms.Forms
             _restoreToolButton = CreateToolButton("恢复", "使用画笔恢复已擦除的模板区域", (sender, args) => SelectTool(CanvasEditTool.RestoreMask), true);
 
             _modelTypeCombo = CreateCombo(new[] { "Shape", "NCC" });
+            _autoThresholdCheck = new CheckBox
+            {
+                Text = "自动阈值（自适应对比度与边缘）",
+                AutoSize = true,
+                Checked = true
+            };
             _teachAdvancedToggle = CreateAdvancedToggle();
             _matchAdvancedToggle = CreateAdvancedToggle();
             _levelsInput = CreateIntegerInput(0, 12, 5);
@@ -145,11 +152,11 @@ namespace NinePointRotationCalibration.WinForms.Forms
             _optimizationCombo = CreateCombo(new[] { "auto", "none", "point_reduction_low", "point_reduction_medium", "point_reduction_high" });
             _metricCombo = CreateCombo(new[] { "use_polarity", "ignore_global_polarity", "ignore_local_polarity", "ignore_color_polarity" });
             _contrastInput = CreateDecimalInput(1, 255, 30, 1, 1);
-            _minimumContrastInput = CreateDecimalInput(0, 255, 20, 1, 1);
+            _minimumContrastInput = CreateDecimalInput(0, 255, 10, 1, 1);
             _edgeContourModeCheck = new CheckBox { Text = "使用外轮廓 XLD 匹配", AutoSize = true };
             _edgeSigmaInput = CreateDecimalInput(0.2m, 20, 1.2m, 0.1m, 2);
-            _edgeLowThresholdInput = CreateDecimalInput(1, 254, 60, 1, 1);
-            _edgeHighThresholdInput = CreateDecimalInput(2, 255, 100, 1, 1);
+            _edgeLowThresholdInput = CreateDecimalInput(1, 254, 20, 1, 1);
+            _edgeHighThresholdInput = CreateDecimalInput(2, 255, 45, 1, 1);
             _minimumContourLengthInput = CreateDecimalInput(2, 10000, 9, 1, 1);
             _featurePointSpacingInput = CreateDecimalInput(0.5m, 100, 6, 0.5m, 1);
             _maximumFeaturePointCountInput = CreateIntegerInput(100, 100000, 20000, 100);
@@ -414,6 +421,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
             AddParameterRow(teachTable, "模型类型", _modelTypeCombo);
             AddParameterRow(teachTable, "起始角度 (°)", _angleStartInput);
             AddParameterRow(teachTable, "角度范围 (°)", _angleExtentInput);
+            AddControlRow(teachTable, _autoThresholdCheck);
             AddParameterRow(teachTable, "对比度", _contrastInput);
             AddAdvancedToggleRow(teachTable, _teachAdvancedToggle, _teachAdvancedRows);
             AddAdvancedParameterRow(teachTable, "金字塔层数", _levelsInput, _teachAdvancedRows);
@@ -458,7 +466,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
             anchorTable.Controls.Add(_anchorLockedCheck, 0, anchorTable.RowCount);
             anchorTable.SetColumnSpan(_anchorLockedCheck, 2);
             anchorTable.RowCount++;
-            Button resetAnchor = new Button { Text = "重置为模板 ROI 中心", AutoSize = true, Height = 32 };
+            Button resetAnchor = new Button { Text = "重置为模板 ROI 中心", Width = 180, Height = 30 };
             resetAnchor.Click += ResetAnchor;
             anchorTable.Controls.Add(resetAnchor, 0, anchorTable.RowCount);
             anchorTable.SetColumnSpan(resetAnchor, 2);
@@ -499,7 +507,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
             operationButtons.Controls.Add(_testButton);
             Label flowHelp = new Label
             {
-                Text = "推荐流程：提取特征 -> 检查掩膜 -> 创建模型 -> 测试匹配。",
+                Text = "推荐流程：提取特征（自动/手动阈值） -> 检查掩膜 -> 创建模型 -> 测试匹配。",
                 AutoSize = true,
                 ForeColor = Color.DimGray,
                 Padding = new Padding(0, 6, 0, 8)
@@ -525,6 +533,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
             _canvas.SelectedRoiChanged += (sender, args) => UpdateRoiToolSelection();
 
             _modelTypeCombo.SelectedIndexChanged += ModelTypeChanged;
+            _autoThresholdCheck.CheckedChanged += ShapeFeatureParameterChanged;
             _levelsInput.ValueChanged += StructuralParameterChanged;
             _angleStartInput.ValueChanged += StructuralParameterChanged;
             _angleExtentInput.ValueChanged += StructuralParameterChanged;
@@ -584,6 +593,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 NormalizeStoredMetrics(parameters);
                 parameters.Metric = ResolveActiveMetric(parameters);
                 SelectComboValue(_metricCombo, parameters.Metric);
+                _autoThresholdCheck.Checked = parameters.AutoThreshold;
                 SetNumeric(_contrastInput, parameters.Contrast);
                 SetNumeric(_minimumContrastInput, parameters.MinimumContrast);
                 _edgeContourModeCheck.Checked = parameters.FeatureExtractionMode == ShapeFeatureExtractionMode.EdgeContours;
@@ -832,6 +842,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
             }
 
             parameters.ModelType = _modelTypeCombo.SelectedIndex == 1 ? TemplateModelType.Ncc : TemplateModelType.Shape;
+            parameters.AutoThreshold = _autoThresholdCheck.Checked;
             parameters.NumLevels = (int)_levelsInput.Value;
             parameters.MatchNumLevels = (int)_matchLevelsInput.Value;
             parameters.AngleStartDegrees = (double)_angleStartInput.Value;
@@ -913,7 +924,14 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 UpdateEditorOverlay();
             }
 
-            SetStatus(string.Format("特征提取完成，共 {0} 个特征点。", _state.FeaturePoints.Count), false);
+            SetStatus(
+                string.Format(
+                    "特征提取完成（{0}个特征点，Canny {1:0.#}/{2:0.#}，最小对比度 {3}）。",
+                    _state.FeaturePoints.Count,
+                    _state.Parameters.EdgeLowThreshold,
+                    _state.Parameters.EdgeHighThreshold,
+                    _state.Parameters.MinimumContrast),
+                false);
         }
 
         private async void CreateModelAsync(object sender, EventArgs eventArgs)
@@ -956,6 +974,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
 
             PushUndoState();
             EnsureRevisionAdvanced();
+            SyncResolvedThresholdsQuietly(result.ResolvedParameters);
             _state.ModelData = (byte[])result.ModelData.Clone();
             _state.ModelFormat = result.ModelFormat;
             _state.ModelHash = result.ModelHash;
@@ -979,7 +998,50 @@ namespace NinePointRotationCalibration.WinForms.Forms
             {
                 handler(this, EventArgs.Empty);
             }
-            SetStatus(string.Format("模型创建完成，数据大小 {0:N0} 字节。", _state.ModelData.Length), false);
+            SetStatus(
+                string.Format(
+                    "模型创建完成（{0:N0} 字节 · {1}）。",
+                    _state.ModelData.Length,
+                    _state.Parameters.AutoThreshold
+                        ? string.Format("自适应 Canny {0:0.#}/{1:0.#}, 对比度 {2}/{3}",
+                            _state.Parameters.EdgeLowThreshold,
+                            _state.Parameters.EdgeHighThreshold,
+                            _state.Parameters.Contrast,
+                            _state.Parameters.MinimumContrast)
+                        : "手动阈值"),
+                false);
+        }
+
+        private void SyncResolvedThresholdsQuietly(TemplateEditorParameters resolved)
+        {
+            if (resolved == null)
+            {
+                return;
+            }
+
+            if (_state.Parameters == null)
+            {
+                _state.Parameters = new TemplateEditorParameters();
+            }
+
+            _state.Parameters.Contrast = resolved.Contrast;
+            _state.Parameters.MinimumContrast = resolved.MinimumContrast;
+            _state.Parameters.EdgeLowThreshold = resolved.EdgeLowThreshold;
+            _state.Parameters.EdgeHighThreshold = resolved.EdgeHighThreshold;
+
+            bool wasLoading = _loadingControls;
+            _loadingControls = true;
+            try
+            {
+                SetNumeric(_contrastInput, resolved.Contrast);
+                SetNumeric(_minimumContrastInput, resolved.MinimumContrast);
+                SetNumeric(_edgeLowThresholdInput, resolved.EdgeLowThreshold);
+                SetNumeric(_edgeHighThresholdInput, resolved.EdgeHighThreshold);
+            }
+            finally
+            {
+                _loadingControls = wasLoading;
+            }
         }
 
         private async void TestMatchAsync(object sender, EventArgs eventArgs)
@@ -1425,6 +1487,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
         {
             bool isShapeModel = _modelTypeCombo.SelectedIndex == 0;
             bool edgeContoursEnabled = isShapeModel && _edgeContourModeCheck.Checked;
+            bool autoThreshold = isShapeModel && _autoThresholdCheck.Checked;
             TemplateEditorParameters parameters = _state.Parameters ?? new TemplateEditorParameters();
             _state.Parameters = parameters;
             NormalizeStoredMetrics(parameters);
@@ -1444,12 +1507,14 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 _loadingControls = wasLoadingControls;
             }
 
+            _autoThresholdCheck.Enabled = isShapeModel;
             _edgeContourModeCheck.Enabled = isShapeModel;
             _metricCombo.Enabled = !edgeContoursEnabled;
-            _contrastInput.Enabled = !edgeContoursEnabled;
+            _contrastInput.Enabled = !edgeContoursEnabled && !autoThreshold;
+            _minimumContrastInput.Enabled = !autoThreshold;
             _edgeSigmaInput.Enabled = edgeContoursEnabled;
-            _edgeLowThresholdInput.Enabled = edgeContoursEnabled;
-            _edgeHighThresholdInput.Enabled = edgeContoursEnabled;
+            _edgeLowThresholdInput.Enabled = edgeContoursEnabled && !autoThreshold;
+            _edgeHighThresholdInput.Enabled = edgeContoursEnabled && !autoThreshold;
             _minimumContourLengthInput.Enabled = edgeContoursEnabled;
             _featurePointSpacingInput.Enabled = edgeContoursEnabled;
             _maximumFeaturePointCountInput.Enabled = edgeContoursEnabled;
@@ -1523,6 +1588,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
             }
 
             if (_state.Parameters.ModelType == TemplateModelType.Shape &&
+                !_state.Parameters.AutoThreshold &&
                 _state.Parameters.FeatureExtractionMode == ShapeFeatureExtractionMode.LegacyImageDomain &&
                 _state.Parameters.MinimumContrast > _state.Parameters.Contrast)
             {
@@ -1531,6 +1597,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
             }
 
             if (_state.Parameters.ModelType == TemplateModelType.Shape &&
+                !_state.Parameters.AutoThreshold &&
                 _state.Parameters.FeatureExtractionMode == ShapeFeatureExtractionMode.EdgeContours &&
                 _state.Parameters.EdgeHighThreshold <= _state.Parameters.EdgeLowThreshold)
             {
@@ -1800,6 +1867,15 @@ namespace NinePointRotationCalibration.WinForms.Forms
             control.Margin = new Padding(3, 4, 3, 4);
             table.Controls.Add(label, 0, row);
             table.Controls.Add(control, 1, row);
+        }
+
+        private static void AddControlRow(TableLayoutPanel table, Control control)
+        {
+            int row = table.RowCount++;
+            table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            control.Margin = new Padding(3, 7, 3, 7);
+            table.Controls.Add(control, 0, row);
+            table.SetColumnSpan(control, 2);
         }
 
         private static void AddAdvancedToggleRow(

@@ -30,6 +30,7 @@ namespace NinePointRotationCalibration.Sdk.Tests
             Run("SDK AddSampleFromMatch success and failure", SdkAddSampleFromMatchSuccessAndFailure);
             Run("Simple SDK translation and rotation workflow", SimpleSdkTranslationAndRotationWorkflow);
             Run("SDK does not dispose injected engine", SdkDoesNotDisposeInjectedEngine);
+            Run("SDK default auto threshold builds, validates, saves, and locates low-contrast PCB", SdkAutoThresholdBuildAndLocate);
 
             Console.WriteLine();
             Console.WriteLine("Passed: {0}; Failed: {1}", _passed, _failed);
@@ -112,8 +113,12 @@ namespace NinePointRotationCalibration.Sdk.Tests
             Near(1.4, actual.ShapeParameters.AngleExtentRad, 1e-12, "shape angle extent");
             Equal("point_reduction_high", actual.ShapeParameters.Optimization, "shape optimization");
             Equal("ignore_global_polarity", actual.ShapeParameters.Metric, "shape metric");
+            Equal(true, actual.ShapeParameters.AutoThreshold, "shape auto threshold");
             Equal(42, actual.ShapeParameters.Contrast, "shape contrast");
             Equal(9, actual.ShapeParameters.MinContrast, "shape minimum contrast");
+            True(actual.ShapeParameters.FeatureExtraction != null &&
+                 actual.ShapeParameters.FeatureExtraction.AutoThreshold,
+                "feature extraction auto threshold must round-trip");
             Near(0.61, actual.MatchParameters.MinScore, 1e-12, "minimum score");
             Equal(2, actual.MatchParameters.NumMatches, "match count");
             Equal("least_squares_high", actual.MatchParameters.SubPixel, "sub-pixel mode");
@@ -817,6 +822,62 @@ namespace NinePointRotationCalibration.Sdk.Tests
             Near(expected.ImagePose.Column, actual.ImagePose.Column, 1e-12, name + " image column");
             Near(expected.ImagePose.AngleDegrees, actual.ImagePose.AngleDegrees, 1e-12, name + " image angle");
             Equal(expected.CapturedAtUtc, actual.CapturedAtUtc, name + " capture time");
+        }
+
+        private static void SdkAutoThresholdBuildAndLocate(string directory)
+        {
+            using (Bitmap train = new Bitmap(200, 180, System.Drawing.Imaging.PixelFormat.Format24bppRgb))
+            using (Bitmap run = new Bitmap(200, 180, System.Drawing.Imaging.PixelFormat.Format24bppRgb))
+            using (NinePointRotationCalibrationSdk sdk = new NinePointRotationCalibrationSdk())
+            {
+                using (Graphics g = Graphics.FromImage(train))
+                {
+                    g.Clear(Color.FromArgb(42, 42, 42));
+                    using (Brush b = new SolidBrush(Color.FromArgb(72, 72, 72)))
+                        g.FillRectangle(b, 60, 50, 80, 70);
+                }
+                using (Graphics g = Graphics.FromImage(run))
+                {
+                    g.Clear(Color.FromArgb(30, 30, 30));
+                    using (Brush b = new SolidBrush(Color.FromArgb(52, 52, 52)))
+                        g.FillRectangle(b, 75, 62, 80, 70);
+                }
+
+                TemplateDefinition def = new TemplateDefinition
+                {
+                    ModelType = TemplateModelType.Shape,
+                    TemplateRoi = new RegionDefinition
+                    {
+                        Kind = RegionKind.Rectangle2,
+                        CenterRow = 85.0,
+                        CenterColumn = 100.0,
+                        PhiRadians = 0.0,
+                        Length1 = 50.0,
+                        Length2 = 45.0
+                    }
+                };
+                True(def.ShapeParameters.AutoThreshold && def.ShapeParameters.FeatureExtraction.AutoThreshold,
+                    "new template definitions must default to adaptive auto threshold");
+
+                TemplateBuildResult build = sdk.BuildTemplate(train, def);
+                True(build.Success && build.Template != null,
+                    "SDK auto-threshold build must succeed on low-contrast image: " + build.Message);
+
+                CalibrationJob job = new CalibrationJob { Template = build.Template };
+                JobValidationResult validation = CalibrationJobValidator.Validate(job, CalibrationValidationScope.Configuration);
+                True(validation.IsValid, "job created via auto-threshold must pass Configuration validation");
+
+                string path = Path.Combine(directory, "auto-threshold.nprcal");
+                JobPackageSerializer.Save(path, job);
+                CalibrationJob reloaded = JobPackageSerializer.Load(path);
+                True(reloaded.Template.ShapeParameters.FeatureExtraction.AutoThreshold,
+                    "AutoThreshold flag must persist in nprcal package");
+
+                TemplateMatchResult match = sdk.Locate(run, reloaded, false);
+                True(match.Success, "reloaded auto-threshold model must locate dimmed shifted target: " + match.Message);
+                Near(97.0, match.Anchor.Row, 2.0, "auto-threshold locate row");
+                Near(115.0, match.Anchor.Column, 2.0, "auto-threshold locate column");
+            }
         }
 
         private static void BytesEqual(byte[] expected, byte[] actual, string message)

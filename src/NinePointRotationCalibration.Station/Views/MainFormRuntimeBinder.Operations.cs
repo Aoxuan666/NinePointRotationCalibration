@@ -458,6 +458,7 @@ namespace NinePointRotationCalibration.Station.Views
                     throw new InvalidOperationException("模板编辑已确认，但没有返回模板数据。");
                 }
 
+                UpdateTemplateStatusLabel(positioning, result.Template);
                 if (positioning)
                     ApplyDetectionProfileToView(_runtime.GetDetectionProfileSnapshot());
                 _view.AppendLog(positioning ? "定位模板已更新。" : "标定模板已更新。", false);
@@ -479,10 +480,78 @@ namespace NinePointRotationCalibration.Station.Views
             if (!result.Success) throw new InvalidOperationException(result.Message);
 
             SetPathPair(firstName, secondName, path);
+            CalibrationJob loadedJob = positioning
+                ? _runtime.GetPositioningJobSnapshot()
+                : _runtime.GetCalibrationJobSnapshot();
+            UpdateTemplateStatusLabel(positioning, loadedJob == null ? null : loadedJob.Template);
             if (positioning)
                 ApplyDetectionProfileToView(_runtime.GetDetectionProfileSnapshot());
             _view.AppendLog((positioning ? "定位" : "标定") + "文件已加载：" + path, false);
             return Task.CompletedTask;
+        }
+
+        private void UpdateTemplateStatusLabel(bool positioning, TemplateDefinition template)
+        {
+            string controlName = positioning
+                ? "lblStatustxtPositioningTemplatePath"
+                : "lblStatustxtCalibrationTemplatePath";
+            Label label = _view.Controls.Find(controlName, true).OfType<Label>().FirstOrDefault();
+            if (label == null) return;
+
+            if (template == null || (!template.HasUsableModel && template.TemplateRoi == null))
+            {
+                label.ForeColor = Color.FromArgb(94, 101, 109);
+                label.Text = "未加载";
+                return;
+            }
+
+            string stateText = template.HasUsableModel ? "已就绪" : "待重建模型";
+            ShapeModelParameters shape = template.ShapeParameters;
+            ShapeFeatureExtractionSettings extraction = shape == null ? null : shape.FeatureExtraction;
+            bool isXld = template.ModelType == TemplateModelType.Shape &&
+                extraction != null &&
+                extraction.Mode == ShapeFeatureExtractionMode.EdgeContours;
+            string modeText = template.ModelType == TemplateModelType.Ncc
+                ? "NCC"
+                : isXld ? "Shape(XLD)" : "Shape";
+
+            string thresholdText;
+            if (template.ModelType == TemplateModelType.Ncc)
+            {
+                thresholdText = "归一化互相关";
+            }
+            else if (isXld && extraction != null)
+            {
+                bool auto = extraction.AutoThreshold || (shape != null && shape.AutoThreshold);
+                thresholdText = string.Format(
+                    CultureInfo.InvariantCulture,
+                    "{0} Canny {1:0.#}/{2:0.#}, MinC={3}",
+                    auto ? "自适应" : "手动",
+                    extraction.EdgeLowThreshold,
+                    extraction.EdgeHighThreshold,
+                    shape == null ? 0 : shape.MinContrast);
+            }
+            else
+            {
+                bool auto = shape != null && shape.AutoThreshold;
+                thresholdText = string.Format(
+                    CultureInfo.InvariantCulture,
+                    "{0} 对比度 {1}/{2}",
+                    auto ? "自适应" : "手动",
+                    shape == null ? 0 : shape.Contrast,
+                    shape == null ? 0 : shape.MinContrast);
+            }
+
+            label.ForeColor = template.HasUsableModel
+                ? Color.FromArgb(21, 128, 61)
+                : Color.FromArgb(180, 83, 9);
+            label.Text = string.Format(
+                CultureInfo.InvariantCulture,
+                "{0} · {1} · {2} · Rev {3}",
+                stateText,
+                modeText,
+                thresholdText,
+                template.Revision);
         }
 
         private async Task TestTemplateAsync(bool positioning, CancellationToken cancellationToken)

@@ -27,12 +27,13 @@ namespace NinePointRotationCalibration.WinForms.Models
             Metric = "use_polarity";
             ShapeMetric = "use_polarity";
             NccMetric = "use_polarity";
+            AutoThreshold = true;
             Contrast = 30.0;
-            MinimumContrast = 20.0;
+            MinimumContrast = 10.0;
             FeatureExtractionMode = ShapeFeatureExtractionMode.EdgeContours;
             EdgeSigma = 1.2;
-            EdgeLowThreshold = 60.0;
-            EdgeHighThreshold = 100.0;
+            EdgeLowThreshold = 20.0;
+            EdgeHighThreshold = 45.0;
             MinimumContourLengthPixels = 9.0;
             FeaturePointSpacingPixels = 6.0;
             MaximumFeaturePointCount = 20000;
@@ -73,6 +74,10 @@ namespace NinePointRotationCalibration.WinForms.Models
         public string ShapeMetric { get; set; }
 
         public string NccMetric { get; set; }
+
+        /// <summary>启用 HALCON 自适应阈值与对比度估计（默认开启）。</summary>
+        [field: OptionalField]
+        public bool AutoThreshold { get; set; }
 
         public double Contrast { get; set; }
 
@@ -320,6 +325,9 @@ namespace NinePointRotationCalibration.WinForms.Models
         public string HalconVersion { get; set; }
 
         public List<List<ImageCoordinate>> Contours { get; set; }
+
+        /// <summary>建模完成后实际采用并回填的参数（含自适应算出的有效阈值）。</summary>
+        public TemplateEditorParameters ResolvedParameters { get; set; }
     }
 
     /// <summary>

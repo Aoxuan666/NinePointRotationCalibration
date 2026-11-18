@@ -90,8 +90,34 @@ namespace NinePointRotationCalibration
                 {
                     if (!Numeric.IsFinite(parameters.AngleStartRad) || !Numeric.IsFinite(parameters.AngleExtentRad) || parameters.AngleExtentRad <= 0.0)
                         result.Add(ValidationSeverity.Error, "MODEL_ANGLE_INVALID", "Shape model angle range is invalid.", "Template.ShapeParameters");
-                    if (parameters.Contrast <= 0 || parameters.MinContrast < 0 || parameters.MinContrast > parameters.Contrast)
+
+                    bool edgeContours = parameters.FeatureExtraction != null
+                        && parameters.FeatureExtraction.Mode == ShapeFeatureExtractionMode.EdgeContours;
+                    if (edgeContours)
+                    {
+                        if (parameters.MinContrast < 0)
+                            result.Add(ValidationSeverity.Error, "CONTRAST_INVALID", "Shape model minimum contrast must be non-negative.", "Template.ShapeParameters.MinContrast");
+                        if (!parameters.FeatureExtraction.AutoThreshold)
+                        {
+                            if (!Positive(parameters.FeatureExtraction.EdgeLowThreshold) ||
+                                !Positive(parameters.FeatureExtraction.EdgeHighThreshold) ||
+                                parameters.FeatureExtraction.EdgeHighThreshold <= parameters.FeatureExtraction.EdgeLowThreshold)
+                            {
+                                result.Add(ValidationSeverity.Error, "EDGE_THRESHOLD_INVALID",
+                                    "Edge contour thresholds must be positive with high greater than low.",
+                                    "Template.ShapeParameters.FeatureExtraction");
+                            }
+                        }
+                    }
+                    else if (parameters.AutoThreshold)
+                    {
+                        if (parameters.Contrast < 0 || parameters.MinContrast < 0)
+                            result.Add(ValidationSeverity.Error, "CONTRAST_INVALID", "Shape model contrast values cannot be negative.", "Template.ShapeParameters");
+                    }
+                    else if (parameters.Contrast <= 0 || parameters.MinContrast < 0 || parameters.MinContrast > parameters.Contrast)
+                    {
                         result.Add(ValidationSeverity.Error, "CONTRAST_INVALID", "Shape model contrast values are invalid.", "Template.ShapeParameters");
+                    }
                 }
             }
             else if (template.ModelType == TemplateModelType.Ncc && template.NccParameters == null)
@@ -219,19 +245,18 @@ namespace NinePointRotationCalibration
                 result.Add(ValidationSeverity.Error, "ROTATION_THRESHOLD_INVALID", "Rotation solver thresholds are invalid.", "SolverOptions");
         }
 
-        /// <summary>校验平移与旋转样本的数量、版本一致性、轴行程及角度跨度条件。</summary>
         private static void ValidateSamples(CalibrationJob job, CalibrationValidationScope scope, JobValidationResult result)
         {
             CalibrationSolverOptions options = job.SolverOptions ?? new CalibrationSolverOptions();
             long revision = job.Template == null ? 0 : job.Template.Revision;
+            HashSet<string> ids = new HashSet<string>(StringComparer.Ordinal);
             int translationCount = 0;
             int rotationCount = 0;
-            double minX = double.PositiveInfinity;
-            double maxX = double.NegativeInfinity;
-            double minY = double.PositiveInfinity;
-            double maxY = double.NegativeInfinity;
+            double minX = double.MaxValue;
+            double maxX = double.MinValue;
+            double minY = double.MaxValue;
+            double maxY = double.MinValue;
             List<double> rotationAngles = new List<double>();
-            HashSet<string> ids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
             if (job.Samples != null)
             {
