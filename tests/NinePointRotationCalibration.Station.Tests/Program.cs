@@ -3176,15 +3176,34 @@ namespace NinePointRotationCalibration.Station.Tests
                          string.Equals(rectangularity.Tag as string, "detection.previewParameters", StringComparison.Ordinal),
                         "all blob area and rectangularity controls must trigger real-time effect preview");
 
-                    // 切换到检测页，验证上下双窗口（上原图 / 下效果图）激活与布局
+                    // 切换到检测页，验证上下双窗口（上原图 / 下效果图）激活、日志自动折叠释放高度以及布局切换
+                    TableLayoutPanel rootLayout = form.Controls.Find("rootLayout", true).OfType<TableLayoutPanel>().Single();
+                    Button toggleDualLayout = form.Controls.Find("btnToggleDualLayout", true).OfType<Button>().Single();
+                    double expandedLogHeight = rootLayout.RowStyles[2].Height;
                     form.WorkTabs.SelectedTab = form.WorkTabs.TabPages["tabDetection"];
                     Application.DoEvents();
                     True(form.IsDetectionDualViewActive &&
                          !imageSplit.Panel2Collapsed &&
                          imageSplit.Orientation == Orientation.Horizontal &&
                          sourceHeader.Visible &&
-                         form.EffectViewport.Visible,
-                        "selecting tabDetection must expand vertically stacked source and effect viewports");
+                         form.EffectViewport.Visible &&
+                         rootLayout.RowStyles[2].Height < 50.0F &&
+                         expandedLogHeight > 100.0 &&
+                         form.Viewport.Height >= 350 &&
+                         form.EffectViewport.Height >= 350,
+                        "selecting tabDetection must compact log panel and provide generous dual-viewport height");
+
+                    // 校验“切换左右 / 上下”布局切换按钮可平滑工作且不破坏双视口同步
+                    toggleDualLayout.PerformClick();
+                    Application.DoEvents();
+                    True(imageSplit.Orientation == Orientation.Vertical &&
+                         form.Viewport.Width >= 350 &&
+                         form.EffectViewport.Width >= 350,
+                        "layout toggle must switch dual viewports cleanly to side-by-side layout");
+                    toggleDualLayout.PerformClick();
+                    Application.DoEvents();
+                    True(imageSplit.Orientation == Orientation.Horizontal,
+                        "second layout toggle click must restore stacked top/bottom layout");
 
                     using (Bitmap sourceBmp = new Bitmap(240, 180, PixelFormat.Format24bppRgb))
                     {
@@ -3305,27 +3324,43 @@ namespace NinePointRotationCalibration.Station.Tests
                         True(PumpUntil(() => Math.Abs(form.Viewport.EffectiveScale - form.EffectViewport.EffectiveScale) < 1e-3f, 3000),
                             "zooming top source viewport must synchronize bottom effect viewport scale");
 
-                        // 切出检测页后折叠下窗口但保留原图与勾选偏好
+                        // 切出检测页后折叠下窗口，恢复日志高度并保留原图与勾选偏好
                         form.WorkTabs.SelectedIndex = 0;
                         Application.DoEvents();
                         True(!form.IsDetectionDualViewActive && imageSplit.Panel2Collapsed &&
+                             rootLayout.RowStyles[2].Height >= 100.0F &&
                              binaryCheck.Checked && GetLockedDisplayImage(binder) != null,
-                            "leaving detection tab must collapse effect viewport while keeping locked image and toggle preference");
+                            "leaving detection tab must collapse effect viewport, restore log height, and keep locked image");
 
-                        // 同时验证独立 BlobDebugForm 的上下双视口结构
+                        // 同时验证独立 BlobDebugForm 的双视口高度优化及上下/左右一键切换
                         using (BlobDebugForm debugForm = new BlobDebugForm(
                             sourceBmp,
                             null,
                             new DetectionProfile { TemplateMatchingEnabled = false }))
                         {
+                            debugForm.ShowInTaskbar = false;
+                            debugForm.StartPosition = FormStartPosition.Manual;
+                            debugForm.Location = new Point(-20000, -20000);
+                            debugForm.Show();
+                            Application.DoEvents();
+
                             SplitContainer previewSplit = debugForm.Controls.Find("previewSplit", true).OfType<SplitContainer>().Single();
                             ImageViewport debugTop = debugForm.Controls.Find("sourceViewport", true).OfType<ImageViewport>().Single();
                             ImageViewport debugBottom = debugForm.Controls.Find("binaryViewport", true).OfType<ImageViewport>().Single();
+                            Button debugToggle = debugForm.Controls.Find("btnToggleLayout", true).OfType<Button>().Single();
                             True(previewSplit.Orientation == Orientation.Horizontal &&
                                  previewSplit.Panel1.Contains(debugTop) &&
                                  previewSplit.Panel2.Contains(debugBottom) &&
+                                 debugTop.Height >= 265 &&
+                                 debugBottom.Height >= 265 &&
                                  debugForm.Controls.Find("tabPreview", true).Length == 0,
-                                "BlobDebugForm must use stacked top-source and bottom-binary dual viewports");
+                                "BlobDebugForm must provide taller stacked dual viewports");
+                            debugToggle.PerformClick();
+                            Application.DoEvents();
+                            True(previewSplit.Orientation == Orientation.Vertical &&
+                                 debugTop.Height >= 500 &&
+                                 debugBottom.Height >= 500,
+                                "BlobDebugForm layout toggle must support full-height side-by-side mode");
                         }
                     }
                 }

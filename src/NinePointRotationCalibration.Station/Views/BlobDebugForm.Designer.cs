@@ -28,6 +28,7 @@ namespace NinePointRotationCalibration.Station.Views
         private Button btnRefresh;
         private Button btnFit;
         private Button btnActualPixels;
+        private Button btnToggleLayout;
         private Button btnApply;
         private Button btnCancel;
         private SplitContainer previewSplit;
@@ -58,7 +59,7 @@ namespace NinePointRotationCalibration.Station.Views
             AutoScaleDimensions = new SizeF(96.0F, 96.0F);
             AutoScaleMode = AutoScaleMode.Dpi;
             BackColor = Color.FromArgb(232, 235, 238);
-            ClientSize = new Size(1320, 820);
+            ClientSize = new Size(1440, 880);
             Font = new Font("Microsoft YaHei UI", 9.0F, FontStyle.Regular, GraphicsUnit.Point, 134);
             ForeColor = Color.FromArgb(39, 43, 48);
             FormBorderStyle = FormBorderStyle.Sizable;
@@ -77,7 +78,7 @@ namespace NinePointRotationCalibration.Station.Views
             root.Margin = Padding.Empty;
             root.RowCount = 2;
             root.RowStyles.Add(new RowStyle(SizeType.Percent, 100.0F));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 56.0F));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42.0F));
 
             mainSplit = new SplitContainer();
             mainSplit.BackColor = Color.FromArgb(202, 207, 212);
@@ -85,7 +86,7 @@ namespace NinePointRotationCalibration.Station.Views
             mainSplit.FixedPanel = FixedPanel.Panel1;
             mainSplit.IsSplitterFixed = false;
             mainSplit.Name = "mainSplit";
-            mainSplit.Size = new Size(1320, 764);
+            mainSplit.Size = new Size(1440, 838);
             mainSplit.Panel1.BackColor = Color.FromArgb(244, 246, 248);
             mainSplit.Panel1MinSize = 300;
             mainSplit.Panel2.BackColor = Color.Black;
@@ -212,19 +213,20 @@ namespace NinePointRotationCalibration.Station.Views
             layout.Dock = DockStyle.Fill;
             layout.Margin = Padding.Empty;
             layout.RowCount = 3;
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 42.0F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34.0F));
             layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100.0F));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 190.0F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 106.0F));
 
             TableLayoutPanel toolbar = new TableLayoutPanel();
             toolbar.BackColor = Color.FromArgb(38, 43, 49);
-            toolbar.ColumnCount = 3;
+            toolbar.ColumnCount = 4;
             toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100.0F));
-            toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 74.0F));
-            toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 64.0F));
+            toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 94.0F));
+            toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 68.0F));
+            toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 58.0F));
             toolbar.Dock = DockStyle.Fill;
             toolbar.Margin = Padding.Empty;
-            toolbar.Padding = new Padding(10, 5, 6, 4);
+            toolbar.Padding = new Padding(10, 4, 6, 4);
             toolbar.RowCount = 1;
             toolbar.RowStyles.Add(new RowStyle(SizeType.Percent, 100.0F));
 
@@ -235,15 +237,19 @@ namespace NinePointRotationCalibration.Station.Views
             lblPreviewStatus.Name = "lblPreviewStatus";
             lblPreviewStatus.Text = "等待更新";
             lblPreviewStatus.TextAlign = ContentAlignment.MiddleLeft;
-            btnFit = CreateButton("btnFit", "适应", 66, 30, false);
+            btnToggleLayout = CreateButton("btnToggleLayout", "⇄ 切换左右", 88, 26, false);
+            btnToggleLayout.Dock = DockStyle.Fill;
+            btnToggleLayout.Margin = new Padding(4, 0, 4, 0);
+            btnFit = CreateButton("btnFit", "适应", 62, 26, false);
             btnFit.Dock = DockStyle.Fill;
             btnFit.Margin = new Padding(4, 0, 4, 0);
-            btnActualPixels = CreateButton("btnActualPixels", "1:1", 54, 30, false);
+            btnActualPixels = CreateButton("btnActualPixels", "1:1", 52, 26, false);
             btnActualPixels.Dock = DockStyle.Fill;
             btnActualPixels.Margin = new Padding(4, 0, 0, 0);
             toolbar.Controls.Add(lblPreviewStatus, 0, 0);
-            toolbar.Controls.Add(btnFit, 1, 0);
-            toolbar.Controls.Add(btnActualPixels, 2, 0);
+            toolbar.Controls.Add(btnToggleLayout, 1, 0);
+            toolbar.Controls.Add(btnFit, 2, 0);
+            toolbar.Controls.Add(btnActualPixels, 3, 0);
 
             previewSplit = new SplitContainer();
             previewSplit.BackColor = Color.FromArgb(45, 52, 60);
@@ -252,11 +258,11 @@ namespace NinePointRotationCalibration.Station.Views
             previewSplit.Margin = Padding.Empty;
             previewSplit.Name = "previewSplit";
             previewSplit.Orientation = Orientation.Horizontal;
-            previewSplit.Size = new Size(988, 520);
+            previewSplit.Size = new Size(1108, 666);
             previewSplit.Panel1MinSize = 110;
             previewSplit.Panel2MinSize = 110;
-            previewSplit.SplitterDistance = 250;
-            previewSplit.SplitterWidth = 5;
+            previewSplit.SplitterDistance = 331;
+            previewSplit.SplitterWidth = 4;
 
             sourceViewport = new ImageViewport();
             sourceViewport.Dock = DockStyle.Fill;
@@ -422,7 +428,7 @@ namespace NinePointRotationCalibration.Station.Views
             header.BackColor = Color.FromArgb(24, 32, 44);
             header.Dock = DockStyle.Top;
             header.ForeColor = Color.FromArgb(203, 213, 225);
-            header.Height = 22;
+            header.Height = 20;
             header.Padding = new Padding(8, 0, 0, 0);
             header.Text = headerText;
             header.TextAlign = ContentAlignment.MiddleLeft;

@@ -72,6 +72,8 @@ namespace NinePointRotationCalibration.Station.Views
         private TcpUiState _tcpUiState = TcpUiState.NotListening;
         private bool _dualViewActive;
         private bool _syncingViewports;
+        private bool _logCollapsed;
+        private bool _userExpandedLogInDualView;
 
         public MainForm()
         {
@@ -406,6 +408,17 @@ namespace NinePointRotationCalibration.Station.Views
                     pnlSourceViewportHeader.Visible = active;
                 }
 
+                // 进入检测双视图时自动折叠底部日志以释放纵深空间；切离时恢复显示
+                if (active)
+                {
+                    if (!_userExpandedLogInDualView) SetLogCollapsed(true);
+                }
+                else
+                {
+                    _userExpandedLogInDualView = false;
+                    SetLogCollapsed(false);
+                }
+
                 if (imageSplit != null)
                 {
                     imageSplit.Panel2Collapsed = !active;
@@ -436,12 +449,72 @@ namespace NinePointRotationCalibration.Station.Views
                 return;
             }
 
-            int available = imageSplit.Height - imageSplit.SplitterWidth;
+            int total = imageSplit.Orientation == Orientation.Horizontal
+                ? imageSplit.Height
+                : imageSplit.Width;
+            int available = total - imageSplit.SplitterWidth;
             int min1 = imageSplit.Panel1MinSize;
             int max1 = available - imageSplit.Panel2MinSize;
             if (max1 >= min1)
             {
                 imageSplit.SplitterDistance = Math.Max(min1, Math.Min(max1, available / 2));
+            }
+        }
+
+        private void ToggleDualViewportLayout()
+        {
+            if (imageSplit == null || imageSplit.IsDisposed) return;
+
+            bool toVertical = imageSplit.Orientation == Orientation.Horizontal;
+            imageSplit.Orientation = toVertical ? Orientation.Vertical : Orientation.Horizontal;
+            if (btnToggleDualLayout != null)
+            {
+                btnToggleDualLayout.Text = toVertical ? "⇅ 切换上下" : "⇄ 切换左右";
+            }
+            BalanceImageSplit();
+            if (_dualViewActive && imageViewport.HasImage && effectViewport.HasImage)
+            {
+                SyncLinkedViewport(imageViewport, effectViewport);
+            }
+        }
+
+        private void SetLogCollapsed(bool collapsed)
+        {
+            _logCollapsed = collapsed;
+            if (rtbLog != null) rtbLog.Visible = !collapsed;
+            if (btnClearLog != null) btnClearLog.Visible = !collapsed;
+            if (btnToggleLog != null) btnToggleLog.Text = collapsed ? "▲ 展开" : "▼ 收起";
+            if (logLayout != null && logLayout.RowStyles.Count > 1)
+            {
+                logLayout.RowStyles[1] = collapsed
+                    ? new RowStyle(SizeType.Absolute, 0.0F)
+                    : new RowStyle(SizeType.Percent, 100.0F);
+            }
+            if (rootLayout != null && rootLayout.RowStyles.Count > 2)
+            {
+                rootLayout.RowStyles[2].Height = collapsed ? 32.0F : 128.0F;
+            }
+            if (_dualViewActive)
+            {
+                BalanceImageSplit();
+            }
+        }
+
+        protected override void OnShown(EventArgs e)
+        {
+            base.OnShown(e);
+            if (StartPosition == FormStartPosition.Manual) return;
+
+            Rectangle workingArea = Screen.FromControl(this).WorkingArea;
+            int targetWidth = Math.Min(Width, workingArea.Width);
+            int targetHeight = Math.Min(Height, workingArea.Height);
+            if (targetWidth != Width || targetHeight != Height)
+            {
+                Bounds = new Rectangle(
+                    workingArea.Left + Math.Max(0, (workingArea.Width - targetWidth) / 2),
+                    workingArea.Top + Math.Max(0, (workingArea.Height - targetHeight) / 2),
+                    targetWidth,
+                    targetHeight);
             }
         }
 
@@ -917,6 +990,23 @@ namespace NinePointRotationCalibration.Station.Views
                 if (effectViewport.HasImage) effectViewport.ShowActualPixels();
             };
             btnClearLog.Click += delegate { rtbLog.Clear(); };
+            if (btnToggleLog != null)
+            {
+                btnToggleLog.Click += delegate
+                {
+                    bool nextCollapsed = !_logCollapsed;
+                    if (_dualViewActive) _userExpandedLogInDualView = !nextCollapsed;
+                    SetLogCollapsed(nextCollapsed);
+                };
+            }
+            if (btnToggleDualLayout != null)
+            {
+                btnToggleDualLayout.Click += delegate { ToggleDualViewportLayout(); };
+            }
+            if (imageSplit != null)
+            {
+                imageSplit.SizeChanged += delegate { BalanceImageSplit(); };
+            }
             tabWork.DrawItem += TabWork_DrawItem;
             imageViewport.ImagePositionChanged += ImageViewport_ImagePositionChanged;
             imageViewport.ImageAvailabilityChanged += ImageViewport_ImageAvailabilityChanged;

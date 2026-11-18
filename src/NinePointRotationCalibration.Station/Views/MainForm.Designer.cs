@@ -10,12 +10,17 @@ namespace NinePointRotationCalibration.Station.Views
     {
         private IContainer components;
 
+        private TableLayoutPanel rootLayout;
+        private SplitContainer workspaceSplit;
         private SplitContainer imageSplit;
         private ImageViewport imageViewport;
         private ImageViewport effectViewport;
         private Panel pnlSourceViewportHeader;
         private Panel pnlEffectViewportHeader;
         private Label lblEffectViewportInfo;
+        private Button btnToggleDualLayout;
+        private TableLayoutPanel logLayout;
+        private Button btnToggleLog;
         private DataGridView dgvCalibration;
         private DataGridView dgvDetectionResults;
         private RichTextBox rtbLog;
@@ -74,7 +79,7 @@ namespace NinePointRotationCalibration.Station.Views
             AutoScaleDimensions = new SizeF(96.0F, 96.0F);
             AutoScaleMode = AutoScaleMode.Dpi;
             BackColor = Color.FromArgb(232, 235, 238);
-            ClientSize = new Size(1500, 900);
+            ClientSize = new Size(1600, 960);
             Font = new Font("Microsoft YaHei UI", 9.0F, FontStyle.Regular, GraphicsUnit.Point, 134);
             ForeColor = Color.FromArgb(39, 43, 48);
             MinimumSize = new Size(1280, 720);
@@ -82,7 +87,7 @@ namespace NinePointRotationCalibration.Station.Views
             StartPosition = FormStartPosition.CenterScreen;
             Text = "视觉工作站";
 
-            TableLayoutPanel rootLayout = new TableLayoutPanel();
+            rootLayout = new TableLayoutPanel();
             rootLayout.BackColor = BackColor;
             rootLayout.ColumnCount = 1;
             rootLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100.0F));
@@ -90,9 +95,9 @@ namespace NinePointRotationCalibration.Station.Views
             rootLayout.Margin = Padding.Empty;
             rootLayout.Name = "rootLayout";
             rootLayout.RowCount = 3;
-            rootLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 58.0F));
+            rootLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48.0F));
             rootLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100.0F));
-            rootLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 156.0F));
+            rootLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 128.0F));
 
             rootLayout.Controls.Add(BuildHeader(), 0, 0);
             rootLayout.Controls.Add(BuildWorkspace(), 0, 1);
@@ -112,7 +117,7 @@ namespace NinePointRotationCalibration.Station.Views
             header.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             header.Dock = DockStyle.Fill;
             header.Margin = Padding.Empty;
-            header.Padding = new Padding(14, 8, 12, 8);
+            header.Padding = new Padding(14, 6, 12, 6);
             header.RowCount = 1;
             header.RowStyles.Add(new RowStyle(SizeType.Percent, 100.0F));
 
@@ -221,18 +226,18 @@ namespace NinePointRotationCalibration.Station.Views
         // 构建中央左右分栏工作区：左侧为图像视口与 HUD，右侧为功能标签页
         private Control BuildWorkspace()
         {
-            SplitContainer workspace = new SplitContainer();
-            workspace.BackColor = Color.FromArgb(202, 207, 212);
-            workspace.Dock = DockStyle.Fill;
-            workspace.FixedPanel = FixedPanel.None;
-            workspace.IsSplitterFixed = false;
-            workspace.Margin = Padding.Empty;
-            workspace.Name = "workspaceSplit";
-            workspace.Size = new Size(1484, 678);
-            workspace.Panel1MinSize = 600;
-            workspace.Panel2MinSize = 430;
-            workspace.SplitterDistance = 930;
-            workspace.SplitterWidth = 6;
+            workspaceSplit = new SplitContainer();
+            workspaceSplit.BackColor = Color.FromArgb(202, 207, 212);
+            workspaceSplit.Dock = DockStyle.Fill;
+            workspaceSplit.FixedPanel = FixedPanel.None;
+            workspaceSplit.IsSplitterFixed = false;
+            workspaceSplit.Margin = Padding.Empty;
+            workspaceSplit.Name = "workspaceSplit";
+            workspaceSplit.Size = new Size(1584, 784);
+            workspaceSplit.Panel1MinSize = 520;
+            workspaceSplit.Panel2MinSize = 440;
+            workspaceSplit.SplitterDistance = 790;
+            workspaceSplit.SplitterWidth = 5;
 
             TableLayoutPanel imageLayout = new TableLayoutPanel();
             imageLayout.BackColor = Color.Black;
@@ -242,7 +247,7 @@ namespace NinePointRotationCalibration.Station.Views
             imageLayout.Padding = Padding.Empty;
             imageLayout.RowCount = 2;
             imageLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100.0F));
-            imageLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28.0F));
+            imageLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 22.0F));
 
             imageSplit = new SplitContainer();
             imageSplit.BackColor = Color.FromArgb(46, 52, 60);
@@ -252,27 +257,41 @@ namespace NinePointRotationCalibration.Station.Views
             imageSplit.Margin = Padding.Empty;
             imageSplit.Name = "imageSplit";
             imageSplit.Orientation = Orientation.Horizontal;
-            imageSplit.Size = new Size(930, 650);
+            imageSplit.Size = new Size(860, 762);
             imageSplit.Panel1MinSize = 150;
             imageSplit.Panel2MinSize = 150;
-            imageSplit.SplitterWidth = 6;
-            imageSplit.SplitterDistance = 322;
+            imageSplit.SplitterWidth = 4;
+            imageSplit.SplitterDistance = 379;
             imageSplit.Panel2Collapsed = true;
 
             pnlSourceViewportHeader = new Panel();
             pnlSourceViewportHeader.Name = "pnlSourceViewportHeader";
-            pnlSourceViewportHeader.BackColor = Color.FromArgb(30, 35, 42);
+            pnlSourceViewportHeader.BackColor = Color.FromArgb(28, 33, 40);
             pnlSourceViewportHeader.Dock = DockStyle.Top;
-            pnlSourceViewportHeader.Height = 24;
-            pnlSourceViewportHeader.Padding = new Padding(8, 0, 8, 0);
+            pnlSourceViewportHeader.Height = 22;
+            pnlSourceViewportHeader.Padding = new Padding(8, 1, 6, 1);
             pnlSourceViewportHeader.Visible = false;
+            btnToggleDualLayout = new Button();
+            btnToggleDualLayout.BackColor = Color.FromArgb(45, 55, 72);
+            btnToggleDualLayout.Cursor = Cursors.Hand;
+            btnToggleDualLayout.Dock = DockStyle.Right;
+            btnToggleDualLayout.FlatAppearance.BorderColor = Color.FromArgb(71, 85, 105);
+            btnToggleDualLayout.FlatAppearance.BorderSize = 1;
+            btnToggleDualLayout.FlatStyle = FlatStyle.Flat;
+            btnToggleDualLayout.Font = new Font("Microsoft YaHei UI", 7.8F, FontStyle.Regular, GraphicsUnit.Point, 134);
+            btnToggleDualLayout.ForeColor = Color.FromArgb(226, 232, 240);
+            btnToggleDualLayout.Name = "btnToggleDualLayout";
+            btnToggleDualLayout.Text = "⇄ 切换左右";
+            btnToggleDualLayout.Width = 86;
+            toolTip.SetToolTip(btnToggleDualLayout, "切换原图与检测效果图窗口的上下 / 左右排列方式");
             Label lblSourceViewportTitle = new Label();
             lblSourceViewportTitle.Dock = DockStyle.Fill;
-            lblSourceViewportTitle.Font = new Font("Microsoft YaHei UI", 8.5F, FontStyle.Bold, GraphicsUnit.Point, 134);
+            lblSourceViewportTitle.Font = new Font("Microsoft YaHei UI", 8.25F, FontStyle.Bold, GraphicsUnit.Point, 134);
             lblSourceViewportTitle.ForeColor = Color.FromArgb(209, 213, 219);
             lblSourceViewportTitle.Text = "原图窗口";
             lblSourceViewportTitle.TextAlign = ContentAlignment.MiddleLeft;
             pnlSourceViewportHeader.Controls.Add(lblSourceViewportTitle);
+            pnlSourceViewportHeader.Controls.Add(btnToggleDualLayout);
 
             imageViewport = new ImageViewport();
             imageViewport.Dock = DockStyle.Fill;
@@ -286,23 +305,23 @@ namespace NinePointRotationCalibration.Station.Views
 
             pnlEffectViewportHeader = new Panel();
             pnlEffectViewportHeader.Name = "pnlEffectViewportHeader";
-            pnlEffectViewportHeader.BackColor = Color.FromArgb(30, 35, 42);
+            pnlEffectViewportHeader.BackColor = Color.FromArgb(28, 33, 40);
             pnlEffectViewportHeader.Dock = DockStyle.Top;
-            pnlEffectViewportHeader.Height = 24;
+            pnlEffectViewportHeader.Height = 20;
             pnlEffectViewportHeader.Padding = new Padding(8, 0, 8, 0);
             Label lblEffectViewportTitle = new Label();
             lblEffectViewportTitle.AutoSize = true;
             lblEffectViewportTitle.Dock = DockStyle.Left;
-            lblEffectViewportTitle.Font = new Font("Microsoft YaHei UI", 8.5F, FontStyle.Bold, GraphicsUnit.Point, 134);
+            lblEffectViewportTitle.Font = new Font("Microsoft YaHei UI", 8.25F, FontStyle.Bold, GraphicsUnit.Point, 134);
             lblEffectViewportTitle.ForeColor = Color.FromArgb(94, 234, 212);
             lblEffectViewportTitle.Text = "检测效果图窗口";
             lblEffectViewportTitle.TextAlign = ContentAlignment.MiddleLeft;
             lblEffectViewportInfo = new Label();
             lblEffectViewportInfo.AutoEllipsis = true;
             lblEffectViewportInfo.Dock = DockStyle.Fill;
-            lblEffectViewportInfo.Font = new Font("Microsoft YaHei UI", 8.25F, FontStyle.Regular, GraphicsUnit.Point, 134);
+            lblEffectViewportInfo.Font = new Font("Microsoft YaHei UI", 8.0F, FontStyle.Regular, GraphicsUnit.Point, 134);
             lblEffectViewportInfo.ForeColor = Color.FromArgb(181, 188, 196);
-            lblEffectViewportInfo.Padding = new Padding(12, 0, 0, 0);
+            lblEffectViewportInfo.Padding = new Padding(10, 0, 0, 0);
             lblEffectViewportInfo.Text = "未加载图像 · 请先导入图片";
             lblEffectViewportInfo.TextAlign = ContentAlignment.MiddleLeft;
             pnlEffectViewportHeader.Controls.Add(lblEffectViewportInfo);
@@ -357,7 +376,7 @@ namespace NinePointRotationCalibration.Station.Views
             imageFooter.Controls.Add(lblCursorPosition, 1, 0);
             imageLayout.Controls.Add(imageSplit, 0, 0);
             imageLayout.Controls.Add(imageFooter, 0, 1);
-            workspace.Panel1.Controls.Add(imageLayout);
+            workspaceSplit.Panel1.Controls.Add(imageLayout);
 
             tabWork = new TabControl();
             tabWork.Dock = DockStyle.Fill;
@@ -375,9 +394,9 @@ namespace NinePointRotationCalibration.Station.Views
             tabWork.TabPages.Add(BuildDetectionTab());
             tabWork.TabPages.Add(BuildCameraTab());
             tabWork.TabPages.Add(BuildCommunicationTab());
-            workspace.Panel2.Controls.Add(tabWork);
+            workspaceSplit.Panel2.Controls.Add(tabWork);
 
-            return workspace;
+            return workspaceSplit;
         }
 
         // 构建 9+5 标定页（1-9 平移点 + 10-14 旋转点及采样表）
@@ -978,38 +997,44 @@ namespace NinePointRotationCalibration.Station.Views
             return page;
         }
 
-        // 构建底部运行日志输出面板
+        // 构建底部运行日志输出面板（支持一键折叠以释放双视口显示高度）
         private Control BuildLogPanel()
         {
-            TableLayoutPanel layout = new TableLayoutPanel();
-            layout.BackColor = Color.FromArgb(29, 33, 38);
-            layout.ColumnCount = 1;
-            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100.0F));
-            layout.Dock = DockStyle.Fill;
-            layout.Margin = new Padding(8, 4, 8, 8);
-            layout.Padding = new Padding(10, 6, 10, 8);
-            layout.RowCount = 2;
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34.0F));
-            layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100.0F));
+            logLayout = new TableLayoutPanel();
+            logLayout.BackColor = Color.FromArgb(29, 33, 38);
+            logLayout.ColumnCount = 1;
+            logLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100.0F));
+            logLayout.Dock = DockStyle.Fill;
+            logLayout.Margin = new Padding(8, 2, 8, 4);
+            logLayout.Padding = new Padding(10, 3, 10, 4);
+            logLayout.RowCount = 2;
+            logLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 26.0F));
+            logLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100.0F));
 
             TableLayoutPanel header = new TableLayoutPanel();
-            header.ColumnCount = 2;
+            header.ColumnCount = 3;
             header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100.0F));
-            header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 82.0F));
+            header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 84.0F));
+            header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 76.0F));
             header.Dock = DockStyle.Fill;
 
             Label title = new Label();
             title.Dock = DockStyle.Fill;
-            title.Font = new Font(Font.FontFamily, 9.0F, FontStyle.Bold);
+            title.Font = new Font(Font.FontFamily, 8.75F, FontStyle.Bold);
             title.ForeColor = Color.FromArgb(220, 225, 230);
             title.Text = "运行日志";
             title.TextAlign = ContentAlignment.MiddleLeft;
 
-            btnClearLog = CreateButton("btnClearLog", "清空", 70, 27, false, null);
-            btnClearLog.Dock = DockStyle.Right;
-            btnClearLog.Margin = new Padding(6, 1, 0, 3);
+            btnToggleLog = CreateButton("btnToggleLog", "▼ 收起", 76, 22, false, null);
+            btnToggleLog.Dock = DockStyle.Fill;
+            btnToggleLog.Margin = new Padding(0, 1, 6, 1);
+
+            btnClearLog = CreateButton("btnClearLog", "清空", 68, 22, false, null);
+            btnClearLog.Dock = DockStyle.Fill;
+            btnClearLog.Margin = new Padding(0, 1, 0, 1);
             header.Controls.Add(title, 0, 0);
-            header.Controls.Add(btnClearLog, 1, 0);
+            header.Controls.Add(btnToggleLog, 1, 0);
+            header.Controls.Add(btnClearLog, 2, 0);
 
             rtbLog = new RichTextBox();
             rtbLog.BackColor = Color.FromArgb(20, 23, 27);
@@ -1022,9 +1047,9 @@ namespace NinePointRotationCalibration.Station.Views
             rtbLog.ReadOnly = true;
             rtbLog.WordWrap = false;
 
-            layout.Controls.Add(header, 0, 0);
-            layout.Controls.Add(rtbLog, 0, 1);
-            return layout;
+            logLayout.Controls.Add(header, 0, 0);
+            logLayout.Controls.Add(rtbLog, 0, 1);
+            return logLayout;
         }
 
         private GroupBox BuildTeachingGroup(string title, string sideKey, out TextBox[] values, out Label statusLabel)

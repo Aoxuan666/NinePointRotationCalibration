@@ -119,6 +119,7 @@ namespace NinePointRotationCalibration.Station.Views
                 if (binaryViewport.HasImage) binaryViewport.ShowActualPixels();
             };
             btnApply.Click += BtnApply_Click;
+            btnToggleLayout.Click += delegate { TogglePreviewLayout(); };
             sourceViewport.ViewChanged += delegate { SyncLinkedViewport(sourceViewport, binaryViewport); };
             binaryViewport.ViewChanged += delegate { SyncLinkedViewport(binaryViewport, sourceViewport); };
             previewSplit.SizeChanged += delegate { BalancePreviewSplit(); };
@@ -837,13 +838,30 @@ namespace NinePointRotationCalibration.Station.Views
         {
             if (previewSplit == null || previewSplit.IsDisposed) return;
 
-            int available = previewSplit.Height - previewSplit.SplitterWidth;
+            int total = previewSplit.Orientation == Orientation.Horizontal
+                ? previewSplit.Height
+                : previewSplit.Width;
+            int available = total - previewSplit.SplitterWidth;
             int min1 = previewSplit.Panel1MinSize;
             int max1 = available - previewSplit.Panel2MinSize;
             if (max1 >= min1)
             {
                 previewSplit.SplitterDistance = Math.Max(min1, Math.Min(max1, available / 2));
             }
+        }
+
+        private void TogglePreviewLayout()
+        {
+            if (previewSplit == null || previewSplit.IsDisposed) return;
+
+            bool toVertical = previewSplit.Orientation == Orientation.Horizontal;
+            previewSplit.Orientation = toVertical ? Orientation.Vertical : Orientation.Horizontal;
+            if (btnToggleLayout != null)
+            {
+                btnToggleLayout.Text = toVertical ? "⇅ 切换上下" : "⇄ 切换左右";
+            }
+            BalancePreviewSplit();
+            SyncLinkedViewport(sourceViewport, binaryViewport);
         }
 
         private void SetPreviewStatus(string text, bool isError)
