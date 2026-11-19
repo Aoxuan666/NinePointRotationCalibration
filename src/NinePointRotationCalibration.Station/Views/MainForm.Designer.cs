@@ -16,10 +16,16 @@ namespace NinePointRotationCalibration.Station.Views
         private SplitContainer imageSplit;
         private ImageViewport imageViewport;
         private ImageViewport effectViewport;
+        private ImageViewport cameraLiveViewport;
         private Panel pnlSourceViewportHeader;
         private Panel pnlEffectViewportHeader;
         private Label lblEffectViewportInfo;
+        private Label lblCameraLiveStatus;
         private Button btnToggleDualLayout;
+        private Button btnToggleLiveStream;
+        private Button btnSyncLiveToMain;
+        private Button btnFitLivePreview;
+        private Button btnResumeLive;
         private TableLayoutPanel logLayout;
         private Button btnToggleLog;
         private DataGridView dgvCalibration;
@@ -34,6 +40,7 @@ namespace NinePointRotationCalibration.Station.Views
         private ComboBox cmbCameraDevice;
         private CheckBox chkCameraEnabled;
         private CheckBox chkCalibrationEnabled;
+        private CheckBox chkLiveAcquisition;
         private CheckBox chkArchiveImages;
         private TextBox txtTcpBindAddress;
         private NumericUpDown nudTcpPort;
@@ -203,17 +210,20 @@ namespace NinePointRotationCalibration.Station.Views
             commands.Margin = Padding.Empty;
             commands.WrapContents = false;
 
-            btnSnapshot = CreateButton("btnSnapshot", "拍照", 82, 34, true, "camera.snapshot");
+            btnSnapshot = CreateButton("btnSnapshot", "拍照", 76, 34, true, "camera.snapshot");
+            btnResumeLive = CreateButton("btnResumeLive", "实时预览", 84, 34, false, "camera.resumeMainLive");
             btnImportImage = CreateButton("btnImportImage", "导入图片", 82, 34, false, "image.import");
             btnDetectCurrentImage = CreateButton("btnDetectCurrentImage", "检测当前图", 94, 34, true, "detection.currentImage");
-            btnFit = CreateButton("btnFit", "适应", 70, 34, false, null);
-            btnActualPixels = CreateButton("btnActualPixels", "1:1", 62, 34, false, null);
+            btnFit = CreateButton("btnFit", "适应", 64, 34, false, null);
+            btnActualPixels = CreateButton("btnActualPixels", "1:1", 56, 34, false, null);
             toolTip.SetToolTip(btnSnapshot, "触发单次采集");
+            toolTip.SetToolTip(btnResumeLive, "解锁主视口并切回相机实时采集画面");
             toolTip.SetToolTip(btnImportImage, "从本地导入一张图片");
             toolTip.SetToolTip(btnDetectCurrentImage, "检测图像窗口中的当前图片");
             toolTip.SetToolTip(btnFit, "图像适应窗口");
             toolTip.SetToolTip(btnActualPixels, "按原始像素显示");
             commands.Controls.Add(btnSnapshot);
+            commands.Controls.Add(btnResumeLive);
             commands.Controls.Add(btnImportImage);
             commands.Controls.Add(btnDetectCurrentImage);
             commands.Controls.Add(btnFit);
@@ -810,13 +820,14 @@ namespace NinePointRotationCalibration.Station.Views
             return page;
         }
 
-        // 构建相机开关、驱动连接与采集参数页
+        // 构建相机开关、实时采集窗口、驱动连接与采集参数页
         private TabPage BuildCameraTab()
         {
             TabPage page = CreateTabPage("tabCamera", "相机");
             TableLayoutPanel layout = CreateScrollableStack(page);
-            layout.RowCount = 6;
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 94.0F));
+            layout.RowCount = 7;
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 112.0F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 316.0F));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 158.0F));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 254.0F));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 210.0F));
@@ -846,6 +857,16 @@ namespace NinePointRotationCalibration.Station.Views
             chkCalibrationEnabled.Text = "启用标定与坐标换算";
             chkCalibrationEnabled.UseVisualStyleBackColor = true;
 
+            chkLiveAcquisition = new CheckBox();
+            chkLiveAcquisition.AutoSize = true;
+            chkLiveAcquisition.Checked = true;
+            chkLiveAcquisition.Margin = new Padding(0, 3, 14, 3);
+            chkLiveAcquisition.Name = "chkLiveAcquisition";
+            chkLiveAcquisition.Tag = "camera.liveToggle";
+            chkLiveAcquisition.Text = "兼容相机实时采集";
+            chkLiveAcquisition.UseVisualStyleBackColor = true;
+            toolTip.SetToolTip(chkLiveAcquisition, "开启后兼容大华/海康/模拟相机平滑实时采集流，并自动在生产抓拍时无冲突让出相机");
+
             chkArchiveImages = new CheckBox();
             chkArchiveImages.AutoSize = true;
             chkArchiveImages.Checked = false;
@@ -857,8 +878,59 @@ namespace NinePointRotationCalibration.Station.Views
 
             modeOptions.Controls.Add(chkCameraEnabled);
             modeOptions.Controls.Add(chkCalibrationEnabled);
+            modeOptions.Controls.Add(chkLiveAcquisition);
             modeOptions.Controls.Add(chkArchiveImages);
             mode.Controls.Add(modeOptions);
+
+            GroupBox livePreviewGroup = CreateGroupBox("相机实时采集窗口");
+            livePreviewGroup.Name = "grpCameraLivePreview";
+            TableLayoutPanel liveLayout = new TableLayoutPanel();
+            liveLayout.ColumnCount = 1;
+            liveLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100.0F));
+            liveLayout.Dock = DockStyle.Fill;
+            liveLayout.Margin = Padding.Empty;
+            liveLayout.Padding = new Padding(4, 2, 4, 2);
+            liveLayout.RowCount = 3;
+            liveLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34.0F));
+            liveLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100.0F));
+            liveLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 22.0F));
+
+            FlowLayoutPanel liveToolbar = new FlowLayoutPanel();
+            liveToolbar.Dock = DockStyle.Fill;
+            liveToolbar.FlowDirection = FlowDirection.LeftToRight;
+            liveToolbar.Margin = Padding.Empty;
+            liveToolbar.Padding = new Padding(0, 2, 0, 2);
+            liveToolbar.WrapContents = false;
+
+            btnToggleLiveStream = CreateButton("btnToggleLiveStream", "开始实时", 82, 28, true, "camera.liveStreamToggle");
+            btnSyncLiveToMain = CreateButton("btnSyncLiveToMain", "主窗实时", 82, 28, false, "camera.resumeMainLive");
+            btnFitLivePreview = CreateButton("btnFitLivePreview", "适应", 56, 28, false, null);
+            toolTip.SetToolTip(btnToggleLiveStream, "启动或停止后台相机实时采集流");
+            toolTip.SetToolTip(btnSyncLiveToMain, "解除主图锁定，将实时采集画面同步显示到左侧主视口");
+            toolTip.SetToolTip(btnFitLivePreview, "使实时画面适应本预览窗口");
+            liveToolbar.Controls.Add(btnToggleLiveStream);
+            liveToolbar.Controls.Add(btnSyncLiveToMain);
+            liveToolbar.Controls.Add(btnFitLivePreview);
+
+            cameraLiveViewport = new ImageViewport();
+            cameraLiveViewport.Dock = DockStyle.Fill;
+            cameraLiveViewport.Margin = new Padding(0, 2, 0, 2);
+            cameraLiveViewport.MinimumSize = new Size(160, 140);
+            cameraLiveViewport.Name = "cameraLiveViewport";
+
+            lblCameraLiveStatus = new Label();
+            lblCameraLiveStatus.AutoEllipsis = true;
+            lblCameraLiveStatus.Dock = DockStyle.Fill;
+            lblCameraLiveStatus.Font = new Font("Microsoft YaHei UI", 8.25F, FontStyle.Regular, GraphicsUnit.Point, 134);
+            lblCameraLiveStatus.ForeColor = Color.FromArgb(71, 85, 105);
+            lblCameraLiveStatus.Name = "lblCameraLiveStatus";
+            lblCameraLiveStatus.Text = "○ 实时采集未启动（连接相机后点击「开始实时」即可流畅预览）";
+            lblCameraLiveStatus.TextAlign = ContentAlignment.MiddleLeft;
+
+            liveLayout.Controls.Add(liveToolbar, 0, 0);
+            liveLayout.Controls.Add(cameraLiveViewport, 0, 1);
+            liveLayout.Controls.Add(lblCameraLiveStatus, 0, 2);
+            livePreviewGroup.Controls.Add(liveLayout);
 
             GroupBox connection = CreateGroupBox("相机连接");
             TableLayoutPanel connectionFields = CreateFieldTable(2);
@@ -904,7 +976,7 @@ namespace NinePointRotationCalibration.Station.Views
             triggerMode.SelectedIndex = 0;
             AddField(acquisitionFields, 3, "触发模式", triggerMode);
             AddField(acquisitionFields, 4, "超时 (ms)", CreateDecimalInput("nudCameraTimeout", 3000.0M, 10.0M, 60000.0M, 0));
-            AddField(acquisitionFields, 5, "预览间隔 (ms)", CreateDecimalInput("nudPreviewInterval", 200.0M, 50.0M, 5000.0M, 0));
+            AddField(acquisitionFields, 5, "预览间隔 (ms)", CreateDecimalInput("nudPreviewInterval", 33.0M, 16.0M, 5000.0M, 0));
             acquisition.Controls.Add(acquisitionFields);
 
             GroupBox advanced = CreateGroupBox("高级参数");
@@ -923,13 +995,14 @@ namespace NinePointRotationCalibration.Station.Views
             actions.Controls.Add(CreateButton("btnApplyCamera", "应用参数", 88, 32, true, "camera.apply"));
             actions.Controls.Add(CreateButton("btnTestCamera", "测试拍照", 88, 32, false, "camera.test"));
 
-            Label hint = CreateHintLabel("高级参数采用固定布局；当前设备不支持的项目会禁用。应用参数时会按相机能力范围校验并同步保存配置。");
+            Label hint = CreateHintLabel("支持平滑实时采集与生产触发自动避让；高级参数采用固定布局，当前设备不支持的项目会禁用。");
             layout.Controls.Add(mode, 0, 0);
-            layout.Controls.Add(connection, 0, 1);
-            layout.Controls.Add(acquisition, 0, 2);
-            layout.Controls.Add(advanced, 0, 3);
-            layout.Controls.Add(actions, 0, 4);
-            layout.Controls.Add(hint, 0, 5);
+            layout.Controls.Add(livePreviewGroup, 0, 1);
+            layout.Controls.Add(connection, 0, 2);
+            layout.Controls.Add(acquisition, 0, 3);
+            layout.Controls.Add(advanced, 0, 4);
+            layout.Controls.Add(actions, 0, 5);
+            layout.Controls.Add(hint, 0, 6);
             return page;
         }
 

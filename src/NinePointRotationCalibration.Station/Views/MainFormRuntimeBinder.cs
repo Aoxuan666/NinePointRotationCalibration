@@ -56,10 +56,12 @@ namespace NinePointRotationCalibration.Station.Views
         private bool _disposed;
         private bool _cameraFeatureResizeHooked;
         private CameraParameterSet _cameraParameterSnapshot;
+        private int _lastLiveInfoUpdateTick;
 
         public MainFormRuntimeBinder(MainForm view, StationRuntime runtime)
         {
             StationLog.EnsureInitialized();
+            LocalDebugLog.EnsureInitialized();
             _view = view ?? throw new ArgumentNullException(nameof(view));
             _runtime = runtime ?? throw new ArgumentNullException(nameof(runtime));
             _lifetime = new CancellationTokenSource();
@@ -123,11 +125,14 @@ namespace NinePointRotationCalibration.Station.Views
                     ? "连续采集"
                     : "软件触发";
             SelectCameraProvider(options.CameraProvider);
+            _runtime.SetPreviewConsumerBusyCallback(IsPreviewConsumerBusy);
             _view.RefreshFeatureAvailability(
                 options.CameraEnabled,
                 options.CalibrationEnabled,
                 options.ArchiveImages,
+                options.LiveAcquisitionEnabled,
                 false);
+            UpdateCameraLiveUiStatus();
 
             SetText("txtConfigDirectory", options.GetUnifiedConfigDirectory());
             SetPathPair("txtCalibrationTemplatePath", "txtCalibrationFile", options.CalibrationJobPath);
@@ -173,55 +178,86 @@ namespace NinePointRotationCalibration.Station.Views
                 tcpStarted || hostConnected,
                 hostConnected ? "上位机" : tcpStarted ? "监听中" : "未启动");
             _view.SetDetectionSummary(options.ExpectedBoardCount, 0, false, "等待检测");
-            _view.AppendLog("界面与运行时已绑定。", false);
+            LocalDebugLog.Write("INFO", "ui.init", "MainForm bound to StationRuntime. LogFile=" + LocalDebugLog.CurrentLogFilePath);
+            _view.AppendLog("界面与运行时已绑定。本地调试日志：" + LocalDebugLog.CurrentLogFilePath, false);
+        }
+
+        private bool IsPreviewConsumerBusy()
+        {
+            if (_disposed) return true;
+            bool mainTargetActive = _displayMode == DisplayMode.LivePreview;
+            bool camTargetActive = _view.CameraLiveViewport != null &&
+                                   (_view.IsCameraTabActive || !_view.CameraLiveViewport.HasImage);
+            if (!mainTargetActive && !camTargetActive) return false;
+            bool mainBusy = mainTargetActive && _view.Viewport != null && _view.Viewport.IsPreviewFrameBusy;
+            bool camBusy = camTargetActive && _view.CameraLiveViewport != null && _view.CameraLiveViewport.IsPreviewFrameBusy;
+            if (mainTargetActive && camTargetActive) return mainBusy && camBusy;
+            return mainTargetActive ? mainBusy : camBusy;
         }
 
         private async void View_Shown(object sender, EventArgs e)
         {
-            if (_runtime.IsStarted) return;
-            if (_runtime.IsCameraEnabled && !_runtime.IsMockCamera)
-                _view.SetCameraStatus(CameraUiState.Connecting, "正在自动连接");
-            await RunOperationAsync(
-                "启动工作站",
-                null,
-                async token =>
-                {
-                    await _runtime.StartAsync(token).ConfigureAwait(true);
-                    if (!_runtime.IsCameraEnabled)
-                        _view.SetCameraStatus(CameraUiState.Disabled, string.Empty);
-                    else if (_runtime.IsMockCamera)
-                        _view.SetCameraStatus(CameraUiState.Disconnected, "等待手动导入图像");
-                    else if (_runtime.IsCameraConnected)
+            try
+            {
+                if (_runtime.IsStarted) return;
+                if (_runtime.IsCameraEnabled && !_runtime.IsMockCamera)
+                    _view.SetCameraStatus(CameraUiState.Connecting, "正在自动连接");
+                await RunOperationAsync(
+                    "启动工作站",
+                    null,
+                    async token =>
                     {
-                        _view.SetCameraStatus(CameraUiState.Connected, "已就绪");
-                        await RefreshConnectedCameraUiAsync(token).ConfigureAwait(true);
-                    }
-                }).ConfigureAwait(true);
+                        await _runtime.StartAsync(token).ConfigureAwait(true);
+                        if (!_runtime.IsCameraEnabled)
+                            _view.SetCameraStatus(CameraUiState.Disabled, string.Empty);
+                        else if (_runtime.IsMockCamera)
+                            _view.SetCameraStatus(CameraUiState.Disconnected, "等待手动导入图像");
+                        else if (_runtime.IsCameraConnected)
+                        {
+                            _view.SetCameraStatus(CameraUiState.Connected, "已就绪");
+                            await RefreshConnectedCameraUiAsync(token).ConfigureAwait(true);
+                        }
+                        UpdateCameraLiveUiStatus();
+                    }).ConfigureAwait(true);
+            }
+            catch (Exception exception)
+            {
+                ReportException("启动工作站", exception);
+            }
         }
 
         private async void View_FeatureAvailabilityChanged(object sender, EventArgs e)
         {
             if (_disposed) return;
 
-            bool cameraEnabled = _view.CameraEnabledInput.Checked;
-            bool calibrationEnabled = _view.CalibrationEnabledInput.Checked;
-            bool shouldAttemptConnect = cameraEnabled && _runtime.IsStarted && !_runtime.IsCameraConnected;
-            bool resumePreview = cameraEnabled && !_runtime.IsCameraEnabled;
-            if (shouldAttemptConnect)
-                _view.SetCameraStatus(CameraUiState.Connecting, "正在自动连接");
+            try
+            {
+                bool cameraEnabled = _view.CameraEnabledInput.Checked;
+                bool calibrationEnabled = _view.CalibrationEnabledInput.Checked;
+                LocalDebugLog.Write("INFO", "ui.switch", "Feature availability toggled: cameraEnabled=" + cameraEnabled + ", calibrationEnabled=" + calibrationEnabled);
+                bool shouldAttemptConnect = cameraEnabled && _runtime.IsStarted && !_runtime.IsCameraConnected;
+                bool resumePreview = cameraEnabled && !_runtime.IsCameraEnabled;
+                if (shouldAttemptConnect)
+                    _view.SetCameraStatus(CameraUiState.Connecting, "正在自动连接");
 
-            await RunOperationAsync(
-                "应用运行开关",
-                null,
-                async token =>
-                {
-                    await _runtime.ApplyEnablementAsync(cameraEnabled, calibrationEnabled, token)
-                        .ConfigureAwait(true);
-                    if (resumePreview) ResumeLivePreview();
-                    if (_runtime.IsCameraEnabled && _runtime.IsCameraConnected)
-                        await RefreshConnectedCameraUiAsync(token).ConfigureAwait(true);
-                })
-                .ConfigureAwait(true);
+                await RunOperationAsync(
+                    "应用运行开关",
+                    null,
+                    async token =>
+                    {
+                        await _runtime.ApplyEnablementAsync(cameraEnabled, calibrationEnabled, token)
+                            .ConfigureAwait(true);
+                        if (resumePreview) ResumeLivePreview();
+                        if (_runtime.IsCameraEnabled && _runtime.IsCameraConnected)
+                            await RefreshConnectedCameraUiAsync(token).ConfigureAwait(true);
+                        UpdateCameraLiveUiStatus();
+                    })
+                    .ConfigureAwait(true);
+            }
+            catch (Exception exception)
+            {
+                ReportException("应用运行开关", exception);
+            }
         }
 
         private void View_FormClosed(object sender, FormClosedEventArgs e)
@@ -233,6 +269,7 @@ namespace NinePointRotationCalibration.Station.Views
         {
             if (_disposed || _view.IsWarmingTabs || _view.WorkTabs.SelectedTab == null) return;
 
+            UpdateCameraLiveUiStatus();
             bool enteringDetection = string.Equals(
                 _view.WorkTabs.SelectedTab.Name,
                 "tabDetection",
@@ -264,37 +301,61 @@ namespace NinePointRotationCalibration.Station.Views
             catch (InvalidOperationException)
             {
             }
+            catch (Exception exception)
+            {
+                LocalDebugLog.WriteException("WARN", "ui.tab", "WorkTabs_SelectedIndexChanged failed", exception);
+            }
         }
 
         private async void View_SnapshotRequested(object sender, EventArgs e)
         {
-            if (_runtime.IsMockCamera || !_runtime.IsCameraEnabled || !_runtime.IsCameraConnected)
+            try
             {
-                ImportLocalImage();
-                return;
+                LocalDebugLog.Write("INFO", "ui.action", "Snapshot requested (mock=" + _runtime.IsMockCamera + ", camEn=" + _runtime.IsCameraEnabled + ", camConn=" + _runtime.IsCameraConnected + ").");
+                if (_runtime.IsMockCamera || !_runtime.IsCameraEnabled || !_runtime.IsCameraConnected)
+                {
+                    ImportLocalImage();
+                    return;
+                }
+                await RunOperationAsync(
+                    "单次拍照",
+                    _view.FindActionControl("camera.snapshot"),
+                    token => _runtime.CaptureOnceAsync(token)).ConfigureAwait(true);
             }
-            await RunOperationAsync(
-                "单次拍照",
-                _view.FindActionControl("camera.snapshot"),
-                token => _runtime.CaptureOnceAsync(token)).ConfigureAwait(true);
+            catch (Exception exception)
+            {
+                ReportException("单次拍照", exception);
+            }
         }
 
         private async void View_CalibrationPointRequested(object sender, CalibrationPointRequestedEventArgs e)
         {
-            Control source = FindControl<Button>("btnCalibrationPoint" + e.PointNumber);
-            await RunOperationAsync(
-                "采集标定点 " + e.PointNumber,
-                source,
-                async token =>
-                {
-                    ApplyCalibrationStepOptions();
-                    await _runtime.CaptureCalibrationPointAsync(e.PointNumber, token).ConfigureAwait(true);
-                }).ConfigureAwait(true);
+            try
+            {
+                LocalDebugLog.Write("INFO", "ui.action", "Calibration point requested: P" + e.PointNumber);
+                Control source = FindControl<Button>("btnCalibrationPoint" + e.PointNumber);
+                await RunOperationAsync(
+                    "采集标定点 " + e.PointNumber,
+                    source,
+                    async token =>
+                    {
+                        ApplyCalibrationStepOptions();
+                        await _runtime.CaptureCalibrationPointAsync(e.PointNumber, token).ConfigureAwait(true);
+                    }).ConfigureAwait(true);
+            }
+            catch (Exception exception)
+            {
+                ReportException("采集标定点 " + (e == null ? 0 : e.PointNumber), exception);
+            }
         }
 
         private async void View_UiActionRequested(object sender, UiActionRequestedEventArgs e)
         {
             string action = e.ActionKey ?? string.Empty;
+            bool isLowSignalAction =
+                string.Equals(action, "detection.previewParameters", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(action, "detection.rowSelected", StringComparison.OrdinalIgnoreCase);
+            LocalDebugLog.Write(isLowSignalAction ? "DEBUG" : "INFO", "ui.action", "Action='" + action + "'");
             try
             {
                 switch (action)
@@ -342,6 +403,15 @@ namespace NinePointRotationCalibration.Station.Views
                         return;
                     case "camera.archiveImages":
                         ToggleArchiveImages();
+                        return;
+                    case "camera.liveToggle":
+                        await ToggleLiveAcquisitionAsync(_lifetime.Token).ConfigureAwait(true);
+                        return;
+                    case "camera.liveStreamToggle":
+                        await ToggleLiveStreamAsync(_lifetime.Token).ConfigureAwait(true);
+                        return;
+                    case "camera.resumeMainLive":
+                        await ResumeMainLivePreviewAsync(_lifetime.Token).ConfigureAwait(true);
                         return;
                     case "camera.test":
                         if (_runtime.IsMockCamera || !_runtime.IsCameraEnabled || !_runtime.IsCameraConnected)
@@ -489,11 +559,14 @@ namespace NinePointRotationCalibration.Station.Views
                 _view.CameraEnabledInput.Checked,
                 _view.CalibrationEnabledInput.Checked,
                 _view.ArchiveImagesInput != null && _view.ArchiveImagesInput.Checked,
+                _view.LiveAcquisitionInput == null || _view.LiveAcquisitionInput.Checked,
                 true);
             _view.SetOperationStatus(description + "...", true, false);
             try
             {
+                LocalDebugLog.Write("INFO", "ui.op", "Start UI operation: " + description);
                 await operation(token).ConfigureAwait(true);
+                LocalDebugLog.Write("INFO", "ui.op", "Completed UI operation: " + description);
                 if (!_disposed)
                 {
                     _view.SetOperationStatus(description + "完成", false, false);
@@ -502,6 +575,7 @@ namespace NinePointRotationCalibration.Station.Views
             }
             catch (OperationCanceledException)
             {
+                LocalDebugLog.Write("WARN", "ui.op", "Cancelled UI operation: " + description);
                 if (!_disposed)
                 {
                     _view.SetOperationStatus(description + "已取消", false, false);
@@ -521,7 +595,9 @@ namespace NinePointRotationCalibration.Station.Views
                         _runtime.IsCameraEnabled,
                         _runtime.IsCalibrationEnabled,
                         _runtime.IsArchiveImagesEnabled,
+                        _runtime.IsLiveAcquisitionEnabled,
                         false);
+                    UpdateCameraLiveUiStatus();
                 }
             }
         }
@@ -532,6 +608,7 @@ namespace NinePointRotationCalibration.Station.Views
                 ? ((AggregateException)exception).Flatten().InnerExceptions.FirstOrDefault() ?? exception
                 : exception;
             StationLog.WriteException("ERROR", "UI operation: " + operation, error);
+            LocalDebugLog.WriteException("ERROR", "ui.op", "UI operation failed: " + operation, error);
             _view.AppendLog(operation + "失败：" + error.Message, true);
             _view.SetOperationStatus(operation + "失败", false, true);
         }
@@ -672,6 +749,8 @@ namespace NinePointRotationCalibration.Station.Views
                 _inspectionFrameGeneration = -1;
             }
             if (locked != null) locked.Dispose();
+            LocalDebugLog.Write("INFO", "ui.shutdown", "MainFormRuntimeBinder disposed.");
+            LocalDebugLog.Flush(2000);
         }
     }
 }

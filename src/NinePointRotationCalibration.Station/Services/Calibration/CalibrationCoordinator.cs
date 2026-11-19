@@ -2,6 +2,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Globalization;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -193,8 +194,33 @@ namespace NinePointRotationCalibration.Station.Services.Calibration
                 MotionArrival arrival;
                 try
                 {
+                    LocalDebugLog.Write(
+                        "INFO",
+                        "calibration.move",
+                        string.Format(
+                            CultureInfo.InvariantCulture,
+                            "Sending move.request for P{0} ({1}): msgId={2}, offset=({3:0.###},{4:0.###},{5:0.###}deg), timeout={6}ms",
+                            point.PointNumber,
+                            point.Tag,
+                            request.MessageId,
+                            point.OffsetX,
+                            point.OffsetY,
+                            point.OffsetR,
+                            _motionTimeoutMilliseconds));
                     await _sendAsync(request, cancellationToken).ConfigureAwait(false);
                     arrival = await WaitForArrivalAsync(pending, cancellationToken).ConfigureAwait(false);
+                    LocalDebugLog.Write(
+                        "INFO",
+                        "calibration.move",
+                        string.Format(
+                            CultureInfo.InvariantCulture,
+                            "Motion arrived for P{0} ({1}): corrId={2}, actual=({3:0.###},{4:0.###},{5:0.###}deg)",
+                            point.PointNumber,
+                            point.Tag,
+                            arrival.CorrelationId,
+                            arrival.X,
+                            arrival.Y,
+                            arrival.R));
                 }
                 finally
                 {
@@ -230,6 +256,10 @@ namespace NinePointRotationCalibration.Station.Services.Calibration
                         point.Kind);
                     if (!capture.Success)
                     {
+                        LocalDebugLog.Write(
+                            "WARN",
+                            "calibration.locate",
+                            "Locate failed for P" + point.PointNumber + " (" + point.Tag + "): code=" + capture.ErrorCode + ", msg=" + capture.Message);
                         CalibrationPointRecord failed = UpdateRecord(
                             point,
                             CalibrationPointStatus.Failed,
@@ -247,6 +277,21 @@ namespace NinePointRotationCalibration.Station.Services.Calibration
                         "Captured",
                         arrival,
                         capture);
+                    LocalDebugLog.Write(
+                        "INFO",
+                        "calibration.locate",
+                        string.Format(
+                            CultureInfo.InvariantCulture,
+                            "Captured P{0} ({1}): img=({2:0.###},{3:0.###},{4:0.###}deg), score={5:0.###}, mach=({6:0.###},{7:0.###},{8:0.###}deg)",
+                            completed.PointNumber,
+                            completed.Tag,
+                            completed.ImageRow,
+                            completed.ImageColumn,
+                            completed.ImageAngle,
+                            completed.MatchScore,
+                            completed.MachineX,
+                            completed.MachineY,
+                            completed.MachineR));
                     await SendPointResultAsync(request.MessageId, completed, CancellationToken.None).ConfigureAwait(false);
                     return completed;
                 }
@@ -262,6 +307,7 @@ namespace NinePointRotationCalibration.Station.Services.Calibration
             }
             catch (TimeoutException exception)
             {
+                LocalDebugLog.WriteException("ERROR", "calibration.move", "Calibration point " + pointNumber + " timed out", exception);
                 CalibrationPlanPoint point;
                 lock (_sync) point = CalibrationPlan.Find(_plan, pointNumber);
                 CalibrationPointRecord failed = UpdateRecord(
@@ -275,6 +321,7 @@ namespace NinePointRotationCalibration.Station.Services.Calibration
             }
             catch (Exception exception)
             {
+                LocalDebugLog.WriteException("ERROR", "calibration.point", "Calibration point " + pointNumber + " failed", exception);
                 CalibrationPlanPoint point;
                 lock (_sync) point = CalibrationPlan.Find(_plan, pointNumber);
                 CalibrationPointRecord failed = UpdateRecord(point, CalibrationPointStatus.Failed, exception.Message);

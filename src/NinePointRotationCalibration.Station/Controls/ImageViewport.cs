@@ -87,7 +87,10 @@ namespace NinePointRotationCalibration.Station.Controls
         private readonly List<ViewportContourOverlay> _contours = new List<ViewportContourOverlay>();
 
         private Bitmap _displayedImage;
+        private bool _displayedIsPooled;
         private Bitmap _pendingImage;
+        private bool _pendingIsPooled;
+        private Bitmap _reusablePreviewBuffer;
         private bool _presentScheduled;
         private bool _previewCopyReserved;
         private bool _disposed;
@@ -122,6 +125,18 @@ namespace NinePointRotationCalibration.Station.Controls
         public bool HasImage
         {
             get { return _displayedImage != null; }
+        }
+
+        [Browsable(false)]
+        public bool IsPreviewFrameBusy
+        {
+            get
+            {
+                lock (_frameSync)
+                {
+                    return _disposed || _previewCopyReserved || _pendingImage != null || _presentScheduled;
+                }
+            }
         }
 
         [Browsable(false)]
@@ -165,30 +180,66 @@ namespace NinePointRotationCalibration.Station.Controls
 
         /// <summary>
         /// 仅在界面没有等待显示的帧时排队预览图像。
-        /// 在耗时的全分辨率转换之前先占用刷新名额，避免并发复制。
+        /// 复用双缓冲 32bppPArgb 离屏位图并通过 LockBits 直接拷贝像素，避免高帧率实时采集引发 LOH 分配与 GC 卡顿。
         /// </summary>
         public bool TrySetPreviewImage(Bitmap image)
         {
             if (image == null || _disposed) return false;
 
+            Bitmap reusable = null;
             lock (_frameSync)
             {
                 if (_disposed || _previewCopyReserved || _pendingImage != null || _presentScheduled)
                     return false;
                 _previewCopyReserved = true;
+                reusable = _reusablePreviewBuffer;
+                _reusablePreviewBuffer = null;
             }
 
-            Bitmap copy = null;
+            Bitmap target = null;
             try
             {
-                copy = CloneToDisplayFormat(image);
+                int width = image.Width;
+                int height = image.Height;
+                if (width <= 0 || height <= 0)
+                {
+                    if (reusable != null) reusable.Dispose();
+                    return false;
+                }
+
+                if (reusable != null &&
+                    reusable.Width == width &&
+                    reusable.Height == height &&
+                    reusable.PixelFormat == PixelFormat.Format32bppPArgb)
+                {
+                    target = reusable;
+                    reusable = null;
+                }
+                else
+                {
+                    if (reusable != null)
+                    {
+                        reusable.Dispose();
+                        reusable = null;
+                    }
+                    target = new Bitmap(width, height, PixelFormat.Format32bppPArgb);
+                }
+
+                CopyToPArgb(image, target);
+            }
+            catch
+            {
+                if (reusable != null) reusable.Dispose();
+                if (target != null) target.Dispose();
+                lock (_frameSync) _previewCopyReserved = false;
+                return false;
             }
             finally
             {
                 lock (_frameSync) _previewCopyReserved = false;
             }
 
-            QueueOwnedImage(copy);
+            QueueOwnedImage(target, true);
             return true;
         }
 
@@ -203,7 +254,7 @@ namespace NinePointRotationCalibration.Station.Controls
                 return;
             }
 
-            QueueOwnedImage(image);
+            QueueOwnedImage(image, false);
         }
 
         /// <summary>获取当前显示图像的线程安全克隆副本（无图时返回 null）。</summary>
@@ -235,14 +286,21 @@ namespace NinePointRotationCalibration.Station.Controls
             }
 
             Bitmap pending;
+            Bitmap reusable;
+            Bitmap previous;
             lock (_frameSync)
             {
                 pending = _pendingImage;
                 _pendingImage = null;
+                _pendingIsPooled = false;
+                reusable = _reusablePreviewBuffer;
+                _reusablePreviewBuffer = null;
+                previous = _displayedImage;
+                _displayedImage = null;
+                _displayedIsPooled = false;
             }
             if (pending != null) pending.Dispose();
-
-            Bitmap previous = Interlocked.Exchange(ref _displayedImage, null);
+            if (reusable != null) reusable.Dispose();
             if (previous != null) previous.Dispose();
             RaiseImageAvailabilityChanged(false);
             _fitMode = true;
@@ -377,33 +435,43 @@ namespace NinePointRotationCalibration.Station.Controls
         protected override void OnPaint(PaintEventArgs e)
         {
             base.OnPaint(e);
-            e.Graphics.Clear(BackColor);
-
-            Bitmap image = _displayedImage;
-            if (image == null)
+            try
             {
-                return;
+                e.Graphics.Clear(BackColor);
+
+                Bitmap image = _displayedImage;
+                if (image == null || _disposed)
+                {
+                    return;
+                }
+
+                float scale;
+                PointF origin;
+                if (!TryGetTransform(out scale, out origin)) return;
+
+                RectangleF destination = new RectangleF(
+                    origin.X,
+                    origin.Y,
+                    image.Width * scale,
+                    image.Height * scale);
+
+                e.Graphics.InterpolationMode = scale >= 1.0f
+                    ? InterpolationMode.NearestNeighbor
+                    : InterpolationMode.Low;
+                e.Graphics.PixelOffsetMode = PixelOffsetMode.Half;
+                e.Graphics.CompositingMode = CompositingMode.SourceCopy;
+                e.Graphics.DrawImage(image, destination);
+                e.Graphics.CompositingMode = CompositingMode.SourceOver;
+
+                DrawOverlays(e.Graphics, scale, origin);
             }
-
-            float scale;
-            PointF origin;
-            if (!TryGetTransform(out scale, out origin)) return;
-
-            RectangleF destination = new RectangleF(
-                origin.X,
-                origin.Y,
-                image.Width * scale,
-                image.Height * scale);
-
-            e.Graphics.InterpolationMode = scale >= 1.0f
-                ? InterpolationMode.NearestNeighbor
-                : InterpolationMode.Bilinear;
-            e.Graphics.PixelOffsetMode = PixelOffsetMode.Half;
-            e.Graphics.CompositingMode = CompositingMode.SourceCopy;
-            e.Graphics.DrawImage(image, destination);
-            e.Graphics.CompositingMode = CompositingMode.SourceOver;
-
-            DrawOverlays(e.Graphics, scale, origin);
+            catch (ArgumentException)
+            {
+                // 窗体尺寸瞬变或图像释放交错时跳过单次重绘，避免 GDI+ 异常中断 UI 消息循环
+            }
+            catch (ObjectDisposedException)
+            {
+            }
         }
 
         protected override void OnMouseDown(MouseEventArgs e)
@@ -501,15 +569,22 @@ namespace NinePointRotationCalibration.Station.Controls
             {
                 _disposed = true;
                 Bitmap pending;
+                Bitmap reusable;
+                Bitmap displayed;
                 lock (_frameSync)
                 {
                     pending = _pendingImage;
                     _pendingImage = null;
+                    _pendingIsPooled = false;
+                    reusable = _reusablePreviewBuffer;
+                    _reusablePreviewBuffer = null;
+                    displayed = _displayedImage;
+                    _displayedImage = null;
+                    _displayedIsPooled = false;
                     _presentScheduled = false;
                 }
                 if (pending != null) pending.Dispose();
-
-                Bitmap displayed = Interlocked.Exchange(ref _displayedImage, null);
+                if (reusable != null) reusable.Dispose();
                 if (displayed != null) displayed.Dispose();
             }
 
@@ -518,19 +593,118 @@ namespace NinePointRotationCalibration.Station.Controls
 
         private static Bitmap CloneToDisplayFormat(Bitmap source)
         {
-            Bitmap copy = new Bitmap(source.Width, source.Height, PixelFormat.Format24bppRgb);
+            Bitmap copy = new Bitmap(source.Width, source.Height, PixelFormat.Format32bppPArgb);
             copy.SetResolution(
                 source.HorizontalResolution > 0.0f ? source.HorizontalResolution : 96.0f,
                 source.VerticalResolution > 0.0f ? source.VerticalResolution : 96.0f);
-            using (Graphics graphics = Graphics.FromImage(copy))
+            CopyToPArgb(source, copy);
+            return copy;
+        }
+
+        // 通过 LockBits 直接展开像素到 32bppPArgb（DWM/GDI+ 原生加速格式），消除实时预览 GDI+ 锁竞争与格式转换开销
+        private static unsafe void CopyToPArgb(Bitmap source, Bitmap target)
+        {
+            int width = source.Width;
+            int height = source.Height;
+            PixelFormat srcFormat = source.PixelFormat;
+            if (srcFormat == PixelFormat.Format32bppPArgb ||
+                srcFormat == PixelFormat.Format32bppRgb ||
+                srcFormat == PixelFormat.Format32bppArgb ||
+                srcFormat == PixelFormat.Format24bppRgb ||
+                srcFormat == PixelFormat.Format8bppIndexed)
+            {
+                Rectangle bounds = new Rectangle(0, 0, width, height);
+                BitmapData srcData = source.LockBits(bounds, ImageLockMode.ReadOnly, srcFormat);
+                try
+                {
+                    BitmapData dstData = target.LockBits(bounds, ImageLockMode.WriteOnly, PixelFormat.Format32bppPArgb);
+                    try
+                    {
+                        byte* srcBase = (byte*)srcData.Scan0;
+                        byte* dstBase = (byte*)dstData.Scan0;
+                        int srcStride = srcData.Stride;
+                        int dstStride = dstData.Stride;
+
+                        if (srcFormat == PixelFormat.Format32bppPArgb || srcFormat == PixelFormat.Format32bppArgb)
+                        {
+                            int rowBytes = checked(width * 4);
+                            for (int y = 0; y < height; y++)
+                            {
+                                Buffer.MemoryCopy(
+                                    srcBase + (long)y * srcStride,
+                                    dstBase + (long)y * dstStride,
+                                    Math.Abs(dstStride),
+                                    rowBytes);
+                            }
+                        }
+                        else if (srcFormat == PixelFormat.Format32bppRgb)
+                        {
+                            for (int y = 0; y < height; y++)
+                            {
+                                uint* s = (uint*)(srcBase + (long)y * srcStride);
+                                uint* d = (uint*)(dstBase + (long)y * dstStride);
+                                for (int x = 0; x < width; x++)
+                                {
+                                    d[x] = s[x] | 0xFF000000u;
+                                }
+                            }
+                        }
+                        else if (srcFormat == PixelFormat.Format24bppRgb)
+                        {
+                            for (int y = 0; y < height; y++)
+                            {
+                                byte* s = srcBase + (long)y * srcStride;
+                                uint* d = (uint*)(dstBase + (long)y * dstStride);
+                                for (int x = 0; x < width; x++)
+                                {
+                                    int offset = x * 3;
+                                    d[x] = 0xFF000000u |
+                                           ((uint)s[offset + 2] << 16) |
+                                           ((uint)s[offset + 1] << 8) |
+                                           s[offset];
+                                }
+                            }
+                        }
+                        else
+                        {
+                            // Format8bppIndexed 工业灰度相机常见格式：快速扩展为 BGRA 0xFFgggggg
+                            for (int y = 0; y < height; y++)
+                            {
+                                byte* s = srcBase + (long)y * srcStride;
+                                uint* d = (uint*)(dstBase + (long)y * dstStride);
+                                for (int x = 0; x < width; x++)
+                                {
+                                    uint g = s[x];
+                                    d[x] = 0xFF000000u | (g << 16) | (g << 8) | g;
+                                }
+                            }
+                        }
+                    }
+                    finally
+                    {
+                        target.UnlockBits(dstData);
+                    }
+                }
+                finally
+                {
+                    source.UnlockBits(srcData);
+                }
+                return;
+            }
+
+            using (Graphics graphics = Graphics.FromImage(target))
             {
                 graphics.CompositingMode = CompositingMode.SourceCopy;
                 graphics.DrawImageUnscaled(source, 0, 0);
             }
-            return copy;
         }
 
         private void QueueOwnedImage(Bitmap image)
+        {
+            QueueOwnedImage(image, false);
+        }
+
+        private void QueueOwnedImage(Bitmap image, bool pooledPreview)
         {
             if (image == null) return;
             Bitmap replaced = null;
@@ -544,9 +718,16 @@ namespace NinePointRotationCalibration.Station.Controls
                 }
                 else
                 {
-                    // 帧合并策略：丢弃尚未绘制的旧待显示帧并立即释放，仅保留最新帧
+                    // 帧合并策略：丢弃尚未绘制的旧待显示帧并回收或释放，仅保留最新帧
                     replaced = _pendingImage;
+                    bool replacedPooled = _pendingIsPooled;
                     _pendingImage = image;
+                    _pendingIsPooled = pooledPreview;
+                    if (replaced != null && replacedPooled && _reusablePreviewBuffer == null)
+                    {
+                        _reusablePreviewBuffer = replaced;
+                        replaced = null;
+                    }
                     if (!_presentScheduled && IsHandleCreated)
                     {
                         _presentScheduled = true;
@@ -597,6 +778,7 @@ namespace NinePointRotationCalibration.Station.Controls
                 _presentScheduled = false;
                 pending = _pendingImage;
                 _pendingImage = null;
+                _pendingIsPooled = false;
             }
             if (pending != null) pending.Dispose();
         }
@@ -604,10 +786,13 @@ namespace NinePointRotationCalibration.Station.Controls
         private void PresentPendingFrame()
         {
             Bitmap next;
+            bool nextPooled;
             lock (_frameSync)
             {
                 next = _pendingImage;
+                nextPooled = _pendingIsPooled;
                 _pendingImage = null;
+                _pendingIsPooled = false;
                 _presentScheduled = false;
             }
 
@@ -620,8 +805,31 @@ namespace NinePointRotationCalibration.Station.Controls
             if (next != null)
             {
                 Size previousSize = _displayedImage == null ? Size.Empty : _displayedImage.Size;
-                Bitmap previous = Interlocked.Exchange(ref _displayedImage, next);
-                if (previous != null) previous.Dispose();
+                Bitmap previous;
+                bool previousPooled;
+                Bitmap toDispose = null;
+                lock (_frameSync)
+                {
+                    previous = _displayedImage;
+                    previousPooled = _displayedIsPooled;
+                    _displayedImage = next;
+                    _displayedIsPooled = nextPooled;
+                    // 将上一帧已显示完毕的池化预览位图归还至复用槽，实现零堆分配连续渲染
+                    if (previous != null)
+                    {
+                        if (previousPooled && _reusablePreviewBuffer == null &&
+                            previous.Width == next.Width && previous.Height == next.Height &&
+                            previous.PixelFormat == PixelFormat.Format32bppPArgb)
+                        {
+                            _reusablePreviewBuffer = previous;
+                        }
+                        else
+                        {
+                            toDispose = previous;
+                        }
+                    }
+                }
+                if (toDispose != null) toDispose.Dispose();
                 RaiseImageAvailabilityChanged(true);
                 if (previousSize != next.Size) FitImage();
                 else Invalidate();

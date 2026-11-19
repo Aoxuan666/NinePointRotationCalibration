@@ -118,6 +118,12 @@ namespace NinePointRotationCalibration.WinForms.Models
         [OptionalField]
         private bool _hasSeparateMatchParameters;
 
+        [OnDeserializing]
+        private void OnDeserializing(StreamingContext context)
+        {
+            AutoThreshold = true;
+        }
+
         [OnDeserialized]
         private void OnDeserialized(StreamingContext context)
         {

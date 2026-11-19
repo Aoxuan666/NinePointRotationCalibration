@@ -6,6 +6,7 @@ using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using NinePointRotationCalibration.Station.Models;
+using NinePointRotationCalibration.Station.Services;
 #if HIKVISION_SDK
 using Seprays.Camera;
 #endif
@@ -85,12 +86,14 @@ namespace NinePointRotationCalibration.Station.Devices
                         _reverseX = false;
                         _reverseY = false;
                     }
+                    LocalDebugLog.Write("INFO", "camera.hikvision", "Connected Hikvision camera: serial='" + deviceId.Trim() + "'.");
                     return true;
                 }
-                catch
+                catch (Exception exception)
                 {
-                    camera.Close();
-                    camera.FreeHGlobal();
+                    LocalDebugLog.WriteException("ERROR", "camera.hikvision", "Failed to open Hikvision camera '" + deviceId + "'", exception);
+                    try { camera.Close(); } catch { }
+                    try { camera.FreeHGlobal(); } catch { }
                     throw;
                 }
             }, cancellationToken);
@@ -327,18 +330,26 @@ namespace NinePointRotationCalibration.Station.Devices
         private void DisconnectCore()
         {
             CameraMVS camera;
+            string previousId;
             lock (_stateSync)
             {
                 camera = _camera;
+                previousId = _connectedDeviceId;
                 _camera = null;
                 _connectedDeviceId = null;
             }
             if (camera == null) return;
-            try { camera.Close(); }
+            try
+            {
+                try { camera.Close(); }
+                catch (Exception ex) { LocalDebugLog.WriteException("WARN", "camera.hikvision", "Close failed during disconnect", ex); }
+            }
             finally
             {
-                camera.FreeHGlobal();
+                try { camera.FreeHGlobal(); }
+                catch (Exception ex) { LocalDebugLog.WriteException("WARN", "camera.hikvision", "FreeHGlobal failed during disconnect", ex); }
             }
+            LocalDebugLog.Write("INFO", "camera.hikvision", "Disconnected Hikvision camera: serial='" + previousId + "'.");
         }
 
         private static void SetTriggerModeCore(CameraMVS camera, string mode)

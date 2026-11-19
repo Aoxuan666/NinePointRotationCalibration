@@ -23,11 +23,19 @@ namespace NinePointRotationCalibration.Station.Models
         [OptionalField]
         private string _configDirectory;
 
+        [OptionalField]
+        private bool _liveAcquisitionEnabled;
+
+        [OptionalField]
+        private bool _hasLiveAcquisitionSetting;
+
         public StationOptions()
         {
             _configurationVersion = CurrentConfigurationVersion;
             _cameraEnabled = true;
             _calibrationEnabled = true;
+            _liveAcquisitionEnabled = true;
+            _hasLiveAcquisitionSetting = true;
             TcpBindAddress = "0.0.0.0";
             TcpPort = 9100;
             TcpMaxMessageBytes = 1024 * 1024;
@@ -46,7 +54,7 @@ namespace NinePointRotationCalibration.Station.Models
             TranslationStepY = 10.0;
             RotationStepDegrees = 5.0;
             ExpectedBoardCount = 6;
-            PreviewIntervalMilliseconds = 200;
+            PreviewIntervalMilliseconds = 33;
             ArchiveImages = false;
             string data = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "data");
             _configDirectory = data;
@@ -75,6 +83,17 @@ namespace NinePointRotationCalibration.Station.Models
         {
             get { return _calibrationEnabled; }
             set { _calibrationEnabled = value; }
+        }
+
+        /// <summary>是否兼容并启用相机实时采集流（默认开启，可随时在相机页开关）。</summary>
+        public bool LiveAcquisitionEnabled
+        {
+            get { return _hasLiveAcquisitionSetting ? _liveAcquisitionEnabled : true; }
+            set
+            {
+                _liveAcquisitionEnabled = value;
+                _hasLiveAcquisitionSetting = true;
+            }
         }
 
         public string TcpBindAddress { get; set; }
@@ -179,6 +198,17 @@ namespace NinePointRotationCalibration.Station.Models
             if (CameraFeatures == null)
             {
                 CameraFeatures = new Dictionary<string, string>(System.StringComparer.OrdinalIgnoreCase);
+                changed = true;
+            }
+            if (!_hasLiveAcquisitionSetting)
+            {
+                _liveAcquisitionEnabled = true;
+                _hasLiveAcquisitionSetting = true;
+                changed = true;
+            }
+            if (PreviewIntervalMilliseconds < 16 || PreviewIntervalMilliseconds > 5000)
+            {
+                PreviewIntervalMilliseconds = Math.Max(16, Math.Min(5000, PreviewIntervalMilliseconds <= 0 ? 33 : PreviewIntervalMilliseconds));
                 changed = true;
             }
             string unified = GetUnifiedConfigDirectory();

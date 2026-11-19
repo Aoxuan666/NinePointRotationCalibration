@@ -388,6 +388,7 @@ namespace NinePointRotationCalibration.Station.Views
             }
             catch (Exception exception)
             {
+                LocalDebugLog.WriteException("WARN", "ui.preview", "ScheduleBinaryPreview failed", exception);
                 if (!_disposed && !cancellation.IsCancellationRequested)
                 {
                     _view.SetEffectViewportInformation("检测效果图更新失败");
@@ -549,6 +550,7 @@ namespace NinePointRotationCalibration.Station.Views
             }
             catch (Exception exception)
             {
+                LocalDebugLog.WriteException("WARN", "ui.preview", "BuildEffectPreview failed", exception);
                 payload.Dispose();
                 if (cancellationToken.IsCancellationRequested) return null;
                 return new EffectPreviewPayload { ErrorMessage = exception.Message };
@@ -740,10 +742,13 @@ namespace NinePointRotationCalibration.Station.Views
         {
             if (image == null) return;
             CancelBinaryPreview();
+            int imageWidth = image.Width;
+            int imageHeight = image.Height;
             Bitmap displayCopy = new Bitmap(image);
             Bitmap effectCopy = _view.IsDetectionDualViewActive ? new Bitmap(image) : null;
             Bitmap previous = null;
             bool scheduleEffect = false;
+            long generation;
             lock (_displaySync)
             {
                 if (_disposed)
@@ -758,6 +763,7 @@ namespace NinePointRotationCalibration.Station.Views
                 _lockedDisplayImage = image;
                 _displayMode = DisplayMode.LockedFrame;
                 _displayGeneration++;
+                generation = _displayGeneration;
                 _inspectionFrameGeneration = inspectionFrame ? _displayGeneration : -1;
                 ClearInspectionPreviewCache();
                 _view.Viewport.ClearOverlays();
@@ -771,6 +777,11 @@ namespace NinePointRotationCalibration.Station.Views
                 }
             }
             if (previous != null) previous.Dispose();
+            LocalDebugLog.Write(
+                "DEBUG",
+                "ui.display",
+                "Pinned frame: source='" + source + "', size=" + imageWidth + "x" + imageHeight +
+                ", inspectionFrame=" + inspectionFrame + ", gen=" + generation);
             if (scheduleEffect) TriggerEffectPreviewOnUi(false);
         }
 
@@ -778,6 +789,7 @@ namespace NinePointRotationCalibration.Station.Views
         private void ResumeLivePreview()
         {
             CancelBinaryPreview();
+            LocalDebugLog.Write("INFO", "ui.display", "Resumed live preview mode.");
             Bitmap previous;
             lock (_displaySync)
             {
@@ -799,6 +811,7 @@ namespace NinePointRotationCalibration.Station.Views
                 }
             }
             if (previous != null) previous.Dispose();
+            UpdateCameraLiveUiStatus();
         }
 
         private void ClearInspectionPreviewCache()

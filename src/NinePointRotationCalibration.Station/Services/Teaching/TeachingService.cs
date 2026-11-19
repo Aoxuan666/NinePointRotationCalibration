@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Globalization;
 using System.Threading;
 using System.Threading.Tasks;
 using NinePointRotationCalibration.Halcon;
@@ -66,15 +67,38 @@ namespace NinePointRotationCalibration.Station.Services.Teaching
             {
                 CalibrationJob job = _getPositioningJob();
                 if (job == null || job.Template == null || job.Template.ModelData == null || job.Template.ModelData.Length == 0)
+                {
+                    LocalDebugLog.Write("WARN", "teaching", "Capture aborted: positioning template is not configured. side=" + side);
                     throw new InvalidOperationException("Positioning template is not configured.");
+                }
+
+                LocalDebugLog.Write(
+                    "INFO",
+                    "teaching",
+                    string.Format(
+                        CultureInfo.InvariantCulture,
+                        "Capture start: side={0}, inputMachine=({1:0.###},{2:0.###},{3:0.###}deg)",
+                        side,
+                        machinePose.X,
+                        machinePose.Y,
+                        machinePose.ThetaDegrees));
 
                 using (CameraFrame frame = await _captureAsync(cancellationToken).ConfigureAwait(false))
                 {
+                    LocalDebugLog.Write(
+                        "INFO",
+                        "teaching",
+                        "Captured teaching frame: side=" + side + ", seq=" + frame.Sequence + ", size=" +
+                        (frame.Image == null ? "null" : frame.Image.Width + "x" + frame.Image.Height));
                     PublishFrame(frame.Image, "teaching." + side.ToString().ToLowerInvariant());
                     TemplateMatchResult match = await Task.Run(
                         () => LocateReferenceBoard(frame.Image, job), cancellationToken).ConfigureAwait(false);
                     if (match == null || !match.Success)
-                        throw new InvalidOperationException(match == null ? "Template locate returned no result." : match.Message);
+                    {
+                        string errMsg = match == null ? "Template locate returned no result." : match.Message;
+                        LocalDebugLog.Write("WARN", "teaching", "Template locate failed for " + side + ": " + errMsg);
+                        throw new InvalidOperationException(errMsg);
+                    }
 
                     // 记录示教基准时刻的视觉与机械位姿；MachineR 同时作为后续盲摆回正的固定角
                     TeachingPose pose = new TeachingPose
@@ -98,6 +122,11 @@ namespace NinePointRotationCalibration.Station.Services.Teaching
                         snapshot = Clone(_data);
                     }
                     if (_saveAsync != null) await _saveAsync(snapshot).ConfigureAwait(false);
+                    LocalDebugLog.Write(
+                        "INFO",
+                        "teaching",
+                        "Teaching saved: " + StationLogFormatter.FormatTeachingPose(pose) +
+                        ", matchScore=" + match.Score.ToString("0.###", CultureInfo.InvariantCulture));
                     EventHandler<TeachingEventArgs> handler = TeachingChanged;
                     if (handler != null) handler(this, new TeachingEventArgs(pose));
                     return Clone(pose);
@@ -160,6 +189,7 @@ namespace NinePointRotationCalibration.Station.Services.Teaching
                 }
 
                 if (_saveAsync != null) await _saveAsync(snapshot).ConfigureAwait(false);
+                LocalDebugLog.Write("INFO", "teaching", "Cleared teaching data for side=" + side + ".");
                 EventHandler<TeachingEventArgs> handler = TeachingChanged;
                 if (handler != null) handler(this, new TeachingEventArgs(cleared));
                 return Clone(cleared);

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
 using System.Globalization;
 using System.IO;
@@ -30,6 +31,7 @@ namespace NinePointRotationCalibration.Station.Services
         private Task _postProcessingTail = Task.CompletedTask;
         private readonly string _optionsPath;
         private readonly AtomicJsonStore _jsonStore;
+        private readonly ProtocolJsonCodec _logCodec = new ProtocolJsonCodec();
         private readonly NinePointRotationCalibrationSdk _sdk;
         private readonly TcpVisionServer _tcpServer;
         private readonly CameraAcquisitionService _camera;
@@ -58,9 +60,10 @@ namespace NinePointRotationCalibration.Station.Services
 
         private StationRuntime(string optionsPath, StationOptions options, ICameraDevice cameraDevice)
         {
+            LocalDebugLog.EnsureInitialized();
             _optionsPath = optionsPath;
             _options = options ?? throw new ArgumentNullException(nameof(options));
-            _options.NormalizeAfterLoad();
+            bool migrated = _options.NormalizeAfterLoad();
             _jsonStore = new AtomicJsonStore();
             _sdk = new NinePointRotationCalibrationSdk();
             _tcpServer = new TcpVisionServer(_options);
@@ -78,9 +81,23 @@ namespace NinePointRotationCalibration.Station.Services
             _positioningJob = LoadJobOrDefault(_options.PositioningJobPath, "PCB positioning");
             _detectionProfile = LoadJsonOrDefault(_options.DetectionProfilePath, () => new DetectionProfile());
             if (MigrateLegacyDetectionRoi(_positioningJob, _detectionProfile))
+            {
+                LocalDebugLog.Write("INFO", "startup", "Migrated legacy DetectionProfile.Roi into positioning job: " + _options.PositioningJobPath);
                 SaveJob(_positioningJob, _options.PositioningJobPath);
+            }
             _teachingData = LoadJsonOrDefault(_options.TeachingPath, () => new TeachingData());
             _calibrationResult = _sdk.Calculate(_calibrationJob);
+
+            LocalDebugLog.Write(
+                "INFO",
+                "startup",
+                "StationRuntime created. OptionsPath='" + _optionsPath + "', Migrated=" + migrated + ", " +
+                StationLogFormatter.FormatOptions(_options));
+            LocalDebugLog.Write("INFO", "startup", StationLogFormatter.FormatJob("CalibrationJob", _calibrationJob));
+            LocalDebugLog.Write("INFO", "startup", StationLogFormatter.FormatJob("PositioningJob", _positioningJob));
+            LocalDebugLog.Write("INFO", "startup", "DetectionProfile: " + StationLogFormatter.FormatDetectionProfile(_detectionProfile));
+            LocalDebugLog.Write("INFO", "startup", "TeachingData: " + StationLogFormatter.FormatTeachingData(_teachingData));
+            LocalDebugLog.Write("INFO", "startup", "InitialCalibrationResult: " + StationLogFormatter.FormatCalibrationResult(_calibrationResult));
 
             _calibration = new CalibrationCoordinator(
                 _sdk,
@@ -109,6 +126,7 @@ namespace NinePointRotationCalibration.Station.Services
         /// <summary>从工作站数据目录加载配置并创建默认运行时。</summary>
         public static StationRuntime CreateDefault()
         {
+            LocalDebugLog.EnsureInitialized();
             string dataDirectory = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "data");
             string optionsPath = Path.Combine(dataDirectory, "station.json");
             StationOptions options = new StationOptions();
@@ -122,11 +140,16 @@ namespace NinePointRotationCalibration.Station.Services
                     options = loaded;
                     if (options.NormalizeAfterLoad()) store.Save(optionsPath, options);
                 }
+                else
+                {
+                    LocalDebugLog.Write("WARN", "startup", "Failed to load station.json at '" + optionsPath + "', using defaults. Error=" + error);
+                }
             }
             else
             {
                 Directory.CreateDirectory(dataDirectory);
                 store.Save(optionsPath, options);
+                LocalDebugLog.Write("INFO", "startup", "Created default station.json at '" + optionsPath + "'.");
             }
             return new StationRuntime(optionsPath, options);
         }
@@ -141,6 +164,17 @@ namespace NinePointRotationCalibration.Station.Services
         public bool IsCameraEnabled { get { lock (_stateSync) return _options.CameraEnabled; } }
         public bool IsCalibrationEnabled { get { lock (_stateSync) return _options.CalibrationEnabled; } }
         public bool IsArchiveImagesEnabled { get { lock (_stateSync) return _options.ArchiveImages; } }
+        public bool IsLiveAcquisitionEnabled { get { lock (_stateSync) return _options.LiveAcquisitionEnabled; } }
+        public bool IsCameraPreviewRunning { get { return _camera.IsPreviewRunning; } }
+        public double LivePreviewFps { get { return _camera.LiveFps; } }
+        public long LivePreviewFrameCount { get { return _camera.LiveFrameCount; } }
+        public long LivePreviewDroppedFrameCount { get { return _camera.LiveDroppedFrameCount; } }
+
+        /// <summary>注册实时预览 UI 渲染背压检测委托，避免高帧率预览在界面端堆积。</summary>
+        public void SetPreviewConsumerBusyCallback(Func<bool> callback)
+        {
+            _camera.PreviewConsumerBusy = callback;
+        }
         public bool IsMockCamera
         {
             get
@@ -205,11 +239,14 @@ namespace NinePointRotationCalibration.Station.Services
 
             try
             {
+                LocalDebugLog.Write("INFO", "startup", "Starting TCP server on " + _options.TcpBindAddress + ":" + _options.TcpPort + "...");
                 await _tcpServer.StartAsync(cancellationToken).ConfigureAwait(false);
+                LocalDebugLog.Write("INFO", "startup", "TCP server started on " + _tcpServer.LocalEndPoint);
                 OnStateChanged("tcp", true, "Listening on " + _tcpServer.LocalEndPoint);
             }
-            catch
+            catch (Exception exception)
             {
+                LocalDebugLog.WriteException("ERROR", "startup", "TCP server failed to start", exception);
                 lock (_stateSync) _started = false;
                 throw;
             }
@@ -232,6 +269,7 @@ namespace NinePointRotationCalibration.Station.Services
             }
             catch (Exception exception)
             {
+                LocalDebugLog.WriteException("WARN", "camera.autoconnect", "Camera did not auto-connect", exception);
                 OnLog("WARN", "Camera did not auto-connect: " + exception.Message);
                 OnStateChanged("camera", false, exception.Message);
             }
@@ -248,16 +286,23 @@ namespace NinePointRotationCalibration.Station.Services
             }
             if (!shouldStop) return;
 
+            LocalDebugLog.Write("INFO", "shutdown", "StationRuntime.StopAsync begin.");
             _calibration.CancelAutomatic();
             await _camera.StopPreviewAsync().ConfigureAwait(false);
             await _tcpServer.StopAsync().ConfigureAwait(false);
             OnStateChanged("tcp", false, "Stopped");
+            LocalDebugLog.Write("INFO", "shutdown", "StationRuntime.StopAsync completed.");
         }
 
-        public Task<IReadOnlyList<CameraDescriptor>> EnumerateCamerasAsync(CancellationToken cancellationToken)
+        public async Task<IReadOnlyList<CameraDescriptor>> EnumerateCamerasAsync(CancellationToken cancellationToken)
         {
             EnsureCameraEnabled();
-            return _camera.EnumerateAsync(cancellationToken);
+            IReadOnlyList<CameraDescriptor> devices = await _camera.EnumerateAsync(cancellationToken).ConfigureAwait(false);
+            string list = devices == null || devices.Count == 0
+                ? "<none>"
+                : string.Join("; ", devices.Select(d => (d == null ? "<null>" : d.Id + "(" + d.DisplayName + ")")));
+            LocalDebugLog.Write("INFO", "camera.enum", "Provider=" + _camera.ProviderName + ", Count=" + (devices == null ? 0 : devices.Count) + ", Devices=[" + list + "]");
+            return devices;
         }
 
         /// <summary>断开预览并连接指定相机，下发采集参数后启动实时预览循环。</summary>
@@ -265,26 +310,109 @@ namespace NinePointRotationCalibration.Station.Services
         {
             EnsureCameraEnabled();
             StationOptions options = GetOptionsSnapshot();
+            LocalDebugLog.Write(
+                "INFO",
+                "camera.connect",
+                "Connecting camera deviceId='" + deviceId + "', provider=" + _camera.ProviderName +
+                ", exposure=" + options.CameraExposureMicroseconds.ToString("0.##", CultureInfo.InvariantCulture) + "us, trigger=" + options.CameraTriggerMode);
             await _camera.StopPreviewAsync().ConfigureAwait(false);
             await _camera.ConnectAsync(deviceId, options.CameraExposureMicroseconds, cancellationToken).ConfigureAwait(false);
-            await _camera.SetParametersAsync(new CameraParameterSet
+            CameraParameterSet paramSet = new CameraParameterSet
             {
                 ExposureMicroseconds = options.CameraExposureMicroseconds,
                 Gain = options.CameraGain,
                 Gamma = options.CameraGamma,
                 Features = ParseCameraFeatures(options.CameraFeatures),
                 TriggerMode = options.CameraTriggerMode
-            }, cancellationToken).ConfigureAwait(false);
-            // 仅真实相机开启实时预览流；模拟相机不再向主界面自动推送默认测试图
-            if (!IsMockCamera)
+            };
+            await _camera.SetParametersAsync(paramSet, cancellationToken).ConfigureAwait(false);
+            // 仅真实相机且开启“兼容相机实时采集”选项时自动开启实时预览流；模拟相机启动时不自动推送默认测试图
+            bool autoStartPreview = options.LiveAcquisitionEnabled && !IsMockCamera;
+            if (autoStartPreview)
             {
                 _camera.StartPreview();
             }
+            LocalDebugLog.Write(
+                "INFO",
+                "camera.connect",
+                "Camera connected: " + _camera.ProviderName + " / " + _camera.ConnectedDeviceId +
+                ", liveOption=" + options.LiveAcquisitionEnabled + ", previewStarted=" + autoStartPreview + ", " +
+                StationLogFormatter.FormatCameraParameters(paramSet));
             OnStateChanged("camera", true, _camera.ProviderName + " / " + _camera.ConnectedDeviceId);
+        }
+
+        /// <summary>切换“兼容相机实时采集”开关并持久化；已连接相机时立即启动或停止后台实时流。</summary>
+        public async Task SetLiveAcquisitionEnabledAsync(bool enabled, CancellationToken cancellationToken)
+        {
+            ThrowIfDisposed();
+            StationOptions snapshot;
+            lock (_stateSync)
+            {
+                _options.LiveAcquisitionEnabled = enabled;
+                _options.ConfigurationVersion = StationOptions.CurrentConfigurationVersion;
+                snapshot = _options.DeepClone();
+            }
+            _jsonStore.Save(_optionsPath, snapshot);
+            LocalDebugLog.Write("INFO", "camera.live", "LiveAcquisitionEnabled updated to " + enabled + ".");
+
+            if (!enabled)
+            {
+                await _camera.StopPreviewAsync().ConfigureAwait(false);
+                OnLog("INFO", "已关闭相机实时采集。");
+                return;
+            }
+
+            if (IsCameraEnabled && IsCameraConnected)
+            {
+                _camera.StartPreview();
+                OnLog("INFO", "已开启相机实时采集。");
+            }
+            else
+            {
+                OnLog("INFO", "已启用相机实时采集兼容选项（连接相机后自动生效）。");
+            }
+        }
+
+        /// <summary>主动开启相机实时采集流；若尚未连接相机则尝试按配置自动连接。</summary>
+        public async Task StartLivePreviewAsync(CancellationToken cancellationToken)
+        {
+            ThrowIfDisposed();
+            EnsureCameraEnabled();
+            LocalDebugLog.Write("INFO", "camera.live", "StartLivePreviewAsync requested (connected=" + _camera.IsConnected + ", mock=" + IsMockCamera + ").");
+            if (!_camera.IsConnected)
+            {
+                await ConnectConfiguredCameraAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            StationOptions snapshot;
+            bool needSave = false;
+            lock (_stateSync)
+            {
+                if (!_options.LiveAcquisitionEnabled)
+                {
+                    _options.LiveAcquisitionEnabled = true;
+                    needSave = true;
+                }
+                snapshot = _options.DeepClone();
+            }
+            if (needSave) _jsonStore.Save(_optionsPath, snapshot);
+
+            _camera.StartPreview();
+            OnLog("INFO", "相机实时采集已启动：" + _camera.ProviderName + " / " + _camera.ConnectedDeviceId);
+        }
+
+        /// <summary>主动停止相机实时采集流（保持相机连接不中断）。</summary>
+        public async Task StopLivePreviewAsync()
+        {
+            if (_disposed) return;
+            LocalDebugLog.Write("INFO", "camera.live", "StopLivePreviewAsync requested.");
+            await _camera.StopPreviewAsync().ConfigureAwait(false);
+            OnLog("INFO", "相机实时采集已停止。");
         }
 
         public async Task DisconnectCameraAsync()
         {
+            LocalDebugLog.Write("INFO", "camera.disconnect", "Disconnecting camera " + _camera.ProviderName + " / " + _camera.ConnectedDeviceId);
             await _camera.DisconnectAsync().ConfigureAwait(false);
             OnStateChanged("camera", false, "Disconnected");
         }
@@ -300,6 +428,7 @@ namespace NinePointRotationCalibration.Station.Services
                 snapshot = _options.DeepClone();
             }
             _jsonStore.Save(_optionsPath, snapshot);
+            LocalDebugLog.Write("INFO", "camera.params", "Exposure updated and saved: " + exposureMicroseconds.ToString("0.##", CultureInfo.InvariantCulture) + "us.");
         }
 
         public Task<CameraParameterSet> GetCameraParametersAsync(CancellationToken cancellationToken)
@@ -325,6 +454,7 @@ namespace NinePointRotationCalibration.Station.Services
                 snapshot = _options.DeepClone();
             }
             _jsonStore.Save(_optionsPath, snapshot);
+            LocalDebugLog.Write("INFO", "camera.params", "Parameters applied and saved: " + StationLogFormatter.FormatCameraParameters(parameters));
         }
 
         private static List<CameraFeatureValue> ParseCameraFeatures(Dictionary<string, string> values)
@@ -354,7 +484,15 @@ namespace NinePointRotationCalibration.Station.Services
                 {
                     EnsureCameraEnabled();
                     using (CameraFrame frame = await _camera.CaptureAsync(cancellationToken).ConfigureAwait(false))
+                    {
+                        LocalDebugLog.Write(
+                            "INFO",
+                            "camera.capture",
+                            "Manual capture completed: seq=" + frame.Sequence +
+                            ", size=" + (frame.Image == null ? "null" : frame.Image.Width + "x" + frame.Image.Height) +
+                            ", capturedAtUtc=" + frame.CapturedAtUtc.ToString("O", CultureInfo.InvariantCulture));
                         PublishFrame(frame.Image, "manual");
+                    }
                     return true;
                 },
                 cancellationToken);
@@ -369,7 +507,29 @@ namespace NinePointRotationCalibration.Station.Services
             EnsureCalibrationEnabled();
             return RunExclusiveAsync(
                 "calibration point " + pointNumber,
-                () => _calibration.CapturePointAsync(pointNumber, cancellationToken),
+                async () =>
+                {
+                    CalibrationPointRecord record = await _calibration.CapturePointAsync(pointNumber, cancellationToken).ConfigureAwait(false);
+                    if (record != null)
+                    {
+                        LocalDebugLog.Write(
+                            record.Status == CalibrationPointStatus.Completed ? "INFO" : "WARN",
+                            "calibration.point",
+                            string.Format(
+                                CultureInfo.InvariantCulture,
+                                "Point={0}, Status={1}, Machine=({2:0.###},{3:0.###},{4:0.###}), Image=({5:0.###},{6:0.###},{7:0.###}), Msg='{8}'",
+                                record.PointNumber,
+                                record.Status,
+                                record.MachineX,
+                                record.MachineY,
+                                record.MachineR,
+                                record.ImageRow,
+                                record.ImageColumn,
+                                record.ImageAngle,
+                                record.Message));
+                    }
+                    return record;
+                },
                 cancellationToken);
         }
 
@@ -380,12 +540,18 @@ namespace NinePointRotationCalibration.Station.Services
             EnsureCalibrationEnabled();
             return RunExclusiveAsync(
                 "automatic calibration",
-                () => _calibration.RunAutomaticAsync(cancellationToken),
+                async () =>
+                {
+                    CalibrationResult result = await _calibration.RunAutomaticAsync(cancellationToken).ConfigureAwait(false);
+                    LocalDebugLog.Write("INFO", "calibration.auto", "Automatic calibration result: " + StationLogFormatter.FormatCalibrationResult(result));
+                    return result;
+                },
                 cancellationToken);
         }
 
         public void CancelAutomaticCalibration()
         {
+            LocalDebugLog.Write("INFO", "calibration.auto", "Automatic calibration cancellation requested.");
             _calibration.CancelAutomatic();
         }
 
@@ -394,7 +560,15 @@ namespace NinePointRotationCalibration.Station.Services
             EnsureCalibrationEnabled();
             return RunExclusiveAsync(
                 "calibration calculation",
-                () => _calibration.CalculateAsync(cancellationToken),
+                async () =>
+                {
+                    CalibrationResult result = await _calibration.CalculateAsync(cancellationToken).ConfigureAwait(false);
+                    LocalDebugLog.Write(
+                        result != null && result.Success ? "INFO" : "WARN",
+                        "calibration.solve",
+                        StationLogFormatter.FormatCalibrationResult(result));
+                    return result;
+                },
                 cancellationToken);
         }
 
@@ -433,7 +607,11 @@ namespace NinePointRotationCalibration.Station.Services
                 CalibrationJob current;
                 lock (_stateSync) current = _calibrationJob.DeepClone();
                 TemplateSetupResult result = _sdk.OpenTemplateDialog(referenceImage, current.Template, owner);
-                if (!result.Accepted || result.Template == null) return result;
+                if (!result.Accepted || result.Template == null)
+                {
+                    LocalDebugLog.Write("INFO", "template.cal", "Calibration template editing cancelled or unaccepted: code=" + result.ErrorCode + ", msg=" + result.Message);
+                    return result;
+                }
 
                 current.Template = result.Template.DeepClone();
                 current = _sdk.ClearSamples(current);
@@ -445,6 +623,7 @@ namespace NinePointRotationCalibration.Station.Services
                 _calibration.SetJob(current);
                 SaveCalibrationJobAsync(current).GetAwaiter().GetResult();
                 PublishCalibrationRecords();
+                LocalDebugLog.Write("INFO", "template.cal", "Calibration template saved: " + StationLogFormatter.FormatJob("CalibrationJob", current));
                 OnLog("INFO", "Calibration template updated; previous samples were cleared.");
                 return result;
             }
@@ -464,7 +643,11 @@ namespace NinePointRotationCalibration.Station.Services
                 CalibrationJob current;
                 lock (_stateSync) current = _positioningJob.DeepClone();
                 TemplateSetupResult result = _sdk.OpenTemplateDialog(referenceImage, current.Template, owner, true);
-                if (!result.Accepted || result.Template == null) return result;
+                if (!result.Accepted || result.Template == null)
+                {
+                    LocalDebugLog.Write("INFO", "template.pos", "Positioning template editing cancelled or unaccepted: code=" + result.ErrorCode + ", msg=" + result.Message);
+                    return result;
+                }
 
                 current.Template = result.Template.DeepClone();
                 lock (_stateSync)
@@ -472,6 +655,7 @@ namespace NinePointRotationCalibration.Station.Services
                     _positioningJob = current.DeepClone();
                 }
                 SaveJob(current, _options.PositioningJobPath);
+                LocalDebugLog.Write("INFO", "template.pos", "Positioning template saved to '" + _options.PositioningJobPath + "': " + StationLogFormatter.FormatJob("PositioningJob", current));
                 OnLog("INFO", "PCB positioning template updated.");
                 return result;
             }
@@ -490,7 +674,11 @@ namespace NinePointRotationCalibration.Station.Services
             try
             {
                 JobPersistenceResult loaded = _sdk.TryLoadJob(path);
-                if (!loaded.Success || loaded.Job == null) return loaded;
+                if (!loaded.Success || loaded.Job == null)
+                {
+                    LocalDebugLog.Write("WARN", "job.load", "Failed to load calibration job from '" + path + "': " + loaded.Message);
+                    return loaded;
+                }
 
                 CalibrationJob job = loaded.Job.DeepClone();
                 CalibrationResult result = _sdk.Calculate(job);
@@ -504,6 +692,7 @@ namespace NinePointRotationCalibration.Station.Services
                 PersistOptionsSnapshot();
                 PublishCalibrationRecords();
                 OnCalibrationCalculationCompleted(this, new CalibrationResultEventArgs(result));
+                LocalDebugLog.Write("INFO", "job.load", StationLogFormatter.FormatJob("CalibrationJob", job) + " | " + StationLogFormatter.FormatCalibrationResult(result));
                 OnLog("INFO", "Calibration job loaded: " + path);
                 return loaded;
             }
@@ -521,7 +710,11 @@ namespace NinePointRotationCalibration.Station.Services
             try
             {
                 JobPersistenceResult loaded = _sdk.TryLoadJob(path);
-                if (!loaded.Success || loaded.Job == null) return loaded;
+                if (!loaded.Success || loaded.Job == null)
+                {
+                    LocalDebugLog.Write("WARN", "job.load", "Failed to load positioning job from '" + path + "': " + loaded.Message);
+                    return loaded;
+                }
 
                 CalibrationJob loadedJob = loaded.Job.DeepClone();
                 bool migrated = MigrateLegacyDetectionRoi(loadedJob, _detectionProfile);
@@ -532,6 +725,7 @@ namespace NinePointRotationCalibration.Station.Services
                 }
                 PersistOptionsSnapshot();
                 if (migrated) SaveJob(loadedJob, path);
+                LocalDebugLog.Write("INFO", "job.load", "Migrated=" + migrated + " | " + StationLogFormatter.FormatJob("PositioningJob", loadedJob));
                 OnLog("INFO", "Positioning job loaded: " + path);
                 return loaded;
             }
@@ -682,6 +876,11 @@ namespace NinePointRotationCalibration.Station.Services
                     normalized,
                     loadedFileCount,
                     createdFileCount);
+                LocalDebugLog.Write("INFO", "config.import", summary + " | " + StationLogFormatter.FormatOptions(updatedOptions));
+                LocalDebugLog.Write("INFO", "config.import", StationLogFormatter.FormatJob("CalibrationJob", loadedCalibration));
+                LocalDebugLog.Write("INFO", "config.import", StationLogFormatter.FormatJob("PositioningJob", loadedPositioning));
+                LocalDebugLog.Write("INFO", "config.import", "Profile: " + StationLogFormatter.FormatDetectionProfile(loadedProfile));
+                LocalDebugLog.Write("INFO", "config.import", "Teaching: " + StationLogFormatter.FormatTeachingData(loadedTeaching));
                 OnLog("INFO", summary);
                 return summary;
             }
@@ -709,6 +908,10 @@ namespace NinePointRotationCalibration.Station.Services
                     {
                         reloadedTeaching = parsed;
                     }
+                    else
+                    {
+                        LocalDebugLog.Write("WARN", "config.reload", "Failed to load teaching file '" + teachingPath + "': " + error);
+                    }
                 }
                 if (!string.IsNullOrWhiteSpace(detectionProfilePath) && File.Exists(detectionProfilePath))
                 {
@@ -717,6 +920,10 @@ namespace NinePointRotationCalibration.Station.Services
                     if (_jsonStore.TryLoad(detectionProfilePath, out parsed, out error) && parsed != null)
                     {
                         reloadedProfile = CloneDetectionProfile(parsed);
+                    }
+                    else
+                    {
+                        LocalDebugLog.Write("WARN", "config.reload", "Failed to load detection profile '" + detectionProfilePath + "': " + error);
                     }
                 }
 
@@ -738,6 +945,10 @@ namespace NinePointRotationCalibration.Station.Services
                 }
 
                 _jsonStore.Save(_optionsPath, updatedOptions);
+                LocalDebugLog.Write(
+                    "INFO",
+                    "config.reload",
+                    "Auxiliary configs reloaded. teaching='" + teachingPath + "' (" + (reloadedTeaching != null) + "), profile='" + detectionProfilePath + "' (" + (reloadedProfile != null) + ")");
             }
             finally
             {
@@ -779,7 +990,27 @@ namespace NinePointRotationCalibration.Station.Services
             EnsureCalibrationEnabled();
             return RunExclusiveAsync(
                 "calibration template test",
-                () => Task.Run(() => _sdk.Locate(image, GetCalibrationJobSnapshot(), true), cancellationToken),
+                () => Task.Run(() =>
+                {
+                    CalibrationJob job = GetCalibrationJobSnapshot();
+                    TemplateMatchResult match = _sdk.Locate(image, job, true);
+                    LocalDebugLog.Write(
+                        match != null && match.Success ? "INFO" : "WARN",
+                        "template.test.cal",
+                        match == null
+                            ? "Locate returned null."
+                            : string.Format(
+                                CultureInfo.InvariantCulture,
+                                "ok={0}, rc=({1:0.###},{2:0.###}), ang={3:0.###}deg, score={4:0.###}, ct={5:0.0}ms, msg='{6}'",
+                                match.Success,
+                                match.Row,
+                                match.Column,
+                                match.AngleDegrees,
+                                match.Score,
+                                match.ElapsedMilliseconds,
+                                match.Message));
+                    return match;
+                }, cancellationToken),
                 cancellationToken);
         }
 
@@ -815,7 +1046,25 @@ namespace NinePointRotationCalibration.Station.Services
                     {
                         job.Template.MatchParameters.NumMatches = maximumMatches;
                     }
-                    return _sdk.LocateAll(image, job, includeContour);
+                    TemplateMatchCollectionResult result = _sdk.LocateAll(image, job, includeContour);
+                    int matchCount = result == null || result.Matches == null ? 0 : result.Matches.Count;
+                    string summary = result == null || result.Matches == null
+                        ? string.Empty
+                        : string.Join("; ", result.Matches.Where(m => m != null).Select((m, idx) =>
+                            string.Format(CultureInfo.InvariantCulture, "#{0}({1:0.##},{2:0.##},ang={3:0.##},score={4:0.###})", idx + 1, m.Row, m.Column, m.AngleDegrees, m.Score)));
+                    LocalDebugLog.Write(
+                        result != null && result.Success ? "INFO" : "WARN",
+                        "template.test.pos",
+                        string.Format(
+                            CultureInfo.InvariantCulture,
+                            "ok={0}, max={1}, count={2}, ct={3:0.0}ms, msg='{4}', matches=[{5}]",
+                            result != null && result.Success,
+                            maximumMatches,
+                            matchCount,
+                            result == null ? 0.0 : result.ElapsedMilliseconds,
+                            result == null ? "<null>" : result.Message,
+                            summary));
+                    return result;
                 }),
                 cancellationToken);
         }
@@ -840,8 +1089,9 @@ namespace NinePointRotationCalibration.Station.Services
             {
                 return _sdk.LocateAll(image, job, true);
             }
-            catch
+            catch (Exception exception)
             {
+                LocalDebugLog.WriteException("WARN", "preview.locate", "LocatePositioningForPreview failed", exception);
                 return null;
             }
         }
@@ -956,6 +1206,7 @@ namespace NinePointRotationCalibration.Station.Services
             DetectionProfile copy = CloneDetectionProfile(profile);
             lock (_stateSync) _detectionProfile = copy;
             SaveDetectionProfile(copy);
+            LocalDebugLog.Write("INFO", "config.profile", "DetectionProfile updated: " + StationLogFormatter.FormatDetectionProfile(copy));
         }
 
         /// <summary>校验并保存工作站配置（相机/标定开关变更须通过 ApplyEnablementAsync 执行）。</summary>
@@ -978,12 +1229,17 @@ namespace NinePointRotationCalibration.Station.Services
             _jsonStore.Save(_optionsPath, copy);
             _calibration.UpdateOptions(copy);
             _camera.SetPreviewInterval(copy.PreviewIntervalMilliseconds);
+            LocalDebugLog.Write("INFO", "config.options", "Options saved: " + StationLogFormatter.FormatOptions(copy));
             OnLog("INFO", "Station settings saved. TCP or camera provider changes apply after restart.");
         }
 
         private async Task ConnectConfiguredCameraAsync(CancellationToken cancellationToken)
         {
             IReadOnlyList<CameraDescriptor> devices = await _camera.EnumerateAsync(cancellationToken).ConfigureAwait(false);
+            string deviceSummary = devices == null || devices.Count == 0
+                ? "<none>"
+                : string.Join("; ", devices.Select(d => d == null ? "<null>" : d.Id + "(" + d.DisplayName + ")"));
+            LocalDebugLog.Write("INFO", "camera.autoconnect", "Enumerated devices for provider '" + _camera.ProviderName + "': [" + deviceSummary + "]");
             if (devices == null || devices.Count == 0)
                 throw new InvalidOperationException("No camera device was found.");
 
@@ -1022,11 +1278,12 @@ namespace NinePointRotationCalibration.Station.Services
             _tcpServer.Connected += OnTcpConnected;
             _tcpServer.Disconnected += OnTcpDisconnected;
             _tcpServer.MessageReceived += OnTcpMessageReceived;
-            _tcpServer.Log += ForwardLog;
-            _camera.Log += ForwardLog;
+            _tcpServer.Log += (sender, args) => ForwardTaggedLog("tcp", sender, args);
+            _camera.Log += (sender, args) => ForwardTaggedLog("camera", sender, args);
             _camera.PreviewFrame += ForwardFrame;
             _camera.PreviewHealthChanged += OnCameraPreviewHealthChanged;
-            _calibration.Log += ForwardLog;
+            _camera.PreviewRunningChanged += OnCameraPreviewRunningChanged;
+            _calibration.Log += (sender, args) => ForwardTaggedLog("calibration", sender, args);
             _calibration.FrameCaptured += ForwardFrame;
             _calibration.PointChanged += OnCalibrationPointChanged;
             _calibration.CalculationCompleted += OnCalibrationCalculationCompleted;
@@ -1061,6 +1318,7 @@ namespace NinePointRotationCalibration.Station.Services
         private void OnTcpConnected(object sender, TcpConnectionEventArgs e)
         {
             ForgetSeenMessages();
+            LocalDebugLog.Write("INFO", "tcp.conn", "Connected: connId=" + e.ConnectionId + ", remote=" + e.RemoteEndPoint);
             OnStateChanged("host", true, e.RemoteEndPoint);
             OnLog("INFO", "Upper machine connected: " + e.RemoteEndPoint);
         }
@@ -1073,11 +1331,13 @@ namespace NinePointRotationCalibration.Station.Services
                 e.ConnectionId,
                 StringComparison.Ordinal))
             {
+                LocalDebugLog.Write("INFO", "tcp.conn", "Previous connection closed: connId=" + e.ConnectionId + ", activeConnId=" + activeConnectionId + ", reason=" + e.Reason);
                 OnLog("INFO", "Previous upper-machine connection closed: " + e.ConnectionId);
                 return;
             }
 
             ForgetSeenMessages();
+            LocalDebugLog.Write("WARN", "tcp.conn", "Disconnected: connId=" + e.ConnectionId + ", reason=" + e.Reason);
             OnStateChanged("host", false, e.Reason);
             OnLog("WARN", "Upper machine disconnected: " + e.Reason);
         }
@@ -1087,8 +1347,15 @@ namespace NinePointRotationCalibration.Station.Services
             try
             {
                 ProtocolEnvelope envelope = e.Message;
+                bool isHeartbeat = string.Equals(envelope.Type, ProtocolMessageTypes.Heartbeat, StringComparison.OrdinalIgnoreCase);
+                LocalDebugLog.Write(
+                    isHeartbeat ? "DEBUG" : "INFO",
+                    "tcp.rx",
+                    "conn=" + e.ConnectionId + " " + StationLogFormatter.FormatEnvelope(envelope, _logCodec));
+
                 if (!RememberMessage(envelope.MessageId))
                 {
+                    LocalDebugLog.Write("WARN", "tcp.rx", "Duplicate messageId rejected: conn=" + e.ConnectionId + ", msgId=" + envelope.MessageId);
                     await SendErrorAsync(
                         e.ConnectionId,
                         envelope.MessageId,
@@ -1100,7 +1367,7 @@ namespace NinePointRotationCalibration.Station.Services
                 }
 
                 if (HandleCalibrationProtocolMessage(envelope, e.ConnectionId)) return;
-                if (string.Equals(envelope.Type, ProtocolMessageTypes.Heartbeat, StringComparison.OrdinalIgnoreCase) ||
+                if (isHeartbeat ||
                     string.Equals(envelope.Type, ProtocolMessageTypes.Hello, StringComparison.OrdinalIgnoreCase))
                 {
                     ProtocolEnvelope ack = ProtocolEnvelope.Create(ProtocolMessageTypes.Acknowledge);
@@ -1111,6 +1378,10 @@ namespace NinePointRotationCalibration.Station.Services
                     ack.Data["calibrationEnabled"] = IsCalibrationEnabled;
                     ack.Data["protocolVersion"] = "1.0";
                     await _tcpServer.SendAsync(e.ConnectionId, ack).ConfigureAwait(false);
+                    LocalDebugLog.Write(
+                        isHeartbeat ? "DEBUG" : "INFO",
+                        "tcp.tx",
+                        "conn=" + e.ConnectionId + " " + StationLogFormatter.FormatEnvelope(ack, _logCodec));
                     return;
                 }
                 if (string.Equals(envelope.Type, ProtocolMessageTypes.InspectionTrigger, StringComparison.OrdinalIgnoreCase))
@@ -1119,11 +1390,13 @@ namespace NinePointRotationCalibration.Station.Services
                     return;
                 }
 
+                LocalDebugLog.Write("WARN", "tcp.rx", "Unsupported message type: conn=" + e.ConnectionId + ", type=" + envelope.Type);
                 await SendErrorAsync(e.ConnectionId, envelope.MessageId, "MESSAGE_TYPE_UNSUPPORTED",
                     "Unsupported message type: " + envelope.Type, false).ConfigureAwait(false);
             }
             catch (Exception exception)
             {
+                LocalDebugLog.WriteException("ERROR", "tcp.dispatch", "Protocol handler failed for conn=" + e.ConnectionId, exception);
                 OnLog("ERROR", "Protocol handler failed: " + exception.Message);
                 try
                 {
@@ -1134,7 +1407,11 @@ namespace NinePointRotationCalibration.Station.Services
                         exception.Message,
                         true).ConfigureAwait(false);
                 }
-                catch (Exception sendException) { OnLog("ERROR", "Unable to send protocol error: " + sendException.Message); }
+                catch (Exception sendException)
+                {
+                    LocalDebugLog.WriteException("ERROR", "tcp.dispatch", "Unable to send protocol error", sendException);
+                    OnLog("ERROR", "Unable to send protocol error: " + sendException.Message);
+                }
             }
         }
 
@@ -1149,6 +1426,7 @@ namespace NinePointRotationCalibration.Station.Services
             }
             if (!cameraEnabled)
             {
+                LocalDebugLog.Write("WARN", "tcp.inspect", "Rejected inspection.trigger (CAMERA_DISABLED): conn=" + connectionId + ", msgId=" + request.MessageId);
                 await SendErrorAsync(
                     connectionId,
                     request.MessageId,
@@ -1159,6 +1437,7 @@ namespace NinePointRotationCalibration.Station.Services
             }
             if (!calibrationEnabled)
             {
+                LocalDebugLog.Write("WARN", "tcp.inspect", "Rejected inspection.trigger (CALIBRATION_DISABLED): conn=" + connectionId + ", msgId=" + request.MessageId);
                 await SendErrorAsync(
                     connectionId,
                     request.MessageId,
@@ -1170,6 +1449,7 @@ namespace NinePointRotationCalibration.Station.Services
 
             if (!await _workflowGate.WaitAsync(0).ConfigureAwait(false))
             {
+                LocalDebugLog.Write("WARN", "tcp.inspect", "Rejected inspection.trigger (BUSY): conn=" + connectionId + ", msgId=" + request.MessageId);
                 await SendErrorAsync(
                     connectionId,
                     request.MessageId,
@@ -1189,6 +1469,7 @@ namespace NinePointRotationCalibration.Station.Services
                 if (!ProtocolValue.TryDouble(request.Data, "currentR", out currentR) ||
                     double.IsNaN(currentR) || double.IsInfinity(currentR))
                 {
+                    LocalDebugLog.Write("WARN", "tcp.inspect", "Rejected inspection.trigger (PROTOCOL_INVALID currentR): conn=" + connectionId + ", msgId=" + request.MessageId);
                     await SendErrorAsync(
                         connectionId,
                         request.MessageId,
@@ -1197,23 +1478,54 @@ namespace NinePointRotationCalibration.Station.Services
                         false).ConfigureAwait(false);
                     return;
                 }
-                // 视觉结果一经算出立即回传上位机；图像显示、归档和 UI 事件延后到后台线程串行执行，不占用生产 CT
-                await ExecuteInspectionAsync(
-                    expected,
-                    currentR,
-                    request,
-                    CancellationToken.None,
-                    async result =>
-                    {
-                        ProtocolEnvelope response = ProtocolEnvelope.Create(ProtocolMessageTypes.InspectionResult);
-                        response.CorrelationId = request.MessageId;
-                        FillInspectionResponse(response.Data, result);
-                        await _tcpServer.SendAsync(connectionId, response).ConfigureAwait(false);
-                    }).ConfigureAwait(false);
+                LocalDebugLog.Write(
+                    "INFO",
+                    "tcp.inspect",
+                    string.Format(
+                        CultureInfo.InvariantCulture,
+                        "Executing inspection.trigger: conn={0}, msgId={1}, currentR={2:0.###}, expectedCount={3}, archive={4}",
+                        connectionId,
+                        request.MessageId,
+                        currentR,
+                        expected,
+                        IsArchiveRequested(request)));
+                // 视觉结果一经算出立即释放工作流门锁并回传上位机；图像显示、归档和 UI 事件延后到后台线程串行执行，不占用生产 CT
+                ProtocolEnvelope response = null;
+                InspectionResult completedResult = null;
+                try
+                {
+                    await ExecuteInspectionAsync(
+                        expected,
+                        currentR,
+                        request,
+                        CancellationToken.None,
+                        result =>
+                        {
+                            completedResult = result;
+                            response = ProtocolEnvelope.Create(ProtocolMessageTypes.InspectionResult);
+                            response.CorrelationId = request.MessageId;
+                            FillInspectionResponse(response.Data, result);
+                            return Task.CompletedTask;
+                        }).ConfigureAwait(false);
+                }
+                finally
+                {
+                    _workflowGate.Release();
+                }
+
+                if (response != null)
+                {
+                    await _tcpServer.SendAsync(connectionId, response).ConfigureAwait(false);
+                    LocalDebugLog.Write(
+                        completedResult != null && completedResult.Success && completedResult.Pass ? "INFO" : "WARN",
+                        "tcp.tx",
+                        "Sent inspection.result conn=" + connectionId + ", corrId=" + response.CorrelationId +
+                        ", " + StationLogFormatter.FormatInspectionResult(completedResult));
+                }
             }
-            finally
+            catch
             {
-                _workflowGate.Release();
+                throw;
             }
         }
 
@@ -1243,6 +1555,17 @@ namespace NinePointRotationCalibration.Station.Services
 
                 using (CameraFrame frame = await _camera.CaptureAsync(cancellationToken).ConfigureAwait(false))
                 {
+                    LocalDebugLog.Write(
+                        "INFO",
+                        "inspection.capture",
+                        string.Format(
+                            CultureInfo.InvariantCulture,
+                            "Captured online frame: seq={0}, size={1}, expected={2}, currentR={3:0.###}, tcpMode={4}",
+                            frame.Sequence,
+                            frame.Image == null ? "null" : frame.Image.Width + "x" + frame.Image.Height,
+                            expectedCount,
+                            currentR,
+                            sendResponse != null));
                     InspectionResult result = await Task.Run(() => _inspection.Inspect(
                         frame.Image,
                         positioning,
@@ -1254,6 +1577,10 @@ namespace NinePointRotationCalibration.Station.Services
 
                     if (sendResponse == null)
                     {
+                        LocalDebugLog.Write(
+                            result != null && result.Success && result.Pass ? "INFO" : "WARN",
+                            "inspection.local",
+                            StationLogFormatter.FormatInspectionResult(result));
                         PublishFrame(frame.Image, "inspection");
                         OnInspectionCompleted(result);
                         return result;
@@ -1296,17 +1623,31 @@ namespace NinePointRotationCalibration.Station.Services
                     calibrationEnabled = _options.CalibrationEnabled;
                 }
 
-                bool canMapTargets = calibrationEnabled &&
-                    calibration != null &&
-                    calibration.TranslationSuccess &&
-                    calibration.Rotation != null &&
-                    calibration.Rotation.Success &&
-                    calibration.Rotation.IsAvailable &&
-                    Math.Abs(calibration.Rotation.DirectionMultiplier) >= 0.5 &&
-                    teaching != null &&
+                bool calValid = calibration != null && calibration.TranslationSuccess &&
+                    calibration.Rotation != null && calibration.Rotation.Success &&
+                    calibration.Rotation.IsAvailable && Math.Abs(calibration.Rotation.DirectionMultiplier) >= 0.5;
+                bool teachValid = teaching != null &&
                     teaching.Left != null && teaching.Left.IsValid &&
-                    teaching.Right != null && teaching.Right.IsValid &&
+                    teaching.Right != null && teaching.Right.IsValid;
+                bool canMapTargets = calibrationEnabled &&
+                    calValid &&
+                    teachValid &&
                     !double.IsNaN(currentR) && !double.IsInfinity(currentR);
+
+                LocalDebugLog.Write(
+                    "INFO",
+                    "inspection.offline",
+                    string.Format(
+                        CultureInfo.InvariantCulture,
+                        "Start offline inspection: size={0}x{1}, expected={2}, currentR={3:0.###}, calEnabled={4}, calValid={5}, teachValid={6}, canMapTargets={7}",
+                        image.Width,
+                        image.Height,
+                        expectedCount,
+                        currentR,
+                        calibrationEnabled,
+                        calValid,
+                        teachValid,
+                        canMapTargets));
 
                 PublishFrame(image, "offline-inspection");
                 InspectionResult result = await Task.Run(
@@ -1331,6 +1672,10 @@ namespace NinePointRotationCalibration.Station.Services
                         ? "标定或左右示教未完成，当前仅展示视觉定位与瑕疵检测结果。"
                         : result.Message + "（标定或左右示教未完成，当前仅展示视觉定位与瑕疵检测结果）";
                 }
+                LocalDebugLog.Write(
+                    result != null && result.Success && result.Pass ? "INFO" : "WARN",
+                    "inspection.offline",
+                    StationLogFormatter.FormatInspectionResult(result));
                 OnInspectionCompleted(result);
                 return result;
             }
@@ -1399,6 +1744,10 @@ namespace NinePointRotationCalibration.Station.Services
             error.Data["message"] = message;
             error.Data["retryable"] = retryable;
             await _tcpServer.SendAsync(connectionId, error).ConfigureAwait(false);
+            LocalDebugLog.Write(
+                "WARN",
+                "tcp.tx.err",
+                "conn=" + connectionId + " " + StationLogFormatter.FormatEnvelope(error, _logCodec));
         }
 
         private bool HandleCalibrationProtocolMessage(ProtocolEnvelope envelope, string connectionId)
@@ -1426,7 +1775,13 @@ namespace NinePointRotationCalibration.Station.Services
                 return true;
             }
 
-            return _calibration.HandleProtocolMessage(envelope);
+            bool handled = _calibration.HandleProtocolMessage(envelope);
+            LocalDebugLog.Write(
+                handled ? "INFO" : "WARN",
+                "tcp.cal.rx",
+                "motion.arrived conn=" + connectionId + ", handled=" + handled + ", payload=" +
+                StationLogFormatter.FormatEnvelope(envelope, _logCodec));
+            return handled;
         }
 
         private async Task SendCalibrationMessageAsync(
@@ -1449,6 +1804,7 @@ namespace NinePointRotationCalibration.Station.Services
 
                 lock (_stateSync) _calibrationCompletionConnectionId = connectionId;
                 await _tcpServer.SendAsync(connectionId, message, cancellationToken).ConfigureAwait(false);
+                LocalDebugLog.Write("INFO", "tcp.cal.tx", "conn=" + connectionId + " " + StationLogFormatter.FormatEnvelope(message, _logCodec));
                 return;
             }
 
@@ -1468,6 +1824,7 @@ namespace NinePointRotationCalibration.Station.Services
                 try
                 {
                     await _tcpServer.SendAsync(connectionId, message, cancellationToken).ConfigureAwait(false);
+                    LocalDebugLog.Write("INFO", "tcp.cal.tx", "conn=" + connectionId + " " + StationLogFormatter.FormatEnvelope(message, _logCodec));
                 }
                 finally
                 {
@@ -1491,6 +1848,7 @@ namespace NinePointRotationCalibration.Station.Services
                 try
                 {
                     await _tcpServer.SendAsync(connectionId, message, cancellationToken).ConfigureAwait(false);
+                    LocalDebugLog.Write("INFO", "tcp.cal.tx", "conn=" + connectionId + " " + StationLogFormatter.FormatEnvelope(message, _logCodec));
                 }
                 finally
                 {
@@ -1541,6 +1899,7 @@ namespace NinePointRotationCalibration.Station.Services
                         }
                         catch (Exception exception)
                         {
+                            LocalDebugLog.WriteException("ERROR", "inspection.post", "Inspection post-processing failed", exception);
                             OnLog("ERROR", "Inspection post-processing failed: " + exception.Message);
                         }
                     },
@@ -1589,6 +1948,7 @@ namespace NinePointRotationCalibration.Station.Services
                 suffix++;
             }
             image.Save(path, System.Drawing.Imaging.ImageFormat.Png);
+            LocalDebugLog.Write("INFO", "archive", "Saved inspection frame to '" + path + "' (" + image.Width + "x" + image.Height + ").");
         }
 
         private Task SaveCalibrationJobAsync(CalibrationJob job)
@@ -1625,17 +1985,28 @@ namespace NinePointRotationCalibration.Station.Services
             {
                 JobPersistenceResult loaded = _sdk.TryLoadJob(path);
                 if (loaded.Success && loaded.Job != null) return loaded.Job;
+                LocalDebugLog.Write("WARN", "job.load", "Failed to load job '" + name + "' at '" + path + "', using empty job. Msg=" + loaded.Message);
+            }
+            else
+            {
+                LocalDebugLog.Write("INFO", "job.load", "Job file not found for '" + name + "' at '" + path + "', initialized empty job.");
             }
             return new CalibrationJob { Name = name };
         }
 
         private T LoadJsonOrDefault<T>(string path, Func<T> factory) where T : class
         {
+            if (!File.Exists(path))
+            {
+                LocalDebugLog.Write("INFO", "config.load", "JSON file not found at '" + path + "', using default " + typeof(T).Name + ".");
+                return factory();
+            }
+
             T value;
             string error;
-            return File.Exists(path) && _jsonStore.TryLoad(path, out value, out error) && value != null
-                ? value
-                : factory();
+            if (_jsonStore.TryLoad(path, out value, out error) && value != null) return value;
+            LocalDebugLog.Write("WARN", "config.load", "Failed to parse JSON '" + path + "' as " + typeof(T).Name + ", using default. Error=" + error);
+            return factory();
         }
 
         private static ICameraDevice CreateCameraDevice(StationOptions options)
@@ -1689,13 +2060,31 @@ namespace NinePointRotationCalibration.Station.Services
             if (operation == null) throw new ArgumentNullException(nameof(operation));
             if (!await _workflowGate.WaitAsync(0, cancellationToken).ConfigureAwait(false))
             {
+                LocalDebugLog.Write("WARN", "workflow", "Rejected '" + operationName + "' because another workflow is active.");
                 throw new InvalidOperationException(
                     "Cannot start " + operationName + " because another vision workflow is running.");
             }
 
+            Stopwatch watch = Stopwatch.StartNew();
+            LocalDebugLog.Write("INFO", "workflow", "Start: " + operationName);
             try
             {
-                return await operation().ConfigureAwait(false);
+                T result = await operation().ConfigureAwait(false);
+                watch.Stop();
+                LocalDebugLog.Write("INFO", "workflow", "Completed: " + operationName + " in " + watch.Elapsed.TotalMilliseconds.ToString("0.0", CultureInfo.InvariantCulture) + "ms");
+                return result;
+            }
+            catch (OperationCanceledException)
+            {
+                watch.Stop();
+                LocalDebugLog.Write("WARN", "workflow", "Cancelled: " + operationName + " after " + watch.Elapsed.TotalMilliseconds.ToString("0.0", CultureInfo.InvariantCulture) + "ms");
+                throw;
+            }
+            catch (Exception exception)
+            {
+                watch.Stop();
+                LocalDebugLog.WriteException("ERROR", "workflow", "Failed: " + operationName + " after " + watch.Elapsed.TotalMilliseconds.ToString("0.0", CultureInfo.InvariantCulture) + "ms", exception);
+                throw;
             }
             finally
             {
@@ -1707,9 +2096,11 @@ namespace NinePointRotationCalibration.Station.Services
         {
             if (!_workflowGate.Wait(0))
             {
+                LocalDebugLog.Write("WARN", "workflow", "Rejected synchronous '" + operationName + "' because another workflow is active.");
                 throw new InvalidOperationException(
                     "Cannot start " + operationName + " because another vision workflow is running.");
             }
+            LocalDebugLog.Write("INFO", "workflow", "Enter synchronous: " + operationName);
         }
 
         private void PersistOptionsSnapshot()
@@ -1802,6 +2193,15 @@ namespace NinePointRotationCalibration.Station.Services
             if (handler != null) handler(this, new InspectionEventArgs(result));
         }
 
+        private void ForwardTaggedLog(string category, object sender, LogEventArgs e)
+        {
+            if (e != null)
+            {
+                LocalDebugLog.Write(e.Level, category, e.Message);
+            }
+            ForwardLog(sender, e);
+        }
+
         private void ForwardLog(object sender, LogEventArgs e)
         {
             EventHandler<LogEventArgs> handler = Log;
@@ -1810,13 +2210,31 @@ namespace NinePointRotationCalibration.Station.Services
 
         private void OnCameraPreviewHealthChanged(bool available, string detail)
         {
+            LocalDebugLog.Write(available ? "INFO" : "WARN", "camera.preview", "PreviewHealth available=" + available + ", detail='" + detail + "'");
             OnStateChanged("camera", available, detail);
+        }
+
+        private void OnCameraPreviewRunningChanged(bool running)
+        {
+            LocalDebugLog.Write("INFO", "camera.live", "PreviewRunningChanged running=" + running);
+            OnStateChanged("camera.live", running, running ? "Running" : "Stopped");
         }
 
         private void ForwardFrame(object sender, FrameEventArgs e)
         {
             EventHandler<FrameEventArgs> handler = FrameReady;
-            if (handler != null) handler(this, e);
+            if (handler == null) return;
+            foreach (EventHandler<FrameEventArgs> subscriber in handler.GetInvocationList())
+            {
+                try
+                {
+                    subscriber(this, e);
+                }
+                catch (Exception exception)
+                {
+                    LocalDebugLog.WriteException("WARN", "runtime.frame", "FrameReady subscriber threw an exception", exception);
+                }
+            }
         }
 
         private void PublishFrame(Bitmap image, string source)
@@ -1824,20 +2242,39 @@ namespace NinePointRotationCalibration.Station.Services
             EventHandler<FrameEventArgs> handler = FrameReady;
             if (handler == null || image == null) return;
             using (FrameEventArgs args = new FrameEventArgs((Bitmap)image.Clone(), source))
-                handler(this, args);
+                ForwardFrame(this, args);
         }
 
         private void OnLog(string level, string message)
         {
             StationLog.Write(level, "runtime", message);
+            LocalDebugLog.Write(level, "runtime", message);
             EventHandler<LogEventArgs> handler = Log;
-            if (handler != null) handler(this, new LogEventArgs(level, message));
+            if (handler == null) return;
+            try
+            {
+                handler(this, new LogEventArgs(level, message));
+            }
+            catch
+            {
+            }
         }
 
         private void OnStateChanged(string component, bool available, string detail)
         {
             EventHandler<RuntimeStateEventArgs> handler = StateChanged;
-            if (handler != null) handler(this, new RuntimeStateEventArgs(component, available, detail));
+            if (handler == null) return;
+            foreach (EventHandler<RuntimeStateEventArgs> subscriber in handler.GetInvocationList())
+            {
+                try
+                {
+                    subscriber(this, new RuntimeStateEventArgs(component, available, detail));
+                }
+                catch (Exception exception)
+                {
+                    LocalDebugLog.WriteException("WARN", "runtime.state", "StateChanged subscriber threw an exception for component='" + component + "'", exception);
+                }
+            }
         }
 
         private void ThrowIfDisposed()
@@ -1849,7 +2286,8 @@ namespace NinePointRotationCalibration.Station.Services
         public void Dispose()
         {
             if (_disposed) return;
-            try { StopAsync().GetAwaiter().GetResult(); } catch { }
+            LocalDebugLog.Write("INFO", "shutdown", "StationRuntime.Dispose begin.");
+            try { StopAsync().GetAwaiter().GetResult(); } catch (Exception ex) { LocalDebugLog.WriteException("WARN", "shutdown", "StopAsync during Dispose", ex); }
             // 等待当前独占工作流和串行后处理队列退出后再销毁信号量与底层设备
             _workflowGate.Wait();
             _workflowGate.Release();
@@ -1864,6 +2302,8 @@ namespace NinePointRotationCalibration.Station.Services
             _camera.Dispose();
             _tcpServer.Dispose();
             _sdk.Dispose();
+            LocalDebugLog.Write("INFO", "shutdown", "StationRuntime.Dispose completed.");
+            LocalDebugLog.Flush(2000);
         }
     }
 }

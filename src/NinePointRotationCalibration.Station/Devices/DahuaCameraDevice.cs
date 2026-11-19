@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.Globalization;
@@ -9,6 +10,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using MVSDK_Net;
 using NinePointRotationCalibration.Station.Models;
+using NinePointRotationCalibration.Station.Services;
 
 namespace NinePointRotationCalibration.Station.Devices
 {
@@ -65,8 +67,8 @@ namespace NinePointRotationCalibration.Station.Devices
         }
     }
 
-    /// <summary>基于大华 MVSDK_Net（IMV）的工业相机驱动，通过信号量串行化全部 SDK 调用。</summary>
-    public sealed class DahuaCameraDevice : ICameraDevice, ICameraParameterDevice
+    /// <summary>基于大华 MVSDK_Net（IMV）的工业相机驱动，通过信号量串行化全部 SDK 调用并支持低延迟实时预览。</summary>
+    public sealed class DahuaCameraDevice : ICameraDevice, ICameraParameterDevice, ICameraLivePreviewDevice
     {
         private const uint DriverBufferCount = 8;
 
@@ -79,6 +81,7 @@ namespace NinePointRotationCalibration.Station.Devices
         private bool _streamStarted;
         private bool _isConnected;
         private string _connectedDeviceId;
+        private string _cachedTriggerMode = "Software";
         private bool _disposeRequested;
         private bool _disposed;
         private IntPtr _conversionBuffer = IntPtr.Zero;
@@ -496,20 +499,33 @@ namespace NinePointRotationCalibration.Station.Devices
             if (string.Equals(triggerMode, "Continuous", StringComparison.OrdinalIgnoreCase))
             {
                 CheckResult(_camera.IMV_SetEnumFeatureSymbol("TriggerMode", "Off"), "Set continuous trigger mode");
+                _cachedTriggerMode = "Continuous";
+                LocalDebugLog.Write("INFO", "camera.dahua", "TriggerMode set to Continuous (TriggerMode=Off).");
                 return;
             }
 
             CheckResult(_camera.IMV_SetEnumFeatureSymbol("TriggerMode", "On"), "Enable trigger mode");
-            string source = string.Equals(triggerMode, "Hardware", StringComparison.OrdinalIgnoreCase) ? "Line1" : "Software";
+            bool hardware = string.Equals(triggerMode, "Hardware", StringComparison.OrdinalIgnoreCase);
+            string source = hardware ? "Line1" : "Software";
             if (_camera.IMV_FeatureIsAvailable("TriggerSource"))
                 CheckResult(_camera.IMV_SetEnumFeatureSymbol("TriggerSource", source), "Set trigger source");
+            _cachedTriggerMode = hardware ? "Hardware" : "Software";
+            LocalDebugLog.Write("INFO", "camera.dahua", "TriggerMode set to " + _cachedTriggerMode + " (source=" + source + ").");
         }
 
-        /// <summary>触发并采集一帧图像，转换为托管 Bitmap。</summary>
+        /// <summary>触发并采集一帧图像（先清空驱动残帧以确保严格对应本次触发），转换为托管 Bitmap。</summary>
         public Task<CameraFrame> CaptureAsync(CancellationToken cancellationToken)
         {
             return RunSerializedAsync(
-                () => CaptureCore(cancellationToken),
+                () => CaptureCore(cancellationToken, false),
+                cancellationToken);
+        }
+
+        /// <summary>按实时预览低延迟路径采集一帧图像（连续模式下直接取最新流帧，减少冗余 SDK 往返）。</summary>
+        public Task<CameraFrame> CapturePreviewAsync(CancellationToken cancellationToken)
+        {
+            return RunSerializedAsync(
+                () => CaptureCore(cancellationToken, true),
                 cancellationToken);
         }
 
@@ -616,31 +632,41 @@ namespace NinePointRotationCalibration.Station.Devices
                 cancellationToken.ThrowIfCancellationRequested();
                 CheckResult(_camera.IMV_StartGrabbing(), "Start grabbing");
                 _streamStarted = true;
+                _cachedTriggerMode = "Software";
 
                 lock (_stateSync)
                 {
                     _connectedDeviceId = resolved.StableId;
                     _isConnected = true;
                 }
+                LocalDebugLog.Write("INFO", "camera.dahua", "Connected and grabbing started: deviceId='" + resolved.StableId + "', mode=" + resolved.Mode + ".");
             }
-            catch
+            catch (Exception exception)
             {
+                LocalDebugLog.WriteException("ERROR", "camera.dahua", "ConnectCore failed for '" + requestedDeviceId + "'", exception);
                 ReleaseCameraCore();
                 throw;
             }
         }
 
-        private CameraFrame CaptureCore(CancellationToken cancellationToken)
+        private CameraFrame CaptureCore(CancellationToken cancellationToken, bool isPreview)
         {
             cancellationToken.ThrowIfCancellationRequested();
             EnsureConnectedCore();
 
-            // 抓拍前清空驱动残留帧缓存，保证获取本次触发的最新帧
-            int clearResult = _camera.IMV_ClearFrameBuffer();
-            if (clearResult != IMVDefine.IMV_OK && clearResult != IMVDefine.IMV_NOT_SUPPORT)
-                throw new CameraDeviceException("Clear frame buffer", clearResult);
+            bool softwareTrigger = isPreview
+                ? string.Equals(_cachedTriggerMode, "Software", StringComparison.OrdinalIgnoreCase)
+                : IsSoftwareTriggerEnabled();
+
+            // 生产抓拍必须清空驱动残帧以确保严格对应本次触发；实时预览连续流跳过清缓冲以维持满帧率丝滑采集
+            if (!isPreview || softwareTrigger)
+            {
+                int clearResult = _camera.IMV_ClearFrameBuffer();
+                if (clearResult != IMVDefine.IMV_OK && clearResult != IMVDefine.IMV_NOT_SUPPORT)
+                    throw new CameraDeviceException("Clear frame buffer", clearResult);
+            }
             cancellationToken.ThrowIfCancellationRequested();
-            if (IsSoftwareTriggerEnabled())
+            if (softwareTrigger)
             {
                 CheckResult(
                     _camera.IMV_ExecuteCommandFeature("TriggerSoftware"),
@@ -650,11 +676,14 @@ namespace NinePointRotationCalibration.Station.Devices
             IMVDefine.IMV_Frame frame = new IMVDefine.IMV_Frame();
             int releaseResult = IMVDefine.IMV_OK;
             Bitmap bitmap = null;
+            int timeoutMs = isPreview
+                ? Math.Min(_captureTimeoutMilliseconds, string.Equals(_cachedTriggerMode, "Hardware", StringComparison.OrdinalIgnoreCase) ? 500 : 1200)
+                : _captureTimeoutMilliseconds;
             int getFrameResult = _camera.IMV_GetFrame(
                 ref frame,
-                checked((uint)_captureTimeoutMilliseconds));
+                checked((uint)Math.Max(100, timeoutMs)));
             if (getFrameResult != IMVDefine.IMV_OK)
-                throw new CameraDeviceException("Get frame (timeout " + _captureTimeoutMilliseconds + " ms)", getFrameResult);
+                throw new CameraDeviceException("Get frame (timeout " + timeoutMs + " ms)", getFrameResult);
 
             try
             {

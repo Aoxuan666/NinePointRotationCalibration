@@ -59,12 +59,15 @@ namespace NinePointRotationCalibration.Station.Views
             string deviceId = GetSelectedCameraId();
             if (string.IsNullOrWhiteSpace(deviceId)) throw new InvalidOperationException("请选择相机设备。");
             StationLog.Write("INFO", "camera.switch", "Connecting selected camera " + deviceId + ".");
+            LocalDebugLog.Write("INFO", "camera.switch", "Connecting selected camera " + deviceId + ".");
             await _runtime.ConnectCameraAsync(deviceId, cancellationToken).ConfigureAwait(true);
             await _runtime.SetCameraParametersAsync(ReadCameraParametersFromView(), cancellationToken).ConfigureAwait(true);
             CameraParameterSet connectedParameters = await _runtime.GetCameraParametersAsync(cancellationToken).ConfigureAwait(true);
             RenderCameraFeatures(connectedParameters);
             ResumeLivePreview();
+            UpdateCameraLiveUiStatus();
             StationLog.Write("INFO", "camera.switch", "Live preview resumed for " + deviceId + ".");
+            LocalDebugLog.Write("INFO", "camera.switch", "Live preview resumed for " + deviceId + ".");
         }
 
         private void ToggleArchiveImages()
@@ -73,6 +76,93 @@ namespace NinePointRotationCalibration.Station.Views
             _runtime.SetArchiveImages(enabled);
             _view.SetOperationStatus(enabled ? "已开启保存生产原图" : "已关闭保存生产原图", false, false);
             _view.AppendLog(enabled ? "已开启保存生产原图。" : "已关闭保存生产原图。", false);
+        }
+
+        private async Task ToggleLiveAcquisitionAsync(CancellationToken cancellationToken)
+        {
+            bool enabled = _view.LiveAcquisitionInput == null || _view.LiveAcquisitionInput.Checked;
+            LocalDebugLog.Write("INFO", "ui.camera.live", "ToggleLiveAcquisitionAsync: enabled=" + enabled);
+            await _runtime.SetLiveAcquisitionEnabledAsync(enabled, cancellationToken).ConfigureAwait(true);
+            if (enabled && _runtime.IsCameraPreviewRunning)
+            {
+                ResumeLivePreview();
+            }
+            UpdateCameraLiveUiStatus();
+            _view.SetOperationStatus(enabled ? "已开启兼容相机实时采集" : "已关闭相机实时采集", false, false);
+            _view.AppendLog(enabled ? "已开启兼容相机实时采集。" : "已关闭相机实时采集。", false);
+        }
+
+        private async Task ToggleLiveStreamAsync(CancellationToken cancellationToken)
+        {
+            if (_runtime.IsCameraPreviewRunning)
+            {
+                LocalDebugLog.Write("INFO", "ui.camera.live", "Stopping live preview stream from UI.");
+                await _runtime.StopLivePreviewAsync().ConfigureAwait(true);
+                UpdateCameraLiveUiStatus();
+                _view.SetOperationStatus("实时采集已停止", false, false);
+                _view.AppendLog("相机实时采集已停止。", false);
+            }
+            else
+            {
+                LocalDebugLog.Write("INFO", "ui.camera.live", "Starting live preview stream from UI.");
+                await _runtime.StartLivePreviewAsync(cancellationToken).ConfigureAwait(true);
+                ResumeLivePreview();
+                UpdateCameraLiveUiStatus();
+                _view.SetOperationStatus("实时采集已启动", false, false);
+                _view.AppendLog("相机实时采集已启动。", false);
+            }
+        }
+
+        private async Task ResumeMainLivePreviewAsync(CancellationToken cancellationToken)
+        {
+            LocalDebugLog.Write("INFO", "ui.camera.live", "ResumeMainLivePreviewAsync requested.");
+            ResumeLivePreview();
+            if (_runtime.IsCameraEnabled && _runtime.IsLiveAcquisitionEnabled && !_runtime.IsCameraPreviewRunning)
+            {
+                if (_runtime.IsCameraConnected || _runtime.IsMockCamera)
+                {
+                    await _runtime.StartLivePreviewAsync(cancellationToken).ConfigureAwait(true);
+                }
+            }
+            UpdateCameraLiveUiStatus();
+            _view.SetOperationStatus("主视口已恢复实时预览", false, false);
+            _view.AppendLog("主视口已切换至相机实时采集画面。", false);
+        }
+
+        private void UpdateCameraLiveUiStatus()
+        {
+            if (_disposed) return;
+            bool running = _runtime.IsCameraPreviewRunning;
+            double fps = _runtime.LivePreviewFps;
+            long frames = _runtime.LivePreviewFrameCount;
+            long dropped = _runtime.LivePreviewDroppedFrameCount;
+            string text;
+            if (!_runtime.IsCameraEnabled)
+            {
+                text = "相机未启用";
+            }
+            else if (!_runtime.IsLiveAcquisitionEnabled)
+            {
+                text = "实时采集已关闭";
+            }
+            else if (running)
+            {
+                text = string.Format(
+                    CultureInfo.InvariantCulture,
+                    "采集中 · {0:0.0} FPS · 帧 {1}{2}",
+                    fps,
+                    frames,
+                    dropped > 0 ? " · 跳帧 " + dropped : string.Empty);
+            }
+            else if (_runtime.IsCameraConnected)
+            {
+                text = "已连接 · 待启动实时";
+            }
+            else
+            {
+                text = "未连接 · 点击「开始实时」采集";
+            }
+            _view.SetCameraLiveStatus(running, text);
         }
 
         private async Task RefreshConnectedCameraUiAsync(CancellationToken cancellationToken)
@@ -110,6 +200,7 @@ namespace NinePointRotationCalibration.Station.Views
             catch (Exception exception)
             {
                 StationLog.WriteException("WARN", "camera.refreshFeatures", exception);
+                LocalDebugLog.WriteException("WARN", "camera.refreshFeatures", "Failed to refresh camera features", exception);
             }
         }
 
@@ -132,6 +223,7 @@ namespace NinePointRotationCalibration.Station.Views
                 await _runtime.SetCameraParametersAsync(applied, cancellationToken).ConfigureAwait(true);
                 RenderCameraFeatures(await _runtime.GetCameraParametersAsync(cancellationToken).ConfigureAwait(true));
             }
+            UpdateCameraLiveUiStatus();
         }
 
         private CameraParameterSet ReadCameraParametersFromView()
@@ -793,11 +885,17 @@ namespace NinePointRotationCalibration.Station.Views
                     profile,
                     maximumMatches))
                 {
-                    if (dialog.ShowDialog(_view) != DialogResult.OK) return;
+                    LocalDebugLog.Write("INFO", "ui.blobDebug", "Opened BlobDebugForm (image=" + image.Width + "x" + image.Height + ", maxMatches=" + maximumMatches + ").");
+                    if (dialog.ShowDialog(_view) != DialogResult.OK)
+                    {
+                        LocalDebugLog.Write("INFO", "ui.blobDebug", "BlobDebugForm cancelled.");
+                        return;
+                    }
 
                     DetectionProfile applied = dialog.AppliedProfile;
                     ApplyDetectionProfileToView(applied);
                     _runtime.UpdateDetectionProfile(applied);
+                    LocalDebugLog.Write("INFO", "ui.blobDebug", "BlobDebugForm applied: " + StationLogFormatter.FormatDetectionProfile(applied));
                     _view.AppendLog("Blob 调试参数已应用并保存。", false);
                     _view.SetOperationStatus("Blob 调试参数已应用", false, false);
                     if (_view.IsDetectionDualViewActive) ScheduleBinaryPreview(false);
@@ -821,12 +919,15 @@ namespace NinePointRotationCalibration.Station.Views
                     using (Image source = Image.FromFile(dialog.FileName))
                         imported = new Bitmap(source);
 
+                    int w = imported.Width;
+                    int h = imported.Height;
                     // 交由 PinOwnedDisplayImage 接管位图所有权并锁定显示，imported 置空避免 finally 误释放
                     PinOwnedDisplayImage(
                         imported,
                         "本地图   " + Path.GetFileName(dialog.FileName),
                         false);
                     imported = null;
+                    LocalDebugLog.Write("INFO", "ui.image", "Imported local image '" + dialog.FileName + "' (" + w + "x" + h + ").");
                     _view.AppendLog("已导入本地图像：" + dialog.FileName, false);
                     _view.SetOperationStatus("本地图像已加载", false, false);
                 }
@@ -888,6 +989,7 @@ namespace NinePointRotationCalibration.Station.Views
                 string.Equals(trigger, "连续采集", StringComparison.Ordinal) ? "Continuous" : "Software";
             options.CameraTimeoutMilliseconds = Convert.ToInt32(ReadNumeric("nudCameraTimeout"), CultureInfo.InvariantCulture);
             options.PreviewIntervalMilliseconds = Convert.ToInt32(ReadNumeric("nudPreviewInterval"), CultureInfo.InvariantCulture);
+            options.LiveAcquisitionEnabled = _view.LiveAcquisitionInput == null || _view.LiveAcquisitionInput.Checked;
             options.ArchiveImages = FindControl<CheckBox>("chkArchiveImages").Checked;
             options.TranslationStepX = ReadNumeric("nudCalibrationStepX");
             options.TranslationStepY = ReadNumeric("nudCalibrationStepY");
@@ -998,6 +1100,7 @@ namespace NinePointRotationCalibration.Station.Views
 
             lock (_displaySync) ClearInspectionPreviewCache();
             if (_view.IsDetectionDualViewActive) ScheduleBinaryPreview(false);
+            UpdateCameraLiveUiStatus();
         }
 
         private static string TranslateInspectionError(InspectionResult result)

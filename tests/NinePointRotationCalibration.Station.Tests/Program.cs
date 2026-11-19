@@ -141,6 +141,8 @@ namespace NinePointRotationCalibration.Station.Tests
             Run("Template editor starts without default ROIs and auto-extracts/refreshes features", TestTemplateEditorEmptyDefaultAndAutoFeatureExtraction);
             Run("Detection tab displays synchronized top-source and bottom-effect viewports", TestDetectionDualViewportsAndSmoothBinaryPreview);
             Run("No default image loads on startup, config folder imports uniformly, and test detection runs cleanly", TestNoDefaultImageAndUnifiedConfigFolderAndResilientInspection);
+            RunAsync("Local debug log persists detailed UTF-8 BOM traces for runtime, TCP, and inspection", TestLocalDebugLoggingEndToEndAsync);
+            RunAsync("Template auto-threshold defaults and camera live acquisition window work smoothly", TestTemplateDefaultAutoThresholdAndCameraLiveWindowAsync);
 
             Console.WriteLine();
             Console.WriteLine("Passed: {0}; Failed: {1}", _passed, _failed);
@@ -2239,9 +2241,14 @@ namespace NinePointRotationCalibration.Station.Tests
                             "chkCameraEnabled",
                             "chkCalibrationEnabled",
                             "chkArchiveImages",
+                            "chkLiveAcquisition",
                             "btnEnumerateCamera",
                             "btnConnectCamera",
                             "btnDisconnectCamera",
+                            "btnToggleLiveStream",
+                            "btnSyncLiveToMain",
+                            "btnFitLivePreview",
+                            "cameraLiveViewport",
                             "nudPreviewInterval"
                         })
                         {
@@ -3600,6 +3607,235 @@ namespace NinePointRotationCalibration.Station.Tests
                         }
                         runtime.StopAsync().GetAwaiter().GetResult();
                     }
+                }
+            }
+            finally
+            {
+                if (Directory.Exists(directory)) Directory.Delete(directory, true);
+            }
+        }
+
+        private static async Task TestLocalDebugLoggingEndToEndAsync()
+        {
+            string directory = Path.Combine(
+                Path.GetTempPath(),
+                "NinePointRotationCalibration.Station.Tests",
+                Guid.NewGuid().ToString("N"));
+            string logDir = Path.Combine(directory, "local-logs");
+            Directory.CreateDirectory(directory);
+            MethodInfo setLogDir = typeof(LocalDebugLog).GetMethod(
+                "SetLogDirectoryForTesting",
+                BindingFlags.Static | BindingFlags.NonPublic);
+            True(setLogDir != null, "LocalDebugLog testing hook must exist");
+
+            try
+            {
+                setLogDir.Invoke(null, new object[] { logDir });
+                string logPath = LocalDebugLog.CurrentLogFilePath;
+                True(logPath.StartsWith(logDir, StringComparison.OrdinalIgnoreCase),
+                    "local debug log must write inside the configured local directory");
+
+                LocalDebugLog.Write("INFO", "test.cn", "中文诊断消息：测试本地日志落盘");
+                try
+                {
+                    throw new InvalidOperationException("Outer failure", new ArgumentException("Inner cause"));
+                }
+                catch (Exception ex)
+                {
+                    LocalDebugLog.WriteException("ERROR", "test.ex", "Exception test", ex);
+                }
+                LocalDebugLog.Flush(2000);
+
+                True(File.Exists(logPath), "local debug log file must be created on disk");
+                byte[] header = File.ReadAllBytes(logPath);
+                True(header.Length >= 3 && header[0] == 0xEF && header[1] == 0xBB && header[2] == 0xBF,
+                    "local debug log file must carry UTF-8 BOM for Windows tools");
+
+                StationOptions options = CreateTestOptions(
+                    directory,
+                    Path.Combine(directory, "detection.json"),
+                    Path.Combine(directory, "positioning.nprcal"));
+                options.TcpPort = FindAvailableTcpPort();
+                options.CameraEnabled = true;
+                options.CalibrationEnabled = true;
+                new AtomicJsonStore().Save(Path.Combine(directory, "station.json"), options);
+                new AtomicJsonStore().Save(Path.Combine(directory, "detection.json"), new DetectionProfile());
+
+                using (StationRuntime runtime = CreateRuntime(Path.Combine(directory, "station.json"), options))
+                {
+                    await runtime.StartAsync().ConfigureAwait(false);
+                    ProtocolEnvelope hello = ProtocolEnvelope.Create(ProtocolMessageTypes.Hello);
+                    hello.MessageId = "log-test-hello";
+                    ProtocolEnvelope ack = await ExchangeAsync(options.TcpPort, hello).ConfigureAwait(false);
+                    True(ack.Type == ProtocolMessageTypes.Acknowledge, "hello must return system.ack");
+
+                    ProtocolEnvelope trig = InspectionTrigger("log-test-trig");
+                    ProtocolEnvelope inspRes = await ExchangeAsync(options.TcpPort, trig).ConfigureAwait(false);
+                    True(inspRes.Type == ProtocolMessageTypes.InspectionResult, "trigger must return inspection.result");
+
+                    using (Bitmap bmp = new Bitmap(64, 48))
+                    {
+                        await runtime.RunOfflineInspectionAsync(bmp, 1, 0.0, CancellationToken.None).ConfigureAwait(false);
+                    }
+                    await runtime.StopAsync().ConfigureAwait(false);
+                }
+
+                LocalDebugLog.Flush(2000);
+                string content = File.ReadAllText(logPath, System.Text.Encoding.UTF8);
+                True(content.Contains("中文诊断消息：测试本地日志落盘"), "Chinese text must persist intact");
+                True(content.Contains("InvalidOperationException") && content.Contains("Inner cause"),
+                    "exception log must retain outer/inner details and stack trace");
+                True(content.Contains("[startup] StationRuntime created"), "startup options snapshot must be logged");
+                True(content.Contains("[tcp.rx]") && content.Contains("log-test-hello") && content.Contains("log-test-trig"),
+                    "incoming TCP protocol messages must be logged");
+                True(content.Contains("[tcp.tx]") && content.Contains("Sent inspection.result"),
+                    "outgoing TCP responses must be logged");
+                True(content.Contains("[inspection.offline]") && content.Contains("[inspect.done]"),
+                    "inspection execution details must be logged");
+            }
+            finally
+            {
+                try { setLogDir.Invoke(null, new object[] { null }); } catch { }
+                if (Directory.Exists(directory)) Directory.Delete(directory, true);
+            }
+        }
+
+        private static async Task TestTemplateDefaultAutoThresholdAndCameraLiveWindowAsync()
+        {
+            string directory = Path.Combine(
+                Path.GetTempPath(),
+                "NinePointRotationCalibration.Station.Tests",
+                Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+            try
+            {
+                // 1. 验证旧版 .nprcal（JSON 中缺失 AutoThreshold 字段）反序列化后默认自动阈值为 true
+                string legacyJobPath = Path.Combine(directory, "legacy-no-autothr.nprcal");
+                CalibrationJob savedJob = new CalibrationJob { Name = "Legacy Job" };
+                savedJob.Template.ShapeParameters.AutoThreshold = false;
+                savedJob.Template.ShapeParameters.FeatureExtraction.AutoThreshold = false;
+                JobPackageSerializer.Save(legacyJobPath, savedJob);
+
+                // 从 zip 包内的 job.json 移除 AutoThreshold 字段以模拟老版本保存的模板包
+                using (FileStream fs = new FileStream(legacyJobPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+                using (System.IO.Compression.ZipArchive archive = new System.IO.Compression.ZipArchive(
+                    fs,
+                    System.IO.Compression.ZipArchiveMode.Update,
+                    false,
+                    System.Text.Encoding.UTF8))
+                {
+                    System.IO.Compression.ZipArchiveEntry jobEntry = archive.GetEntry("job.json");
+                    True(jobEntry != null, "job.json entry must exist in .nprcal archive");
+                    string jsonText;
+                    using (StreamReader reader = new StreamReader(jobEntry.Open(), System.Text.Encoding.UTF8))
+                    {
+                        jsonText = reader.ReadToEnd();
+                    }
+                    jsonText = System.Text.RegularExpressions.Regex.Replace(
+                        jsonText,
+                        "\"(?:<AutoThreshold>k__BackingField|AutoThreshold)\":(?:true|false),?",
+                        string.Empty);
+                    jsonText = jsonText.Replace(",}", "}");
+                    jobEntry.Delete();
+                    System.IO.Compression.ZipArchiveEntry replaced = archive.CreateEntry("job.json");
+                    using (StreamWriter writer = new StreamWriter(replaced.Open(), new System.Text.UTF8Encoding(false)))
+                    {
+                        writer.Write(jsonText);
+                    }
+                }
+
+                JobPersistenceResult legacyLoaded = JobPackageSerializer.TryLoad(legacyJobPath);
+                True(legacyLoaded.Success && legacyLoaded.Job != null && legacyLoaded.Job.Template != null,
+                    "legacy .nprcal without AutoThreshold field must load cleanly");
+                True(legacyLoaded.Job.Template.ShapeParameters.AutoThreshold &&
+                     legacyLoaded.Job.Template.ShapeParameters.FeatureExtraction.AutoThreshold,
+                    "deserializing legacy .nprcal without AutoThreshold field must default AutoThreshold to true");
+
+                // 2. 验证新建/未建模模板在 CoreUiMapper 与 TemplateEditorForm 中始终默认勾选自动阈值
+                TemplateDefinition unbuiltTemplate = new TemplateDefinition();
+                unbuiltTemplate.ShapeParameters.AutoThreshold = false;
+                unbuiltTemplate.ShapeParameters.FeatureExtraction.AutoThreshold = false;
+                UiTemplateEditorState mappedState = UiCoreUiMapper.FromCoreTemplate(unbuiltTemplate);
+                True(mappedState.Parameters.AutoThreshold,
+                    "CoreUiMapper.FromCoreTemplate must force AutoThreshold=true on unbuilt templates");
+
+                using (Bitmap dummyImg = new Bitmap(160, 120, PixelFormat.Format24bppRgb))
+                {
+                    UiTemplateEditorState rawUnbuiltState = new UiTemplateEditorState();
+                    rawUnbuiltState.Parameters.AutoThreshold = false;
+                    using (UiTemplateEditorForm editor = new UiTemplateEditorForm(dummyImg, rawUnbuiltState))
+                    {
+                        CheckBox autoCheck = GetPrivateField<CheckBox>(editor, "_autoThresholdCheck");
+                        True(autoCheck.Checked,
+                            "TemplateEditorForm must default _autoThresholdCheck.Checked to true when creating a template");
+                    }
+                }
+
+                // 3. 验证相机页面实时采集窗口（cameraLiveViewport）、兼容实时采集开关（chkLiveAcquisition）及丝滑预览流
+                string optionsPath = Path.Combine(directory, "station.json");
+                StationOptions options = CreateTestOptions(
+                    directory,
+                    Path.Combine(directory, "detection.json"),
+                    Path.Combine(directory, "positioning.nprcal"));
+                options.CameraProvider = "Mock";
+                options.CameraEnabled = true;
+                options.LiveAcquisitionEnabled = true;
+                options.PreviewIntervalMilliseconds = 20;
+                options.TcpPort = FindAvailableTcpPort();
+                new AtomicJsonStore().Save(optionsPath, options);
+
+                using (StationRuntime runtime = CreateRuntime(optionsPath, options))
+                using (MainForm form = new MainForm())
+                using (MainFormRuntimeBinder binder = new MainFormRuntimeBinder(form, runtime))
+                {
+                    form.ShowInTaskbar = false;
+                    form.StartPosition = FormStartPosition.Manual;
+                    form.Location = new Point(-20000, -20000);
+                    form.Show();
+                    Application.DoEvents();
+
+                    True(form.LiveAcquisitionInput != null && form.LiveAcquisitionInput.Checked,
+                        "chkLiveAcquisition must exist and default to Checked");
+                    True(form.CameraLiveViewport != null,
+                        "cameraLiveViewport must exist on camera tab");
+
+                    // 切换到相机页，点击“开始实时”启动实时采集流
+                    form.WorkTabs.SelectedTab = form.WorkTabs.TabPages["tabCamera"];
+                    Application.DoEvents();
+
+                    await runtime.StartLivePreviewAsync(CancellationToken.None).ConfigureAwait(false);
+                    True(runtime.IsCameraPreviewRunning,
+                        "StartLivePreviewAsync must start the camera preview loop");
+
+                    True(PumpUntil(() =>
+                        form.CameraLiveViewport.HasImage &&
+                        form.Viewport.HasImage &&
+                        runtime.LivePreviewFrameCount >= 2, 4000),
+                        "live preview must stream frames into both cameraLiveViewport and main Viewport");
+
+                    // 锁定主视口到一张导入图像后，相机页实时采集小窗仍继续更新，点击“同步主视口”可恢复主视口实时预览
+                    using (Bitmap pinnedBmp = new Bitmap(120, 90, PixelFormat.Format24bppRgb))
+                    {
+                        InvokeBinder(binder, "PinOwnedDisplayImage", new Bitmap(pinnedBmp), "pin-test", false, null);
+                    }
+                    True(GetLockedDisplayImage(binder) != null, "main viewport should be in LockedFrame mode");
+                    InvokeBinder(binder, "ResumeLivePreview");
+                    True(GetLockedDisplayImage(binder) == null, "ResumeLivePreview must return main viewport to LivePreview mode");
+
+                    // 停止实时流
+                    await runtime.StopLivePreviewAsync().ConfigureAwait(false);
+                    True(!runtime.IsCameraPreviewRunning, "StopLivePreviewAsync must stop the preview loop");
+
+                    // 关闭“兼容相机实时采集”选项应持久化到 station.json
+                    await runtime.SetLiveAcquisitionEnabledAsync(false, CancellationToken.None).ConfigureAwait(false);
+                    StationOptions persisted = new AtomicJsonStore().Load<StationOptions>(optionsPath);
+                    True(!runtime.IsLiveAcquisitionEnabled && !persisted.LiveAcquisitionEnabled,
+                        "disabling LiveAcquisitionEnabled must update runtime and persist to station.json");
+
+                    await runtime.SetLiveAcquisitionEnabledAsync(true, CancellationToken.None).ConfigureAwait(false);
+                    persisted = new AtomicJsonStore().Load<StationOptions>(optionsPath);
+                    True(runtime.IsLiveAcquisitionEnabled && persisted.LiveAcquisitionEnabled,
+                        "re-enabling LiveAcquisitionEnabled must update runtime and persist to station.json");
                 }
             }
             finally

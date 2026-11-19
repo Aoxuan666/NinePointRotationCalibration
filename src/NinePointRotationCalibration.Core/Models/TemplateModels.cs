@@ -53,6 +53,20 @@ namespace NinePointRotationCalibration
         [field: OptionalField]
         public int MaximumPointCount { get; set; }
 
+        // 兼容旧版 .nprcal 反序列化：DataContractJsonSerializer 跳过构造函数，反序列化前预置自动阈值默认值。
+        [OnDeserializing]
+        private void OnDeserializing(StreamingContext context)
+        {
+            Mode = ShapeFeatureExtractionMode.EdgeContours;
+            AutoThreshold = true;
+            EdgeSigma = 1.2;
+            EdgeLowThreshold = 20.0;
+            EdgeHighThreshold = 45.0;
+            MinimumContourLengthPixels = 9.0;
+            PointSpacingPixels = 6.0;
+            MaximumPointCount = 20000;
+        }
+
         public ShapeFeatureExtractionSettings DeepClone()
         {
             return (ShapeFeatureExtractionSettings)MemberwiseClone();
@@ -168,6 +182,20 @@ namespace NinePointRotationCalibration
 
         [field: OptionalField]
         public ShapeFeatureExtractionSettings FeatureExtraction { get; set; }
+
+        // 兼容旧版 .nprcal 反序列化：缺少 AutoThreshold 字段时默认启用自适应阈值。
+        [OnDeserializing]
+        private void OnDeserializing(StreamingContext context)
+        {
+            NumLevels = 5;
+            AngleStartRad = -0.3;
+            AngleExtentRad = 0.6;
+            Optimization = "auto";
+            Metric = "ignore_local_polarity";
+            AutoThreshold = true;
+            Contrast = 30;
+            MinContrast = 10;
+        }
 
         public ShapeModelParameters DeepClone()
         {

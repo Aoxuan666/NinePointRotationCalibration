@@ -9,8 +9,8 @@ using NinePointRotationCalibration.Station.Models;
 
 namespace NinePointRotationCalibration.Station.Devices
 {
-    /// <summary>无实体相机时的仿真 PCB 相机驱动，可生成 6 块分板及人工坏板标记测试场景。</summary>
-    public sealed class MockCameraDevice : ICameraDevice, ICameraParameterDevice
+    /// <summary>无实体相机时的仿真 PCB 相机驱动，可生成 6 块分板及人工坏板标记测试场景，并支持低开销实时预览流。</summary>
+    public sealed class MockCameraDevice : ICameraDevice, ICameraParameterDevice, ICameraLivePreviewDevice
     {
         public const string DefaultDeviceId = "MOCK-PCB-01";
 
@@ -24,6 +24,8 @@ namespace NinePointRotationCalibration.Station.Devices
         private string _connectedDeviceId;
         private double _exposureMicroseconds = 10000.0;
         private CameraParameterSet _parameters = new CameraParameterSet();
+        private Bitmap _cachedPreviewScene;
+        private double _cachedPreviewExposure = -1.0;
         private long _sequence;
 
         public MockCameraDevice()
@@ -234,6 +236,35 @@ namespace NinePointRotationCalibration.Station.Devices
             }
         }
 
+        /// <summary>复用缓存场景底图生成低开销实时预览帧，保障无实体相机时实时采集窗口流畅运行。</summary>
+        public async Task<CameraFrame> CapturePreviewAsync(CancellationToken cancellationToken)
+        {
+            ThrowIfDisposed();
+            await _operationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                ThrowIfDisposed();
+                EnsureConnected();
+                cancellationToken.ThrowIfCancellationRequested();
+
+                long sequence = ++_sequence;
+                double exposure = _exposureMicroseconds;
+                if (_cachedPreviewScene == null || Math.Abs(_cachedPreviewExposure - exposure) > 1.0)
+                {
+                    if (_cachedPreviewScene != null) _cachedPreviewScene.Dispose();
+                    _cachedPreviewScene = CreatePcbScene(1, exposure, false);
+                    _cachedPreviewExposure = exposure;
+                }
+
+                Bitmap preview = (Bitmap)_cachedPreviewScene.Clone();
+                return new CameraFrame(preview, sequence, DateTime.UtcNow);
+            }
+            finally
+            {
+                _operationGate.Release();
+            }
+        }
+
         /// <summary>等待当前操作完成后释放信号量与连接状态。</summary>
         public void Dispose()
         {
@@ -246,6 +277,11 @@ namespace NinePointRotationCalibration.Station.Devices
             _operationGate.Wait();
             try
             {
+                if (_cachedPreviewScene != null)
+                {
+                    _cachedPreviewScene.Dispose();
+                    _cachedPreviewScene = null;
+                }
                 lock (_stateSync)
                 {
                     _isConnected = false;

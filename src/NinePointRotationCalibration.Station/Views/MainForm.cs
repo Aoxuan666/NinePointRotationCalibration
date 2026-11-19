@@ -120,6 +120,35 @@ namespace NinePointRotationCalibration.Station.Views
         }
 
         [Browsable(false)]
+        public ImageViewport CameraLiveViewport
+        {
+            get { return cameraLiveViewport; }
+        }
+
+        [Browsable(false)]
+        public CheckBox LiveAcquisitionInput
+        {
+            get { return chkLiveAcquisition; }
+        }
+
+        [Browsable(false)]
+        public Button ToggleLiveStreamButton
+        {
+            get { return btnToggleLiveStream; }
+        }
+
+        [Browsable(false)]
+        public bool IsCameraTabActive
+        {
+            get
+            {
+                return tabWork != null &&
+                       tabWork.SelectedTab != null &&
+                       string.Equals(tabWork.SelectedTab.Name, "tabCamera", StringComparison.Ordinal);
+            }
+        }
+
+        [Browsable(false)]
         public bool IsDetectionDualViewActive
         {
             get { return _dualViewActive; }
@@ -319,6 +348,21 @@ namespace NinePointRotationCalibration.Station.Views
             bool archiveImages,
             bool workflowBusy)
         {
+            RefreshFeatureAvailability(
+                cameraEnabled,
+                calibrationEnabled,
+                archiveImages,
+                chkLiveAcquisition == null || chkLiveAcquisition.Checked,
+                workflowBusy);
+        }
+
+        public void RefreshFeatureAvailability(
+            bool cameraEnabled,
+            bool calibrationEnabled,
+            bool archiveImages,
+            bool liveAcquisitionEnabled,
+            bool workflowBusy)
+        {
             RunOnUiThread(delegate
             {
                 _suppressFeatureEvents = true;
@@ -327,6 +371,7 @@ namespace NinePointRotationCalibration.Station.Views
                     chkCameraEnabled.Checked = cameraEnabled;
                     chkCalibrationEnabled.Checked = calibrationEnabled;
                     if (chkArchiveImages != null) chkArchiveImages.Checked = archiveImages;
+                    if (chkLiveAcquisition != null) chkLiveAcquisition.Checked = liveAcquisitionEnabled;
                 }
                 finally
                 {
@@ -334,6 +379,31 @@ namespace NinePointRotationCalibration.Station.Views
                 }
 
                 ApplyFeatureAvailability(cameraEnabled, calibrationEnabled, workflowBusy);
+            });
+        }
+
+        /// <summary>更新相机页实时采集窗口的运行状态文本与开始/停止按钮文案。</summary>
+        public void SetCameraLiveStatus(bool running, string detail)
+        {
+            RunOnUiThread(delegate
+            {
+                if (btnToggleLiveStream != null && !btnToggleLiveStream.IsDisposed)
+                {
+                    btnToggleLiveStream.Text = running ? "停止实时" : "开始实时";
+                    btnToggleLiveStream.BackColor = running
+                        ? Color.FromArgb(153, 27, 27)
+                        : Color.FromArgb(15, 118, 110);
+                }
+
+                if (lblCameraLiveStatus != null && !lblCameraLiveStatus.IsDisposed)
+                {
+                    lblCameraLiveStatus.ForeColor = running
+                        ? Color.FromArgb(15, 118, 110)
+                        : Color.FromArgb(71, 85, 105);
+                    lblCameraLiveStatus.Text = string.IsNullOrWhiteSpace(detail)
+                        ? (running ? "● 实时采集中" : "○ 实时采集已停止")
+                        : detail;
+                }
             });
         }
 
@@ -1042,6 +1112,14 @@ namespace NinePointRotationCalibration.Station.Views
                 imageViewport.ShowActualPixels();
                 if (_dualViewActive && effectViewport.HasImage) effectViewport.ShowActualPixels();
             };
+            if (btnFitLivePreview != null)
+            {
+                btnFitLivePreview.Click += delegate
+                {
+                    if (cameraLiveViewport != null && cameraLiveViewport.HasImage)
+                        cameraLiveViewport.FitImage();
+                };
+            }
             btnClearLog.Click += delegate { rtbLog.Clear(); };
             if (btnToggleLog != null)
             {
@@ -1235,6 +1313,7 @@ namespace NinePointRotationCalibration.Station.Views
             chkCameraEnabled.Enabled = !workflowBusy;
             chkCalibrationEnabled.Enabled = !workflowBusy;
             if (chkArchiveImages != null) chkArchiveImages.Enabled = !workflowBusy;
+            if (chkLiveAcquisition != null) chkLiveAcquisition.Enabled = cameraEnabled && !workflowBusy;
             cmbCameraProvider.Enabled = cameraEnabled && !workflowBusy;
             cmbCameraDevice.Enabled = cameraEnabled && !workflowBusy;
             string[] cameraParameterControls =
@@ -1257,9 +1336,14 @@ namespace NinePointRotationCalibration.Station.Views
                 "camera.connect",
                 "camera.disconnect",
                 "camera.apply",
-                "camera.test"
+                "camera.test",
+                "camera.liveStreamToggle",
+                "camera.resumeMainLive"
             };
             foreach (string action in cameraActions) SetActionControlEnabled(action, cameraEnabled && !workflowBusy);
+            if (btnResumeLive != null) btnResumeLive.Enabled = cameraEnabled && !workflowBusy;
+            if (btnSyncLiveToMain != null) btnSyncLiveToMain.Enabled = cameraEnabled && !workflowBusy;
+            if (btnFitLivePreview != null) btnFitLivePreview.Enabled = !workflowBusy;
 
             btnImportImage.Enabled = !workflowBusy;
             btnDetectCurrentImage.Enabled = !workflowBusy && imageViewport.HasImage;

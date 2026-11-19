@@ -13,6 +13,7 @@ using NinePointRotationCalibration.Halcon;
 using NinePointRotationCalibration.Station.Controls;
 using NinePointRotationCalibration.WinForms.Controls;
 using NinePointRotationCalibration.Station.Models;
+using NinePointRotationCalibration.Station.Services;
 using NinePointRotationCalibration.Station.Services.Inspection;
 
 namespace NinePointRotationCalibration.Station.Views
@@ -189,11 +190,13 @@ namespace NinePointRotationCalibration.Station.Views
             string validationMessage;
             if (!TryReadProfile(out profile, out validationMessage))
             {
+                LocalDebugLog.Write("WARN", "blobDebug", "Validation failed on Apply: " + validationMessage);
                 SetPreviewStatus(validationMessage, true);
                 return;
             }
 
             _appliedProfile = CloneProfile(profile);
+            LocalDebugLog.Write("INFO", "blobDebug", "Confirmed BlobDebugForm: " + StationLogFormatter.FormatDetectionProfile(_appliedProfile));
             DialogResult = DialogResult.OK;
             Close();
         }
@@ -712,6 +715,7 @@ namespace NinePointRotationCalibration.Station.Views
 
         private void ApplyPreviewError(string message)
         {
+            LocalDebugLog.Write("WARN", "blobDebug.preview", "Preview error: " + (string.IsNullOrWhiteSpace(message) ? "分析失败" : message));
             binaryViewport.ClearImage();
             binaryViewport.ClearOverlays();
             sourceViewport.ClearOverlays();

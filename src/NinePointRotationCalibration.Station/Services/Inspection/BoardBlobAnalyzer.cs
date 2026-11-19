@@ -105,6 +105,13 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
                 .Where(index => IsValid(rois[index])).ToList();
             List<BlobAnalysisResult> output = rois
                 .Select(roi => new BlobAnalysisResult { Roi = roi }).ToList();
+            if (validIndexes.Count < rois.Count)
+            {
+                LocalDebugLog.Write(
+                    "WARN",
+                    "blob.roi",
+                    "Skipped " + (rois.Count - validIndexes.Count) + " invalid detection ROI(s) out of " + rois.Count + ".");
+            }
             if (validIndexes.Count == 0) return output;
 
             List<HalconBlobRegion> regions = validIndexes.Select(index => rois[index])

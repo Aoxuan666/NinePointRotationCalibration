@@ -32,18 +32,30 @@ namespace NinePointRotationCalibration.Station.Views
         private void Runtime_StateChanged(object sender, RuntimeStateEventArgs e)
         {
             if (e == null) return;
-            if (string.Equals(e.Component, "camera", StringComparison.OrdinalIgnoreCase))
+            try
             {
-                ApplyCameraState(e.Available, e.Detail);
+                if (string.Equals(e.Component, "camera", StringComparison.OrdinalIgnoreCase))
+                {
+                    ApplyCameraState(e.Available, e.Detail);
+                    UpdateCameraLiveUiStatus();
+                }
+                else if (string.Equals(e.Component, "camera.live", StringComparison.OrdinalIgnoreCase))
+                {
+                    UpdateCameraLiveUiStatus();
+                }
+                else if (string.Equals(e.Component, "host", StringComparison.OrdinalIgnoreCase))
+                {
+                    _view.SetTcpStatus(e.Available || _runtime.IsStarted, e.Available ? "上位机 " + e.Detail : "等待上位机连接");
+                }
+                else if (string.Equals(e.Component, "tcp", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (e.Available && _runtime.IsHostConnected) return;
+                    _view.SetTcpStatus(e.Available, e.Detail);
+                }
             }
-            else if (string.Equals(e.Component, "host", StringComparison.OrdinalIgnoreCase))
+            catch (Exception exception)
             {
-                _view.SetTcpStatus(e.Available || _runtime.IsStarted, e.Available ? "上位机 " + e.Detail : "等待上位机连接");
-            }
-            else if (string.Equals(e.Component, "tcp", StringComparison.OrdinalIgnoreCase))
-            {
-                if (e.Available && _runtime.IsHostConnected) return;
-                _view.SetTcpStatus(e.Available, e.Detail);
+                LocalDebugLog.WriteException("WARN", "ui.state", "Runtime_StateChanged failed", exception);
             }
         }
 
@@ -72,71 +84,114 @@ namespace NinePointRotationCalibration.Station.Views
 
         private void Runtime_FrameReady(object sender, FrameEventArgs e)
         {
-            if (e == null || e.Image == null) return;
-            string source = e.Source ?? "frame";
-            if (string.Equals(source, "preview", StringComparison.OrdinalIgnoreCase))
+            if (e == null || e.Image == null || _disposed) return;
+            try
             {
-                if (_runtime.IsMockCamera) return;
-                lock (_displaySync)
+                string source = e.Source ?? "frame";
+                if (string.Equals(source, "preview", StringComparison.OrdinalIgnoreCase))
                 {
-                    if (_displayMode != DisplayMode.LivePreview || _disposed) return;
-                    // 视口已有待绘制帧时在复制前直接丢弃新预览帧，防止相机高帧率在 UI 线程堆积内存
-                    if (_view.Viewport.TrySetPreviewImage(e.Image))
+                    if (!_runtime.IsCameraPreviewRunning && _runtime.IsMockCamera) return;
+                    lock (_displaySync)
                     {
-                        if (_view.IsDetectionDualViewActive)
+                        if (_disposed) return;
+
+                        bool updatedCameraLive = false;
+                        if (_view.CameraLiveViewport != null &&
+                            (_view.IsCameraTabActive || !_view.CameraLiveViewport.HasImage))
                         {
-                            _view.EffectViewport.TrySetPreviewImage(e.Image);
-                            _view.SetEffectViewportInformation(string.Format(
-                                CultureInfo.InvariantCulture,
-                                "{0} x {1}   实时预览同步原图   {2:HH:mm:ss.fff}",
-                                e.Image.Width,
-                                e.Image.Height,
-                                e.CapturedAtUtc.ToLocalTime()));
+                            updatedCameraLive = _view.CameraLiveViewport.TrySetPreviewImage(e.Image);
                         }
-                        _view.SetImageInformation(string.Format(
-                            CultureInfo.InvariantCulture,
-                            "{0} x {1}   {2}   {3:HH:mm:ss.fff}",
-                            e.Image.Width,
-                            e.Image.Height,
-                            source,
-                            e.CapturedAtUtc.ToLocalTime()));
-                    }
-                }
-                return;
-            }
 
-            if (string.Equals(source, "offline-inspection", StringComparison.OrdinalIgnoreCase))
-            {
-                lock (_displaySync)
+                        bool updatedMain = false;
+                        if (_displayMode == DisplayMode.LivePreview)
+                        {
+                            // 视口已有待绘制帧时在复制前直接丢弃新预览帧，防止相机高帧率在 UI 线程堆积内存
+                            updatedMain = _view.Viewport.TrySetPreviewImage(e.Image);
+                            if (updatedMain && _view.IsDetectionDualViewActive)
+                            {
+                                _view.EffectViewport.TrySetPreviewImage(e.Image);
+                            }
+                        }
+
+                        if (updatedMain || updatedCameraLive)
+                        {
+                            int now = Environment.TickCount;
+                            if (unchecked(now - _lastLiveInfoUpdateTick) >= 200)
+                            {
+                                _lastLiveInfoUpdateTick = now;
+                                if (updatedMain)
+                                {
+                                    double fps = _runtime.LivePreviewFps;
+                                    if (_view.IsDetectionDualViewActive)
+                                    {
+                                        _view.SetEffectViewportInformation(string.Format(
+                                            CultureInfo.InvariantCulture,
+                                            "{0} x {1}   实时预览同步原图 ({2:0.0} FPS)   {3:HH:mm:ss.fff}",
+                                            e.Image.Width,
+                                            e.Image.Height,
+                                            fps,
+                                            e.CapturedAtUtc.ToLocalTime()));
+                                    }
+                                    _view.SetImageInformation(string.Format(
+                                        CultureInfo.InvariantCulture,
+                                        "{0} x {1}   {2}{3}   {4:HH:mm:ss.fff}",
+                                        e.Image.Width,
+                                        e.Image.Height,
+                                        source,
+                                        fps > 0.0 ? string.Format(CultureInfo.InvariantCulture, " ({0:0.0} FPS)", fps) : string.Empty,
+                                        e.CapturedAtUtc.ToLocalTime()));
+                                }
+                                UpdateCameraLiveUiStatus();
+                            }
+                        }
+                    }
+                    return;
+                }
+
+                if (string.Equals(source, "offline-inspection", StringComparison.OrdinalIgnoreCase))
                 {
-                    if (!_disposed &&
-                        _displayMode == DisplayMode.LockedFrame &&
-                        _lockedDisplayImage != null &&
-                        _lockedDisplayImage.Width == e.Image.Width &&
-                        _lockedDisplayImage.Height == e.Image.Height)
+                    lock (_displaySync)
                     {
-                        // 离线检测复用了当前已锁定/导入图像，直接关联当前代次，避免重复清空叠加层或触发异常取消
-                        _inspectionFrameGeneration = _displayGeneration;
-                        return;
+                        if (!_disposed &&
+                            _displayMode == DisplayMode.LockedFrame &&
+                            _lockedDisplayImage != null &&
+                            _lockedDisplayImage.Width == e.Image.Width &&
+                            _lockedDisplayImage.Height == e.Image.Height)
+                        {
+                            // 离线检测复用了当前已锁定/导入图像，直接关联当前代次，避免重复清空叠加层或触发异常取消
+                            _inspectionFrameGeneration = _displayGeneration;
+                            return;
+                        }
                     }
                 }
-            }
 
-            // 非实时预览帧（单次拍照、标定、示教及在线/离线检测）会锁定主画面，防止被后续预览流覆盖
-            Bitmap copy = (Bitmap)e.Image.Clone();
-            PinOwnedDisplayImage(
-                copy,
-                source,
-                string.Equals(source, "inspection", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(source, "offline-inspection", StringComparison.OrdinalIgnoreCase),
-                e.CapturedAtUtc);
+                // 非实时预览帧（单次拍照、标定、示教及在线/离线检测）会锁定主画面，防止被后续预览流覆盖
+                Bitmap copy = (Bitmap)e.Image.Clone();
+                PinOwnedDisplayImage(
+                    copy,
+                    source,
+                    string.Equals(source, "inspection", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(source, "offline-inspection", StringComparison.OrdinalIgnoreCase),
+                    e.CapturedAtUtc);
+            }
+            catch (Exception exception)
+            {
+                LocalDebugLog.WriteException("WARN", "ui.frame", "Runtime_FrameReady failed", exception);
+            }
         }
 
         private void Runtime_CalibrationPointChanged(object sender, CalibrationPointEventArgs e)
         {
             if (e == null || e.Record == null) return;
-            ApplyCalibrationRecord(e.Record);
-            _view.SelectCalibrationPoint(e.Record.PointNumber);
+            try
+            {
+                ApplyCalibrationRecord(e.Record);
+                _view.SelectCalibrationPoint(e.Record.PointNumber);
+            }
+            catch (Exception exception)
+            {
+                LocalDebugLog.WriteException("WARN", "ui.calibration", "Runtime_CalibrationPointChanged failed", exception);
+            }
         }
 
         private void ApplyCalibrationRecord(CalibrationPointRecord record)
@@ -156,33 +211,47 @@ namespace NinePointRotationCalibration.Station.Views
 
         private void Runtime_CalibrationCompleted(object sender, CalibrationResultEventArgs e)
         {
-            CalibrationResult result = e == null ? null : e.Result;
-            if (result == null)
+            try
             {
-                _view.AppendLog("标定计算未返回结果。", true);
-                return;
-            }
+                CalibrationResult result = e == null ? null : e.Result;
+                if (result == null)
+                {
+                    _view.AppendLog("标定计算未返回结果。", true);
+                    return;
+                }
 
-            CalibrationRmsAssessment rms = result.EvaluateRms();
-            _view.SetCalibrationRmsSummary(result);
-            _view.ApplyCalibrationDiagnostics(result);
-            _view.AppendLog(
-                string.Format(
-                    CultureInfo.InvariantCulture,
-                    "标定{0}：{1}｜{2}。",
-                    result.Success ? "成功" : "失败",
-                    result.Message,
-                    rms.Summary),
-                !result.Success);
-            _view.SetOperationStatus(
-                result.Success ? "标定完成 · " + rms.GradeLabel + "(" + rms.Score + "分)" : "标定失败",
-                false,
-                !result.Success);
+                CalibrationRmsAssessment rms = result.EvaluateRms();
+                _view.SetCalibrationRmsSummary(result);
+                _view.ApplyCalibrationDiagnostics(result);
+                _view.AppendLog(
+                    string.Format(
+                        CultureInfo.InvariantCulture,
+                        "标定{0}：{1}｜{2}。",
+                        result.Success ? "成功" : "失败",
+                        result.Message,
+                        rms.Summary),
+                    !result.Success);
+                _view.SetOperationStatus(
+                    result.Success ? "标定完成 · " + rms.GradeLabel + "(" + rms.Score + "分)" : "标定失败",
+                    false,
+                    !result.Success);
+            }
+            catch (Exception exception)
+            {
+                LocalDebugLog.WriteException("ERROR", "ui.calibration", "Runtime_CalibrationCompleted failed", exception);
+            }
         }
 
         private void Runtime_TeachingChanged(object sender, TeachingEventArgs e)
         {
-            ApplyTeachingToView(e == null ? null : e.Pose);
+            try
+            {
+                ApplyTeachingToView(e == null ? null : e.Pose);
+            }
+            catch (Exception exception)
+            {
+                LocalDebugLog.WriteException("WARN", "ui.teaching", "Runtime_TeachingChanged failed", exception);
+            }
         }
 
         private void ApplyTeachingToView(TeachingPose pose)
@@ -201,8 +270,10 @@ namespace NinePointRotationCalibration.Station.Views
 
         private void Runtime_InspectionCompleted(object sender, InspectionEventArgs e)
         {
-            InspectionResult result = e == null ? null : e.Result;
-            if (result == null) return;
+            try
+            {
+                InspectionResult result = e == null ? null : e.Result;
+                if (result == null) return;
 
             List<object[]> rows = new List<object[]>();
             List<ViewportPointOverlay> points = new List<ViewportPointOverlay>();
@@ -347,8 +418,13 @@ namespace NinePointRotationCalibration.Station.Views
                 result.ActualCount,
                 result.Success && result.Pass,
                 result.HasManualMarks);
-            // 若当前处于检测双视图，检测结果同步后立即在 UI 线程触发检测效果图刷新（保证 async 延续回到 UI 线程）
-            if (_view.IsDetectionDualViewActive) TriggerEffectPreviewOnUi(false);
+                // 若当前处于检测双视图，检测结果同步后立即在 UI 线程触发检测效果图刷新（保证 async 延续回到 UI 线程）
+                if (_view.IsDetectionDualViewActive) TriggerEffectPreviewOnUi(false);
+            }
+            catch (Exception exception)
+            {
+                LocalDebugLog.WriteException("ERROR", "ui.inspection", "Runtime_InspectionCompleted failed", exception);
+            }
         }
     }
 }

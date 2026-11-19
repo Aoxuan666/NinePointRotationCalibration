@@ -164,4 +164,11 @@ namespace NinePointRotationCalibration.Station.Models
         /// <summary>触发并采集一帧图像。</summary>
         Task<CameraFrame> CaptureAsync(CancellationToken cancellationToken);
     }
+
+    /// <summary>支持低延迟实时采集流的可选相机扩展接口，避免预览路径做多余清缓冲或重复查询。</summary>
+    public interface ICameraLivePreviewDevice
+    {
+        /// <summary>按实时预览优化路径采集最新一帧图像。</summary>
+        Task<CameraFrame> CapturePreviewAsync(CancellationToken cancellationToken);
+    }
 }

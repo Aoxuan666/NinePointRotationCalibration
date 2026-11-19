@@ -1,15 +1,18 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
+using System.Globalization;
 using System.Threading;
 using System.Threading.Tasks;
 using NinePointRotationCalibration.Station.Models;
 
 namespace NinePointRotationCalibration.Station.Services.Camera
 {
-    /// <summary>相机采图调度服务，通过串行门控协调实时预览与高优先级生产/标定抓拍。</summary>
+    /// <summary>相机采图调度服务，通过串行门控协调平滑实时预览与高优先级生产/标定抓拍。</summary>
     public sealed class CameraAcquisitionService : IDisposable
     {
+        private const int MinimumPreviewIntervalMilliseconds = 16;
         private const int PreviewFailureThreshold = 3;
         private readonly SemaphoreSlim _deviceGate = new SemaphoreSlim(1, 1);
         private readonly object _sync = new object();
@@ -18,6 +21,9 @@ namespace NinePointRotationCalibration.Station.Services.Camera
         private Task _previewTask;
         private int _previewIntervalMilliseconds;
         private bool _disposed;
+        private long _liveFrameCount;
+        private long _liveDroppedFrameCount;
+        private double _liveFps;
 
         // 生产与流程抓拍优先级高于预览：有高优先级抓拍排队以及最后一次抓拍后的静默期内，
         // 预览循环主动让出相机，避免连续生产期间上位机触发排队等待预览曝光。
@@ -28,32 +34,63 @@ namespace NinePointRotationCalibration.Station.Services.Camera
         public CameraAcquisitionService(ICameraDevice device, int previewIntervalMilliseconds)
         {
             _device = device ?? throw new ArgumentNullException(nameof(device));
-            _previewIntervalMilliseconds = Math.Max(50, previewIntervalMilliseconds);
+            _previewIntervalMilliseconds = Math.Max(MinimumPreviewIntervalMilliseconds, previewIntervalMilliseconds);
         }
 
         public event EventHandler<FrameEventArgs> PreviewFrame;
         public event Action<bool, string> PreviewHealthChanged;
+        public event Action<bool> PreviewRunningChanged;
         public event EventHandler<LogEventArgs> Log;
+
+        /// <summary>可选背压回调：UI 正在渲染上一帧时返回 true，以便实时循环快速跳过冗余拷贝避免堆积。</summary>
+        public Func<bool> PreviewConsumerBusy { get; set; }
 
         public string ProviderName
         {
-            get { lock (_sync) return _device.ProviderName; }
+            get { lock (_sync) return _device == null ? string.Empty : _device.ProviderName; }
         }
 
         public bool IsConnected
         {
-            get { lock (_sync) return _device.IsConnected; }
+            get { lock (_sync) return _device != null && _device.IsConnected; }
         }
 
         public string ConnectedDeviceId
         {
-            get { lock (_sync) return _device.ConnectedDeviceId; }
+            get { lock (_sync) return _device == null ? null : _device.ConnectedDeviceId; }
         }
 
-        /// <summary>设置后台实时预览采图间隔（最低 50 毫秒）。</summary>
+        public bool IsPreviewRunning
+        {
+            get { lock (_sync) return _previewCancellation != null; }
+        }
+
+        public int PreviewIntervalMilliseconds
+        {
+            get { return Volatile.Read(ref _previewIntervalMilliseconds); }
+        }
+
+        public long LiveFrameCount
+        {
+            get { return Interlocked.Read(ref _liveFrameCount); }
+        }
+
+        public long LiveDroppedFrameCount
+        {
+            get { return Interlocked.Read(ref _liveDroppedFrameCount); }
+        }
+
+        public double LiveFps
+        {
+            get { lock (_sync) return _liveFps; }
+        }
+
+        /// <summary>设置后台实时预览采图间隔（最低 16 毫秒，支持最高约 60 FPS 流畅采集）。</summary>
         public void SetPreviewInterval(int milliseconds)
         {
-            _previewIntervalMilliseconds = Math.Max(50, milliseconds);
+            int clamped = Math.Max(MinimumPreviewIntervalMilliseconds, Math.Min(5000, milliseconds));
+            Volatile.Write(ref _previewIntervalMilliseconds, clamped);
+            LocalDebugLog.Write("INFO", "camera.preview", "Preview interval updated to " + clamped + "ms.");
         }
 
         /// <summary>串行枚举当前可用相机设备。</summary>
@@ -190,14 +227,17 @@ namespace NinePointRotationCalibration.Station.Services.Camera
                    (DateTime.UtcNow.Ticks - last) < TimeSpan.TicksPerMillisecond * PreviewQuietPeriodMilliseconds;
         }
 
-        private async Task<CameraFrame> CaptureCoreAsync(CancellationToken cancellationToken)
+        private async Task<CameraFrame> CaptureCoreAsync(CancellationToken cancellationToken, bool isPreview = false)
         {
             ThrowIfDisposed();
             await _deviceGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                if (!_device.IsConnected) throw new InvalidOperationException("Camera is not connected.");
-                CameraFrame frame = await _device.CaptureAsync(cancellationToken).ConfigureAwait(false);
+                if (_device == null || !_device.IsConnected) throw new InvalidOperationException("Camera is not connected.");
+                ICameraLivePreviewDevice livePreviewDevice = isPreview ? _device as ICameraLivePreviewDevice : null;
+                CameraFrame frame = livePreviewDevice != null
+                    ? await livePreviewDevice.CapturePreviewAsync(cancellationToken).ConfigureAwait(false)
+                    : await _device.CaptureAsync(cancellationToken).ConfigureAwait(false);
                 if (frame == null || frame.Image == null)
                 {
                     if (frame != null) frame.Dispose();
@@ -215,11 +255,23 @@ namespace NinePointRotationCalibration.Station.Services.Camera
         public void StartPreview()
         {
             ThrowIfDisposed();
+            bool started = false;
             lock (_sync)
             {
                 if (_previewCancellation != null) return;
                 _previewCancellation = new CancellationTokenSource();
+                _liveFps = 0.0;
                 _previewTask = Task.Run(() => PreviewLoopAsync(_previewCancellation.Token));
+                started = true;
+            }
+            if (started)
+            {
+                LocalDebugLog.Write(
+                    "INFO",
+                    "camera.preview",
+                    "Live preview loop started: provider='" + ProviderName + "', device='" + ConnectedDeviceId +
+                    "', interval=" + PreviewIntervalMilliseconds + "ms.");
+                OnPreviewRunningChanged(true);
             }
         }
 
@@ -234,9 +286,16 @@ namespace NinePointRotationCalibration.Station.Services.Camera
                 task = _previewTask;
                 _previewCancellation = null;
                 _previewTask = null;
+                _liveFps = 0.0;
             }
             if (cancellation == null) return;
-            cancellation.Cancel();
+            try
+            {
+                cancellation.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+            }
             try
             {
                 if (task != null) await task.ConfigureAwait(false);
@@ -244,9 +303,18 @@ namespace NinePointRotationCalibration.Station.Services.Camera
             catch (OperationCanceledException)
             {
             }
+            catch (Exception exception)
+            {
+                LocalDebugLog.WriteException("WARN", "camera.preview", "Preview task terminated with error during stop", exception);
+            }
             finally
             {
                 cancellation.Dispose();
+                LocalDebugLog.Write(
+                    "INFO",
+                    "camera.preview",
+                    "Live preview loop stopped: totalFrames=" + LiveFrameCount + ", droppedFrames=" + LiveDroppedFrameCount + ".");
+                OnPreviewRunningChanged(false);
             }
         }
 
@@ -254,29 +322,90 @@ namespace NinePointRotationCalibration.Station.Services.Camera
         {
             int consecutiveFailures = 0;
             bool failureReported = false;
+            Stopwatch frameWatch = new Stopwatch();
+            Stopwatch fpsWindowWatch = Stopwatch.StartNew();
+            Stopwatch statsLogWatch = Stopwatch.StartNew();
+            int windowFrames = 0;
+
             while (!cancellationToken.IsCancellationRequested)
             {
                 try
                 {
+                    int targetInterval = PreviewIntervalMilliseconds;
                     if (PreviewShouldYield())
                     {
-                        await Task.Delay(_previewIntervalMilliseconds, cancellationToken).ConfigureAwait(false);
+                        await Task.Delay(Math.Min(100, Math.Max(20, targetInterval)), cancellationToken).ConfigureAwait(false);
                         continue;
                     }
 
-                    using (CameraFrame frame = await CaptureCoreAsync(cancellationToken).ConfigureAwait(false))
+                    // UI 渲染端繁忙时让出极短时间片避免无效抓帧与内存抖动
+                    Func<bool> consumerBusy = PreviewConsumerBusy;
+                    if (consumerBusy != null)
+                    {
+                        bool busy = false;
+                        try { busy = consumerBusy(); } catch { }
+                        if (busy)
+                        {
+                            Interlocked.Increment(ref _liveDroppedFrameCount);
+                            await Task.Delay(Math.Min(16, targetInterval), cancellationToken).ConfigureAwait(false);
+                            continue;
+                        }
+                    }
+
+                    frameWatch.Restart();
+                    using (CameraFrame frame = await CaptureCoreAsync(cancellationToken, true).ConfigureAwait(false))
+                    {
+                        Interlocked.Increment(ref _liveFrameCount);
+                        windowFrames++;
+                        double fpsElapsed = fpsWindowWatch.Elapsed.TotalSeconds;
+                        if (fpsElapsed >= 0.5)
+                        {
+                            double measuredFps = windowFrames / fpsElapsed;
+                            lock (_sync) _liveFps = measuredFps;
+                            windowFrames = 0;
+                            fpsWindowWatch.Restart();
+                        }
+
                         PublishPreviewFrame(frame.Image);
+                    }
 
                     consecutiveFailures = 0;
                     if (failureReported)
                     {
                         failureReported = false;
+                        LocalDebugLog.Write("INFO", "camera.preview", "Camera live preview recovered.");
                         OnLog("INFO", "Camera preview recovered.");
                         OnPreviewHealthChanged(
                             true,
                             ProviderName + " / " + ConnectedDeviceId);
                     }
-                    await Task.Delay(_previewIntervalMilliseconds, cancellationToken).ConfigureAwait(false);
+
+                    if (statsLogWatch.Elapsed.TotalSeconds >= 30.0)
+                    {
+                        statsLogWatch.Restart();
+                        LocalDebugLog.Write(
+                            "DEBUG",
+                            "camera.preview",
+                            string.Format(
+                                CultureInfo.InvariantCulture,
+                                "Live stream heartbeat: fps={0:0.0}, totalFrames={1}, dropped={2}, lastGrabMs={3:0.0}, interval={4}ms",
+                                LiveFps,
+                                LiveFrameCount,
+                                LiveDroppedFrameCount,
+                                frameWatch.Elapsed.TotalMilliseconds,
+                                targetInterval));
+                    }
+
+                    // 按周期扣减本次采集与拷贝耗时，避免固定 Sleep 叠加造成帧率掉半和卡顿
+                    int remainingMs = targetInterval - (int)frameWatch.ElapsedMilliseconds;
+                    if (remainingMs >= 4)
+                    {
+                        await Task.Delay(remainingMs, cancellationToken).ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        await Task.Yield();
+                    }
                 }
                 catch (OperationCanceledException)
                 {
@@ -286,17 +415,28 @@ namespace NinePointRotationCalibration.Station.Services.Camera
                 {
                     consecutiveFailures++;
                     if (consecutiveFailures == 1)
+                    {
+                        LocalDebugLog.WriteException("WARN", "camera.preview", "Camera preview grab failed (attempt #1)", exception);
                         OnLog("WARN", "Camera preview failed: " + exception.Message);
+                    }
                     // 连续失败达到阈值后上报预览健康异常，避免单帧偶发波动误报故障
                     if (!failureReported && consecutiveFailures >= PreviewFailureThreshold)
                     {
                         failureReported = true;
                         string detail = "Preview failed " + consecutiveFailures +
                                         " consecutive times: " + exception.Message;
+                        LocalDebugLog.WriteException("ERROR", "camera.preview", detail, exception);
                         OnLog("ERROR", detail);
                         OnPreviewHealthChanged(false, detail);
                     }
-                    await Task.Delay(Math.Max(500, _previewIntervalMilliseconds), cancellationToken).ConfigureAwait(false);
+                    try
+                    {
+                        await Task.Delay(Math.Max(500, PreviewIntervalMilliseconds), cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        break;
+                    }
                 }
             }
         }
@@ -305,21 +445,62 @@ namespace NinePointRotationCalibration.Station.Services.Camera
         {
             EventHandler<FrameEventArgs> handler = PreviewFrame;
             if (handler == null || image == null) return;
-            // 克隆位图再发布事件，确保底层 CameraFrame 释放后 UI 端仍可安全读取
-            using (FrameEventArgs args = new FrameEventArgs((Bitmap)image.Clone(), "preview"))
-                handler(this, args);
+            // 直接借用 CameraFrame 位图同步分发（ownsImage=false），省去每帧 15MB+ 的中间全图 Clone
+            using (FrameEventArgs args = new FrameEventArgs(image, "preview", false))
+            {
+                foreach (EventHandler<FrameEventArgs> subscriber in handler.GetInvocationList())
+                {
+                    try
+                    {
+                        subscriber(this, args);
+                    }
+                    catch (Exception exception)
+                    {
+                        LocalDebugLog.WriteException("WARN", "camera.preview", "PreviewFrame subscriber threw an exception", exception);
+                    }
+                }
+            }
         }
 
         private void OnLog(string level, string message)
         {
             EventHandler<LogEventArgs> handler = Log;
-            if (handler != null) handler(this, new LogEventArgs(level, message));
+            if (handler == null) return;
+            try
+            {
+                handler(this, new LogEventArgs(level, message));
+            }
+            catch
+            {
+            }
         }
 
         private void OnPreviewHealthChanged(bool available, string detail)
         {
             Action<bool, string> handler = PreviewHealthChanged;
-            if (handler != null) handler(available, detail);
+            if (handler == null) return;
+            try
+            {
+                handler(available, detail);
+            }
+            catch (Exception exception)
+            {
+                LocalDebugLog.WriteException("WARN", "camera.preview", "PreviewHealthChanged subscriber threw an exception", exception);
+            }
+        }
+
+        private void OnPreviewRunningChanged(bool running)
+        {
+            Action<bool> handler = PreviewRunningChanged;
+            if (handler == null) return;
+            try
+            {
+                handler(running);
+            }
+            catch (Exception exception)
+            {
+                LocalDebugLog.WriteException("WARN", "camera.preview", "PreviewRunningChanged subscriber threw an exception", exception);
+            }
         }
 
         private void ThrowIfDisposed()

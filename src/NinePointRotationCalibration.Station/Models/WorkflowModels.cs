@@ -62,13 +62,21 @@ namespace NinePointRotationCalibration.Station.Models
         public CalibrationResult Result { get; private set; }
     }
 
-    /// <summary>图像帧推送事件参数（持有位图所有权并在 Dispose 时释放）。</summary>
+    /// <summary>图像帧推送事件参数（可选持有位图所有权并在 Dispose 时释放）。</summary>
     public sealed class FrameEventArgs : EventArgs, IDisposable
     {
+        private readonly bool _ownsImage;
+
         public FrameEventArgs(System.Drawing.Bitmap image, string source)
+            : this(image, source, true)
+        {
+        }
+
+        public FrameEventArgs(System.Drawing.Bitmap image, string source, bool ownsImage)
         {
             Image = image;
             Source = source;
+            _ownsImage = ownsImage;
             CapturedAtUtc = DateTime.UtcNow;
         }
 
@@ -76,12 +84,12 @@ namespace NinePointRotationCalibration.Station.Models
         public string Source { get; private set; }
         public DateTime CapturedAtUtc { get; private set; }
 
-        /// <summary>释放随事件传递的位图副本。</summary>
+        /// <summary>若当前事件参数持有位图所有权，则释放底层位图资源。</summary>
         public void Dispose()
         {
             System.Drawing.Bitmap image = Image;
             Image = null;
-            if (image != null) image.Dispose();
+            if (_ownsImage && image != null) image.Dispose();
         }
     }
 

@@ -106,5 +106,6 @@ src\NinePointRotationCalibration.Station\bin\Debug\NinePointRotationCalibration.
 - [视觉工作站架构](docs/VisionStationArchitecture.md)
 - [操作与联调指南](docs/OperatorGuide.md)
 - [TCP 通讯协议 v1](docs/TcpProtocolV1.md)
+- [上位机通讯交互协议与指令规范](docs/上位机通讯交互协议与指令规范.md)
 - [九点加旋转标定技术方案](九点加旋转标定技术方案.md)
 - [原进程内 SDK 接入说明（兼容用）](docs/HostIntegration.md)

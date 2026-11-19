@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
+using System.Globalization;
 using System.Linq;
 using System.Threading;
 using NinePointRotationCalibration.Halcon;
@@ -121,6 +122,19 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
                 if (expectedCount <= 0)
                     return Failure(result, "EXPECTED_COUNT_INVALID", "Expected board count must be greater than zero.");
 
+                LocalDebugLog.Write(
+                    "INFO",
+                    "inspect.start",
+                    string.Format(
+                        CultureInfo.InvariantCulture,
+                        "image={0}x{1}, expected={2}, currentR={3:0.###}, mapTargets={4}, {5}",
+                        image.Width,
+                        image.Height,
+                        expectedCount,
+                        currentR,
+                        mapTargets,
+                        StationLogFormatter.FormatDetectionProfile(profile)));
+
                 result.Executed = true;
                 if (!useTemplateMatching)
                 {
@@ -145,6 +159,7 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
                         AccumulateAnalysisTiming(result, analysis);
                         item.HasManualMark = item.Blobs.Exists(blob => !blob.RejectedAsRectangle);
                         result.Items.Add(item);
+                        LogBoardBlobDetail(1, analysis, item.HasManualMark);
                     }
                     result.ActualCount = 1;
                 }
@@ -177,6 +192,17 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
                     {
                         return Failure(result, "POSITIONING_FAILED", "Positioning returned an invalid board pose.");
                     }
+
+                    LocalDebugLog.Write(
+                        "INFO",
+                        "inspect.match",
+                        string.Format(
+                            CultureInfo.InvariantCulture,
+                            "Located {0} boards (limit={1}) in {2:0.0}ms (imgConv={3:0.0}ms)",
+                            orderedMatches.Count,
+                            locateTemplate.MatchParameters.NumMatches,
+                            result.MatchElapsedMilliseconds,
+                            result.ImageConversionElapsedMilliseconds));
 
                     result.ActualCount = orderedMatches.Count;
                     List<DetectionRoi> detectionRois = orderedMatches
@@ -214,8 +240,9 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
                             item.Blobs.AddRange(analysis.Findings);
                             result.BlobElapsedMilliseconds += analysis.ElapsedMilliseconds;
                             AccumulateAnalysisTiming(result, analysis);
+                            item.HasManualMark = item.Blobs.Exists(blob => !blob.RejectedAsRectangle);
+                            LogBoardBlobDetail(item.BoardIndex, analysis, item.HasManualMark);
                         }
-                        item.HasManualMark = item.Blobs.Exists(blob => !blob.RejectedAsRectangle);
                         if (mapTargets)
                             item.Targets.AddRange(_poseMapper.Map(calibration, teaching, match, currentR));
                         result.Items.Add(item);
@@ -247,6 +274,7 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
             }
             catch (Exception exception)
             {
+                LocalDebugLog.WriteException("ERROR", "inspect.core", "Unhandled exception in InspectCore", exception);
                 return Failure(result, "INSPECTION_EXCEPTION", exception.Message);
             }
             finally
@@ -254,6 +282,10 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
                 if (gray != null) gray.Dispose();
                 watch.Stop();
                 result.ElapsedMilliseconds = watch.Elapsed.TotalMilliseconds;
+                LocalDebugLog.Write(
+                    result.Success && result.Pass ? "INFO" : "WARN",
+                    "inspect.done",
+                    StationLogFormatter.FormatInspectionResult(result));
             }
         }
 
@@ -263,7 +295,47 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
             result.Pass = false;
             result.ErrorCode = code;
             result.Message = message;
+            LocalDebugLog.Write("WARN", "inspect.fail", "code=" + code + ", message='" + message + "'");
             return result;
+        }
+
+        private static void LogBoardBlobDetail(int boardIndex, BlobAnalysisResult analysis, bool hasManualMark)
+        {
+            if (analysis == null) return;
+            DetectionRoi roi = analysis.Roi;
+            string roiText = roi == null
+                ? "none"
+                : string.Format(
+                    CultureInfo.InvariantCulture,
+                    "rc=({0:0.##},{1:0.##}),phi={2:0.##}deg,hw={3:0.##},hh={4:0.##}",
+                    roi.ReferenceCenterRow,
+                    roi.ReferenceCenterColumn,
+                    roi.PhiDegrees,
+                    roi.HalfWidth,
+                    roi.HalfHeight);
+            string findingsText = analysis.Findings == null || analysis.Findings.Count == 0
+                ? string.Empty
+                : string.Join(";", analysis.Findings.Where(f => f != null).Select(f => string.Format(
+                    CultureInfo.InvariantCulture,
+                    "(rc=({0:0.#},{1:0.#}),area={2:0.#},rect={3:0.###},filtered={4})",
+                    f.Row,
+                    f.Column,
+                    f.Area,
+                    f.Rectangularity,
+                    f.RejectedAsRectangle)));
+            LocalDebugLog.Write(
+                "DEBUG",
+                "inspect.blob",
+                string.Format(
+                    CultureInfo.InvariantCulture,
+                    "B{0}: roi=[{1}], effThresh={2}, activePx={3}, mark={4}, ct={5:0.0}ms, findings=[{6}]",
+                    boardIndex,
+                    roiText,
+                    analysis.EffectiveThreshold,
+                    analysis.ActivePixelCount,
+                    hasManualMark,
+                    analysis.ElapsedMilliseconds,
+                    findingsText));
         }
 
         private static void AccumulateAnalysisTiming(

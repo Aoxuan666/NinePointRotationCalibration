@@ -120,6 +120,15 @@ namespace NinePointRotationCalibration.WinForms.Forms
             _referenceImage = new Bitmap(referenceImage);
             _previewImageHolder = new PreviewImageHolder(_referenceImage);
             _state = initialState == null ? new TemplateEditorState() : initialState.DeepClone();
+            if (_state.Parameters == null)
+            {
+                _state.Parameters = new TemplateEditorParameters();
+            }
+            // 创建新模板时默认启用自动阈值，避免旧配置或空状态误落入手动阈值
+            if (_state.TemplateRoi == null && !_state.HasModel)
+            {
+                _state.Parameters.AutoThreshold = true;
+            }
             EnsureInitialGeometry(_state, _referenceImage.Size, _enableDetectionRoi);
             _originalState = _state.DeepClone();
 
@@ -276,6 +285,14 @@ namespace NinePointRotationCalibration.WinForms.Forms
             CancelCurrentOperation();
             CancelAutoPreview();
             _state = state.DeepClone();
+            if (_state.Parameters == null)
+            {
+                _state.Parameters = new TemplateEditorParameters();
+            }
+            if (_state.TemplateRoi == null && !_state.HasModel)
+            {
+                _state.Parameters.AutoThreshold = true;
+            }
             EnsureInitialGeometry(_state, _referenceImage.Size, _enableDetectionRoi);
             _originalState = _state.DeepClone();
             _undoStack.Clear();
@@ -992,59 +1009,87 @@ namespace NinePointRotationCalibration.WinForms.Forms
 
         private async void ExtractFeaturesAsync(object sender, EventArgs eventArgs)
         {
-            if (!CanRunServiceOperation("刷新特征"))
+            try
             {
-                return;
-            }
-
-            ReadParametersFromControls();
-            string validationMessage;
-            if (!ValidateFeatureGeometry(out validationMessage))
-            {
-                MessageBox.Show(this, validationMessage, "模板参数", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
-            }
-
-            CancelAutoPreview();
-            TemplateFeatureResult result = null;
-            await RunBusyOperationAsync("正在提取模板特征...", async token =>
-            {
-                using (Bitmap image = new Bitmap(_referenceImage))
+                if (!CanRunServiceOperation("刷新特征"))
                 {
-                    result = await Service.ExtractFeaturesAsync(image, _state.DeepClone(), token);
+                    return;
                 }
-            });
-            if (result == null)
-            {
-                return;
-            }
 
-            AppendOperationLog(result.Success, result.Message);
-            if (!result.Success)
-            {
-                SetStatus(result.Message ?? "提取特征失败。", true);
-                return;
-            }
+                ReadParametersFromControls();
+                string validationMessage;
+                if (!ValidateFeatureGeometry(out validationMessage))
+                {
+                    MessageBox.Show(this, validationMessage, "模板参数", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
 
-            ApplyFeaturePreviewResult(result, true);
-            SetStatus(
-                string.Format(
-                    "特征提取完成（{0}个特征点，Canny {1:0.#}/{2:0.#}，最小对比度 {3}）。",
-                    _state.FeaturePoints.Count,
-                    _state.Parameters.EdgeLowThreshold,
-                    _state.Parameters.EdgeHighThreshold,
-                    _state.Parameters.MinimumContrast),
-                false);
+                CancelAutoPreview();
+                TemplateFeatureResult result = null;
+                await RunBusyOperationAsync("正在提取模板特征...", async token =>
+                {
+                    using (Bitmap image = new Bitmap(_referenceImage))
+                    {
+                        result = await Service.ExtractFeaturesAsync(image, _state.DeepClone(), token);
+                    }
+                });
+                if (result == null || !CanUpdateUi)
+                {
+                    return;
+                }
+
+                AppendOperationLog(result.Success, result.Message);
+                if (!result.Success)
+                {
+                    SetStatus(result.Message ?? "提取特征失败。", true);
+                    return;
+                }
+
+                ApplyFeaturePreviewResult(result, true);
+                SetStatus(
+                    string.Format(
+                        "特征提取完成（{0}个特征点，Canny {1:0.#}/{2:0.#}，最小对比度 {3}）。",
+                        _state.FeaturePoints.Count,
+                        _state.Parameters.EdgeLowThreshold,
+                        _state.Parameters.EdgeHighThreshold,
+                        _state.Parameters.MinimumContrast),
+                    false);
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+            catch (Exception exception)
+            {
+                if (CanUpdateUi)
+                {
+                    AppendOperationLog(false, "提取特征异常：" + exception.Message);
+                    SetStatus("提取特征异常：" + exception.Message, true);
+                }
+            }
         }
 
         private async void CreateModelAsync(object sender, EventArgs eventArgs)
         {
-            if (!CanRunServiceOperation("创建模型"))
+            try
             {
-                return;
-            }
+                if (!CanRunServiceOperation("创建模型"))
+                {
+                    return;
+                }
 
-            await BuildModelCoreAsync();
+                await BuildModelCoreAsync();
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+            catch (Exception exception)
+            {
+                if (CanUpdateUi)
+                {
+                    AppendOperationLog(false, "创建模型异常：" + exception.Message);
+                    SetStatus("创建模型异常：" + exception.Message, true);
+                }
+            }
         }
 
         private async Task<bool> BuildModelCoreAsync()
@@ -1162,65 +1207,79 @@ namespace NinePointRotationCalibration.WinForms.Forms
 
         private async void TestMatchAsync(object sender, EventArgs eventArgs)
         {
-            if (!CanRunServiceOperation("测试匹配"))
+            try
             {
-                return;
-            }
-
-            if (!_state.HasModel || _state.ModelDirty)
-            {
-                bool built = await BuildModelCoreAsync();
-                if (!built || !CanUpdateUi)
+                if (!CanRunServiceOperation("测试匹配"))
                 {
                     return;
                 }
-            }
 
-            ReadParametersFromControls();
-            EnsureCompanionRois();
-            // 测试匹配时保留清晰原图并清空旧的特征编辑叠加，突出匹配轮廓与中心点
-            _canvas.EditorOverlay = new CanvasRuntimeOverlay();
-            _canvas.ClearRuntimeOverlay();
-            TemplateTestResult result = null;
-            await RunBusyOperationAsync("正在测试模板匹配...", async token =>
-            {
-                using (Bitmap image = new Bitmap(_referenceImage))
+                if (!_state.HasModel || _state.ModelDirty)
                 {
-                    result = await Service.TestMatchAsync(image, _state.DeepClone(), token);
+                    bool built = await BuildModelCoreAsync();
+                    if (!built || !CanUpdateUi)
+                    {
+                        return;
+                    }
                 }
-            });
-            if (result == null)
-            {
-                return;
-            }
 
-            string testSummary = result.Success
-                ? string.Format(
-                    "测试结果：CT {0:0.0} ms   Score {1:0.000}   Row {2:0.###}   Column {3:0.###}   Angle {4:0.###}°",
-                    result.ElapsedMilliseconds,
-                    result.Score,
-                    result.Position.Row,
-                    result.Position.Column,
-                    result.AngleDegrees)
-                : "测试结果：NG   " + (result.Message ?? "测试匹配失败。");
-            _testResultLabel.Text = testSummary;
-            _testResultLabel.ForeColor = result.Success ? Color.DarkGreen : Color.Firebrick;
-            AppendOperationLog(result.Success, testSummary);
-            ShowTestOverlay(result);
-            SetStatus(
-                result.Success
-                    ? string.Format("匹配成功：Score={0:0.000}，Row={1:0.###}，Column={2:0.###}，Angle={3:0.###}°，{4:0.0} ms",
+                ReadParametersFromControls();
+                EnsureCompanionRois();
+                // 测试匹配时保留清晰原图并清空旧的特征编辑叠加，突出匹配轮廓与中心点
+                _canvas.EditorOverlay = new CanvasRuntimeOverlay();
+                _canvas.ClearRuntimeOverlay();
+                TemplateTestResult result = null;
+                await RunBusyOperationAsync("正在测试模板匹配...", async token =>
+                {
+                    using (Bitmap image = new Bitmap(_referenceImage))
+                    {
+                        result = await Service.TestMatchAsync(image, _state.DeepClone(), token);
+                    }
+                });
+                if (result == null || !CanUpdateUi)
+                {
+                    return;
+                }
+
+                string testSummary = result.Success
+                    ? string.Format(
+                        "测试结果：CT {0:0.0} ms   Score {1:0.000}   Row {2:0.###}   Column {3:0.###}   Angle {4:0.###}°",
+                        result.ElapsedMilliseconds,
                         result.Score,
                         result.Position.Row,
                         result.Position.Column,
-                        result.AngleDegrees,
-                        result.ElapsedMilliseconds)
-                    : result.Message ?? "测试匹配失败。",
-                !result.Success);
-            EventHandler<TemplateTestCompletedEventArgs> handler = TestCompleted;
-            if (handler != null)
+                        result.AngleDegrees)
+                    : "测试结果：NG   " + (result.Message ?? "测试匹配失败。");
+                _testResultLabel.Text = testSummary;
+                _testResultLabel.ForeColor = result.Success ? Color.DarkGreen : Color.Firebrick;
+                AppendOperationLog(result.Success, testSummary);
+                ShowTestOverlay(result);
+                SetStatus(
+                    result.Success
+                        ? string.Format("匹配成功：Score={0:0.000}，Row={1:0.###}，Column={2:0.###}，Angle={3:0.###}°，{4:0.0} ms",
+                            result.Score,
+                            result.Position.Row,
+                            result.Position.Column,
+                            result.AngleDegrees,
+                            result.ElapsedMilliseconds)
+                        : result.Message ?? "测试匹配失败。",
+                    !result.Success);
+                EventHandler<TemplateTestCompletedEventArgs> handler = TestCompleted;
+                if (handler != null)
+                {
+                    handler(this, new TemplateTestCompletedEventArgs(result));
+                }
+            }
+            catch (ObjectDisposedException)
             {
-                handler(this, new TemplateTestCompletedEventArgs(result));
+            }
+            catch (Exception exception)
+            {
+                if (CanUpdateUi)
+                {
+                    AppendOperationLog(false, "测试匹配异常：" + exception.Message);
+                    SetStatus("测试匹配异常：" + exception.Message, true);
+                }
             }
         }
 
@@ -2018,42 +2077,56 @@ namespace NinePointRotationCalibration.WinForms.Forms
 
         private async void ConfirmEditor(object sender, EventArgs eventArgs)
         {
-            ReadParametersFromControls();
-            EnsureCompanionRois();
-            if (!ValidateGeometry(out string message))
+            try
             {
-                MessageBox.Show(this, message, "模板参数", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
-            }
-
-            if (Service != null && (!_state.HasModel || _state.ModelDirty))
-            {
-                bool built = await BuildModelCoreAsync();
-                if (!built || !CanUpdateUi)
+                ReadParametersFromControls();
+                EnsureCompanionRois();
+                if (!ValidateGeometry(out string message))
                 {
+                    MessageBox.Show(this, message, "模板参数", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return;
                 }
-            }
-            else if (!_state.HasModel || _state.ModelDirty)
-            {
-                DialogResult answer = MessageBox.Show(
-                    this,
-                    _state.HasModel
-                        ? "模板参数已经修改，但模型尚未重建。继续确认会使该模板不可用于定位，是否仍要保存？"
-                        : "尚未创建模板模型。继续确认后需要由上位机重新进入模板设置并创建模型，是否仍要保存？",
-                    "模板尚未就绪",
-                    MessageBoxButtons.YesNo,
-                    MessageBoxIcon.Warning,
-                    MessageBoxDefaultButton.Button2);
-                if (answer != DialogResult.Yes)
+
+                if (Service != null && (!_state.HasModel || _state.ModelDirty))
                 {
-                    return;
+                    bool built = await BuildModelCoreAsync();
+                    if (!built || !CanUpdateUi)
+                    {
+                        return;
+                    }
+                }
+                else if (!_state.HasModel || _state.ModelDirty)
+                {
+                    DialogResult answer = MessageBox.Show(
+                        this,
+                        _state.HasModel
+                            ? "模板参数已经修改，但模型尚未重建。继续确认会使该模板不可用于定位，是否仍要保存？"
+                            : "尚未创建模板模型。继续确认后需要由上位机重新进入模板设置并创建模型，是否仍要保存？",
+                        "模板尚未就绪",
+                        MessageBoxButtons.YesNo,
+                        MessageBoxIcon.Warning,
+                        MessageBoxDefaultButton.Button2);
+                    if (answer != DialogResult.Yes)
+                    {
+                        return;
+                    }
+                }
+
+                ResultState = _state.DeepClone();
+                DialogResult = DialogResult.OK;
+                Close();
+            }
+            catch (ObjectDisposedException)
+            {
+            }
+            catch (Exception exception)
+            {
+                if (CanUpdateUi)
+                {
+                    AppendOperationLog(false, "确认模板异常：" + exception.Message);
+                    SetStatus("确认模板异常：" + exception.Message, true);
                 }
             }
-
-            ResultState = _state.DeepClone();
-            DialogResult = DialogResult.OK;
-            Close();
         }
 
         private void EnsureCompanionRois()
