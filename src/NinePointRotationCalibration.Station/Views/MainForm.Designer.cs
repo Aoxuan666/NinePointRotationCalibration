@@ -357,7 +357,7 @@ namespace NinePointRotationCalibration.Station.Views
             lblInspectionHud.Location = new Point(12, 12);
             lblInspectionHud.Name = "lblInspectionHud";
             lblInspectionHud.Padding = new Padding(10, 6, 10, 6);
-            lblInspectionHud.Size = new Size(400, 76);
+            lblInspectionHud.Size = new Size(480, 76);
             lblInspectionHud.Text = "CT --\r\n检测结果 --\r\n检测分项 --";
             lblInspectionHud.TextAlign = ContentAlignment.MiddleLeft;
             lblInspectionHud.Visible = false;
@@ -694,6 +694,7 @@ namespace NinePointRotationCalibration.Station.Views
             NumericUpDown maximumArea = CreateDecimalInput("nudMaximumBlobArea", 10000.0M, 0.0M, 10000000.0M, 0);
             NumericUpDown rectangularity = CreateDecimalInput("nudRectangularity", 0.78M, 0.0M, 1.0M, 2);
             NumericUpDown morphologyRadius = CreateDecimalInput("nudMorphologyRadius", 1.0M, 0.0M, 5.0M, 0);
+            nudExpectedCount.Tag = "detection.previewParameters";
             brightThreshold.Tag = "detection.previewParameters";
             minimumArea.Tag = "detection.previewParameters";
             maximumArea.Tag = "detection.previewParameters";
@@ -820,7 +821,7 @@ namespace NinePointRotationCalibration.Station.Views
             AddTextColumn(dgvDetectionResults, "Angle", "板角°", 54);
             AddTextColumn(dgvDetectionResults, "LeftTarget", "左吸嘴吸取 (X,Y,R)", 138);
             AddTextColumn(dgvDetectionResults, "RightTarget", "右吸嘴吸取 (X,Y,R)", 138);
-            AddTextColumn(dgvDetectionResults, "Mark", "白标", 46);
+            AddTextColumn(dgvDetectionResults, "Mark", "标记", 46);
             AddTextColumn(dgvDetectionResults, "Status", "状态", 48);
 
             layout.Controls.Add(settings, 0, 0);

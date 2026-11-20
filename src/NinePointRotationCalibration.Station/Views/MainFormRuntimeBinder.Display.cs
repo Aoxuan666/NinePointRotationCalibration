@@ -305,6 +305,12 @@ namespace NinePointRotationCalibration.Station.Views
                             _view.EffectViewport.ClearOverlays();
                             _view.SetEffectViewportInformation("未匹配到模板目标 · 当前显示原图");
                             _view.SetOperationStatus("当前图像未匹配到定位模板目标", false, true);
+                            _view.SyncDetectionBoardStatuses(null, null, null, null, null);
+                            _view.SetDetectionSummary(expectedCount, 0, false, "未匹配到定位模板目标");
+                            _view.SetInspectionHud(
+                                matchResult == null ? 0.0 : matchResult.ElapsedMilliseconds,
+                                matchResult == null ? 0.0 : matchResult.ElapsedMilliseconds,
+                                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, expectedCount, 0, false, false, 0, 0, "未匹配到目标");
                         }
                         return;
                     }
@@ -317,6 +323,8 @@ namespace NinePointRotationCalibration.Station.Views
                             _lastMatchedBoardContours = CloneContourList(matchedContours);
                             _lastInspectionBoardIndices = new List<int>(boardIndices);
                             _lastInspectionOverlayGeneration = generation;
+                            _lastInspectionTimingGeneration = generation;
+                            _lastInspectionMatchElapsedMs = matchResult == null ? 0.0 : matchResult.ElapsedMilliseconds;
                         }
                     }
                 }
@@ -353,6 +361,7 @@ namespace NinePointRotationCalibration.Station.Views
 
                 long overlayGenAfter;
                 int regionCountAfter;
+                double cachedMatchMs;
                 lock (_displaySync)
                 {
                     if (generation == _displayGeneration)
@@ -363,7 +372,48 @@ namespace NinePointRotationCalibration.Station.Views
                     }
                     overlayGenAfter = _lastInspectionOverlayGeneration == generation ? generation : -1;
                     regionCountAfter = overlayGenAfter == generation ? _lastDetectionRegions.Count : 0;
+                    cachedMatchMs = profile.TemplateMatchingEnabled && _lastInspectionTimingGeneration == generation
+                        ? _lastInspectionMatchElapsedMs
+                        : 0.0;
                 }
+
+                // 统一同步效果图、检测结果表、汇总栏和左上角 HUD 的 OK/NG 状态，杜绝四处显示不一致
+                int actualCount = preview.BoardStatuses.Count;
+                int ngCount = 0;
+                int[] statusIndices = new int[actualCount];
+                bool[] statusMarks = new bool[actualCount];
+                double[] statusCols = new double[actualCount];
+                double[] statusRows = new double[actualCount];
+                double[] statusAngles = new double[actualCount];
+                for (int i = 0; i < actualCount; i++)
+                {
+                    PreviewBoardStatus bs = preview.BoardStatuses[i];
+                    statusIndices[i] = bs.BoardIndex;
+                    statusMarks[i] = bs.HasManualMark;
+                    statusCols[i] = bs.Column;
+                    statusRows[i] = bs.Row;
+                    statusAngles[i] = bs.AngleDegrees;
+                    if (bs.HasManualMark) ngCount++;
+                }
+                int okCount = actualCount - ngCount;
+                bool hasManualMarks = ngCount > 0;
+                bool countMatches = !profile.TemplateMatchingEnabled || actualCount == expectedCount;
+                bool pass = countMatches && !hasManualMarks;
+                string ngReason = !countMatches && hasManualMarks
+                    ? "板数不符+有标记"
+                    : !countMatches ? "板数不符" : (hasManualMarks ? "有标记" : null);
+                string summaryMsg = pass
+                    ? string.Format(CultureInfo.InvariantCulture, "检测通过（OK {0} / NG 0）", okCount)
+                    : !countMatches
+                        ? string.Format(CultureInfo.InvariantCulture, "板数不符（目标 {0} / 实际 {1}，OK {2} / NG {3}）", expectedCount, actualCount, okCount, ngCount)
+                        : string.Format(CultureInfo.InvariantCulture, "检出不良标记（OK {0} / NG {1}）", okCount, ngCount);
+                _view.SyncDetectionBoardStatuses(statusIndices, statusMarks, statusCols, statusRows, statusAngles);
+                _view.SetDetectionSummary(expectedCount, actualCount, pass, summaryMsg);
+                _view.SetInspectionHud(
+                    cachedMatchMs + preview.BlobElapsedMilliseconds, cachedMatchMs, preview.BlobElapsedMilliseconds,
+                    preview.ImageConversionMilliseconds, preview.ThresholdMilliseconds,
+                    preview.MorphologyMilliseconds, preview.HoleFillMilliseconds, preview.ComponentMilliseconds,
+                    expectedCount, actualCount, pass, hasManualMarks, okCount, ngCount, ngReason);
 
                 string effectInfo = BuildEffectInfoText(profile, binaryEnabled, preview.BlobCount);
                 _view.EffectViewport.SetImageOwned(preview.TakeImage());
@@ -485,6 +535,13 @@ namespace NinePointRotationCalibration.Station.Views
                         bool roiHasDefect = false;
                         if (analysis != null)
                         {
+                            payload.BlobElapsedMilliseconds += analysis.ElapsedMilliseconds;
+                            payload.ImageConversionMilliseconds += analysis.ImageConversionElapsedMilliseconds;
+                            payload.ThresholdMilliseconds += analysis.ThresholdElapsedMilliseconds;
+                            payload.MorphologyMilliseconds += analysis.MorphologyElapsedMilliseconds;
+                            payload.HoleFillMilliseconds += analysis.HoleFillElapsedMilliseconds;
+                            payload.ComponentMilliseconds += analysis.ComponentElapsedMilliseconds;
+
                             if (graphics != null &&
                                 analysis.BinaryImage != null &&
                                 analysis.ImageBounds.Width > 0 &&
@@ -514,26 +571,38 @@ namespace NinePointRotationCalibration.Station.Views
 
                             foreach (BlobFinding finding in analysis.Findings ?? new List<BlobFinding>())
                             {
-                                if (finding == null || finding.RejectedAsRectangle ||
-                                    finding.Contour == null || finding.Contour.Count < 2) continue;
+                                // 单板 NG 判定与 BoardInspectionService 保持完全一致：只要存在未被矩形过滤的 Blob 即判 NG
+                                if (finding == null || finding.RejectedAsRectangle) continue;
                                 roiHasDefect = true;
                                 payload.BlobCount++;
-                                ViewportContourOverlay contour = new ViewportContourOverlay
+                                if (finding.Contour != null && finding.Contour.Count >= 2)
                                 {
-                                    Points = finding.Contour.ToList(),
-                                    Color = Color.LimeGreen,
-                                    LineWidth = 2.0F
-                                };
-                                payload.BlobContours.Add(contour);
-                                payload.EffectContours.Add(contour);
+                                    ViewportContourOverlay contour = new ViewportContourOverlay
+                                    {
+                                        Points = finding.Contour.ToList(),
+                                        Color = Color.LimeGreen,
+                                        LineWidth = 2.0F
+                                    };
+                                    payload.BlobContours.Add(contour);
+                                    payload.EffectContours.Add(contour);
+                                }
                             }
                         }
 
+                        int boardNumber = boardIndices != null && index < boardIndices.Count
+                            ? boardIndices[index]
+                            : index + 1;
+                        payload.BoardStatuses.Add(new PreviewBoardStatus
+                        {
+                            BoardIndex = boardNumber,
+                            HasManualMark = roiHasDefect,
+                            Column = roi == null ? 0.0 : roi.ReferenceCenterColumn,
+                            Row = roi == null ? 0.0 : roi.ReferenceCenterRow,
+                            AngleDegrees = roi == null ? 0.0 : roi.PhiDegrees
+                        });
+
                         if (hasExplicitRegions && roi != null)
                         {
-                            int boardNumber = boardIndices != null && index < boardIndices.Count
-                                ? boardIndices[index]
-                                : index + 1;
                             bool selected = selectedBoardIndex > 0 && boardNumber == selectedBoardIndex;
                             payload.Rois.Add(new ViewportRoiOverlay
                             {
@@ -669,6 +738,7 @@ namespace NinePointRotationCalibration.Station.Views
                     : index + 1;
                 bool selected = selectedBoardIndex > 0 && boardNumber == selectedBoardIndex;
                 string rawLabel = (roi.Label ?? string.Empty).TrimStart('★', ' ');
+                bool labelIsNg = rawLabel.EndsWith(" NG", StringComparison.OrdinalIgnoreCase);
                 result.Add(new ViewportRoiOverlay
                 {
                     ImageBounds = roi.ImageBounds,
@@ -676,7 +746,7 @@ namespace NinePointRotationCalibration.Station.Views
                     Label = selected ? "★ " + rawLabel : rawLabel,
                     Color = selected
                         ? Color.Gold
-                        : (roi.Color == Color.Gold ? Color.DeepSkyBlue : roi.Color),
+                        : (roi.Color == Color.Gold ? (labelIsNg ? Color.OrangeRed : Color.DeepSkyBlue) : roi.Color),
                     LineWidth = selected ? 3.0F : 2.0F
                 });
             }
@@ -941,14 +1011,22 @@ namespace NinePointRotationCalibration.Station.Views
                 BlobContours = new List<ViewportContourOverlay>();
                 EffectContours = new List<ViewportContourOverlay>();
                 Rois = new List<ViewportRoiOverlay>();
+                BoardStatuses = new List<PreviewBoardStatus>();
             }
 
             public Bitmap Image { get; set; }
             public string ErrorMessage { get; set; }
             public int BlobCount { get; set; }
+            public double BlobElapsedMilliseconds { get; set; }
+            public double ImageConversionMilliseconds { get; set; }
+            public double ThresholdMilliseconds { get; set; }
+            public double MorphologyMilliseconds { get; set; }
+            public double HoleFillMilliseconds { get; set; }
+            public double ComponentMilliseconds { get; set; }
             public List<ViewportContourOverlay> BlobContours { get; private set; }
             public List<ViewportContourOverlay> EffectContours { get; private set; }
             public List<ViewportRoiOverlay> Rois { get; private set; }
+            public List<PreviewBoardStatus> BoardStatuses { get; private set; }
 
             public Bitmap TakeImage()
             {
@@ -963,6 +1041,15 @@ namespace NinePointRotationCalibration.Station.Views
                 Image = null;
                 if (image != null) image.Dispose();
             }
+        }
+
+        private sealed class PreviewBoardStatus
+        {
+            public int BoardIndex { get; set; }
+            public bool HasManualMark { get; set; }
+            public double Column { get; set; }
+            public double Row { get; set; }
+            public double AngleDegrees { get; set; }
         }
     }
 }

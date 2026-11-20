@@ -338,7 +338,7 @@ namespace NinePointRotationCalibration.Station.Views
                             (float)(region.HalfWidth * 2.0),
                             (float)(region.HalfHeight * 2.0)),
                         AngleDegrees = (float)region.PhiDegrees,
-                        Label = "板 " + item.BoardIndex + " 检测区",
+                        Label = "板 " + item.BoardIndex + (item.HasManualMark ? " NG" : " OK"),
                         Color = item.HasManualMark ? Color.OrangeRed : Color.DeepSkyBlue
                     });
                 }
@@ -376,6 +376,8 @@ namespace NinePointRotationCalibration.Station.Views
                     _lastMatchedBoardContours = matchedContours;
                     _lastInspectionOverlayGeneration = _displayGeneration;
                     _lastInspectionCompletedGeneration = _displayGeneration;
+                    _lastInspectionTimingGeneration = _displayGeneration;
+                    _lastInspectionMatchElapsedMs = result.MatchElapsedMilliseconds;
                     if (!_view.IsDetectionDualViewActive)
                     {
                         InvalidateEffectRenderCache();
@@ -400,6 +402,15 @@ namespace NinePointRotationCalibration.Station.Views
                 }
             }
             string summaryMessage = result.Executed ? result.Message : TranslateInspectionError(result);
+            int ngBoardCount = result.Items == null ? 0 : result.Items.Count(item => item != null && item.HasManualMark);
+            int okBoardCount = (result.Items == null ? 0 : result.Items.Count) - ngBoardCount;
+            string ngReason = !result.Executed
+                ? "未执行"
+                : (!result.CountMatchesExpected && result.HasManualMarks)
+                    ? "板数不符+有标记"
+                    : !result.CountMatchesExpected
+                        ? "板数不符"
+                        : (result.HasManualMarks ? "有标记" : null);
             _view.SetDetectionSummary(result.ExpectedCount, result.ActualCount, result.Success && result.Pass, summaryMessage);
             if (!result.Executed)
             {
@@ -417,7 +428,10 @@ namespace NinePointRotationCalibration.Station.Views
                 result.ExpectedCount,
                 result.ActualCount,
                 result.Success && result.Pass,
-                result.HasManualMarks);
+                result.HasManualMarks,
+                okBoardCount,
+                ngBoardCount,
+                ngReason);
                 // 若当前处于检测双视图：开启局部二值时才在后台按缓存灰度图生成二值贴图；
                 // 未开启局部二值时直接复用上方已绘制完成的原图与轮廓叠加，避免检测完后再重复跑一次整帧 Blob。
                 if (_view.IsDetectionDualViewActive)

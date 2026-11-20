@@ -982,19 +982,29 @@ namespace NinePointRotationCalibration.Station.Views
             int expected,
             int actual,
             bool pass,
-            bool hasManualMarks)
+            bool hasManualMarks,
+            int okCount = -1,
+            int ngCount = -1,
+            string ngReason = null)
         {
             RunOnUiThread(delegate
             {
+                string resultText = pass
+                    ? "OK"
+                    : (string.IsNullOrWhiteSpace(ngReason) ? "NG" : "NG(" + ngReason + ")");
+                string breakdown = (okCount >= 0 && ngCount >= 0)
+                    ? string.Format(CultureInfo.InvariantCulture, " (OK {0}/NG {1})", okCount, ngCount)
+                    : string.Empty;
                 lblInspectionHud.Text = string.Format(
                     CultureInfo.InvariantCulture,
-                    "CT {0:0} ms   定位 {1:0}   检测 {2:0}\r\n结果 {3}   板 {4}/{5}   标记 {6}\r\n图转 {7:0}  阈值 {8:0}  形态 {9:0}  填孔 {10:0}  连通 {11:0}",
+                    "CT {0:0} ms   定位 {1:0}   检测 {2:0}\r\n结果 {3}   板 {4}/{5}{6}   标记 {7}\r\n图转 {8:0}  阈值 {9:0}  形态 {10:0}  填孔 {11:0}  连通 {12:0}",
                     totalMilliseconds,
                     matchMilliseconds,
                     blobMilliseconds,
-                    pass ? "OK" : "NG",
+                    resultText,
                     actual,
                     expected,
+                    breakdown,
                     hasManualMarks ? "有" : "无",
                     imageConversionMilliseconds,
                     thresholdMilliseconds,
@@ -1032,6 +1042,81 @@ namespace NinePointRotationCalibration.Station.Views
                         }
                     }
                 }
+            });
+        }
+
+        /// <summary>
+        /// 实时预览刷新后同步更新检测结果表中的“标记”和“状态”列及行颜色，
+        /// 确保效果图 ROI 标签、结果表、汇总栏和左上角 HUD 的 OK/NG 始终完全一致。
+        /// </summary>
+        public void SyncDetectionBoardStatuses(
+            int[] boardIndices,
+            bool[] hasManualMarks,
+            double[] columns,
+            double[] rows,
+            double[] angles)
+        {
+            RunOnUiThread(delegate
+            {
+                int count = boardIndices == null ? 0 : boardIndices.Length;
+                if (count == 0)
+                {
+                    dgvDetectionResults.Rows.Clear();
+                    return;
+                }
+
+                bool canUpdateInPlace = dgvDetectionResults.Rows.Count == count;
+                if (canUpdateInPlace)
+                {
+                    for (int i = 0; i < count; i++)
+                    {
+                        object raw = dgvDetectionResults.Rows[i].Cells[0].Value;
+                        int existingIndex;
+                        if (raw == null || !int.TryParse(Convert.ToString(raw, CultureInfo.InvariantCulture), out existingIndex) ||
+                            existingIndex != boardIndices[i])
+                        {
+                            canUpdateInPlace = false;
+                            break;
+                        }
+                    }
+                }
+
+                if (canUpdateInPlace)
+                {
+                    for (int i = 0; i < count; i++)
+                    {
+                        bool isNg = hasManualMarks[i];
+                        DataGridViewRow gridRow = dgvDetectionResults.Rows[i];
+                        gridRow.Cells[7].Value = isNg ? "有" : "无";
+                        gridRow.Cells[8].Value = isNg ? "NG" : "OK";
+                        gridRow.DefaultCellStyle.ForeColor = isNg
+                            ? Color.FromArgb(185, 28, 28)
+                            : Color.FromArgb(21, 128, 61);
+                        gridRow.DefaultCellStyle.BackColor = isNg
+                            ? Color.FromArgb(254, 242, 242)
+                            : Color.White;
+                    }
+                    return;
+                }
+
+                List<object[]> rebuilt = new List<object[]>(count);
+                for (int i = 0; i < count; i++)
+                {
+                    bool isNg = hasManualMarks[i];
+                    rebuilt.Add(new object[]
+                    {
+                        boardIndices[i],
+                        "--",
+                        columns[i].ToString("0.###", CultureInfo.InvariantCulture),
+                        rows[i].ToString("0.###", CultureInfo.InvariantCulture),
+                        angles[i].ToString("0.###", CultureInfo.InvariantCulture),
+                        "--",
+                        "--",
+                        isNg ? "有" : "无",
+                        isNg ? "NG" : "OK"
+                    });
+                }
+                ReplaceDetectionResults(rebuilt);
             });
         }
 

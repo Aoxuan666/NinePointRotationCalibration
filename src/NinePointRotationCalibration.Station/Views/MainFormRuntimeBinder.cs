@@ -48,6 +48,8 @@ namespace NinePointRotationCalibration.Station.Views
         private int _selectedInspectionBoardIndex = -1;
         private long _lastInspectionOverlayGeneration = -1;
         private long _lastInspectionCompletedGeneration = -1;
+        private long _lastInspectionTimingGeneration = -1;
+        private double _lastInspectionMatchElapsedMs;
         private long _renderedEffectGeneration = -1;
         private string _renderedEffectKey;
         private string _renderedEffectInfoText;

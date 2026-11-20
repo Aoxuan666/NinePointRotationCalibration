@@ -286,26 +286,29 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
                     }
                 }
 
-                // Success 表示实际板数与预期一致，Pass 还要求全板均无人工白标/不良标记
-                result.CountMatchesExpected = result.ActualCount == result.ExpectedCount;
+                // 直接整图检测模式不校验目标板数；模板匹配模式要求实际板数与预期一致，Pass 还要求全板均无不良标记
+                result.CountMatchesExpected = !useTemplateMatching || result.ActualCount == result.ExpectedCount;
                 result.HasManualMarks = result.Items.Exists(item => item.HasManualMark);
+                int ngCount = result.Items.Count(item => item.HasManualMark);
+                int okCount = result.Items.Count - ngCount;
                 result.Success = result.CountMatchesExpected;
                 result.Pass = result.CountMatchesExpected && !result.HasManualMarks;
                 if (!result.CountMatchesExpected)
                 {
                     result.ErrorCode = "BOARD_COUNT_MISMATCH";
                     result.Message = string.Format(
-                        "Expected {0} boards but located {1}.", result.ExpectedCount, result.ActualCount);
+                        "板数不符（目标 {0} / 实际 {1}，OK {2} / NG {3}）",
+                        result.ExpectedCount, result.ActualCount, okCount, ngCount);
                 }
                 else if (result.HasManualMarks)
                 {
                     result.ErrorCode = "MANUAL_MARK_FOUND";
-                    result.Message = "Manual white mark detected.";
+                    result.Message = string.Format("检出不良标记（OK {0} / NG {1}）", okCount, ngCount);
                 }
                 else
                 {
                     result.ErrorCode = "NONE";
-                    result.Message = "Inspection completed.";
+                    result.Message = string.Format("检测通过（OK {0} / NG 0）", okCount);
                 }
                 return result;
             }
