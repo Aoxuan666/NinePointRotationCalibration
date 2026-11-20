@@ -71,7 +71,8 @@ namespace NinePointRotationCalibration.Station.Views
         private double _rightTeachR;
         private CameraUiState _cameraUiState = CameraUiState.Disconnected;
         private TcpUiState _tcpUiState = TcpUiState.NotListening;
-        private bool _dualViewActive;
+        private volatile bool _dualViewActive;
+        private volatile bool _cameraTabActive;
         private bool _dualViewStateInitialized;
         private bool _suppressImageSplitBalance;
         private bool _warmingTabs;
@@ -81,6 +82,8 @@ namespace NinePointRotationCalibration.Station.Views
         public MainForm()
         {
             InitializeComponent();
+            tabWork.SelectedIndexChanged += delegate { UpdateCameraTabState(); };
+            UpdateCameraTabState();
             UiRenderOptimizer.EnableDoubleBufferingRecursive(this);
             BufferedTabControl bufferedTabs = tabWork as BufferedTabControl;
             if (bufferedTabs != null)
@@ -140,12 +143,13 @@ namespace NinePointRotationCalibration.Station.Views
         [Browsable(false)]
         public bool IsCameraTabActive
         {
-            get
-            {
-                return tabWork != null &&
-                       tabWork.SelectedTab != null &&
-                       string.Equals(tabWork.SelectedTab.Name, "tabCamera", StringComparison.Ordinal);
-            }
+            get { return _cameraTabActive; }
+        }
+
+        private void UpdateCameraTabState()
+        {
+            TabPage selected = tabWork.SelectedTab;
+            _cameraTabActive = selected != null && selected.Name == "tabCamera";
         }
 
         [Browsable(false)]
@@ -1318,13 +1322,7 @@ namespace NinePointRotationCalibration.Station.Views
             cmbCameraDevice.Enabled = cameraEnabled && !workflowBusy;
             string[] cameraParameterControls =
             {
-                "nudCameraExposure",
-                "nudCameraGain",
-                "nudCameraGamma",
-                "cmbCameraTriggerMode",
-                "nudCameraTimeout",
-                "nudPreviewInterval",
-                "flpCameraAdvancedParameters"
+                "nudCameraExposure"
             };
             foreach (string controlName in cameraParameterControls)
                 SetControlEnabled(controlName, cameraEnabled && !workflowBusy);
@@ -1336,6 +1334,7 @@ namespace NinePointRotationCalibration.Station.Views
                 "camera.connect",
                 "camera.disconnect",
                 "camera.apply",
+                "camera.read",
                 "camera.test",
                 "camera.liveStreamToggle",
                 "camera.resumeMainLive"

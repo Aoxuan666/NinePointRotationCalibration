@@ -45,8 +45,37 @@ namespace NinePointRotationCalibration.Station.Tests
         private static int _failed;
 
         [STAThread]
-        private static int Main()
+        private static int Main(string[] args)
         {
+            if (args.Length == 1 && args[0] == "--camera-preview")
+            {
+                Run("Preview tab state is safe to read from the capture thread", () =>
+                {
+                    Control.CheckForIllegalCrossThreadCalls = true;
+                    using (MainForm form = new MainForm())
+                    {
+                        form.ShowInTaskbar = false;
+                        form.Location = new Point(-20000, -20000);
+                        form.StartPosition = FormStartPosition.Manual;
+                        form.Show();
+                        form.WorkTabs.SelectedTab = form.WorkTabs.TabPages["tabCamera"];
+                        True(Task.Run(() => form.IsCameraTabActive).Result, "capture thread must see the active camera tab");
+                        form.WorkTabs.SelectedTab = form.WorkTabs.TabPages.Cast<TabPage>().First(p => p.Name != "tabCamera");
+                        True(!Task.Run(() => form.IsCameraTabActive).Result, "capture thread must see the tab change");
+                    }
+                });
+                RunAsync("Mock camera lifecycle returns owned frames", TestMockCameraAsync);
+                RunAsync("Reconnect uses device settings and exposure edits preserve other nodes", TestDeviceSettingsAsync);
+                Run("Camera tab shows only common parameters", TestCameraTabLayoutAndSwitches);
+                RunAsync("Preview health is debounced and reports recovery", TestPreviewHealthAsync);
+                RunAsync("Live frames reach camera and main viewports", TestTemplateDefaultAutoThresholdAndCameraLiveWindowAsync);
+                return _failed == 0 ? 0 : 1;
+            }
+            if (args.Length == 4 && args[0] == "--inspection-ct")
+            {
+                Run("Inspection CT replay", () => BenchmarkInspection(args));
+                return _failed == 0 ? 0 : 1;
+            }
             if (string.Equals(Environment.GetEnvironmentVariable("NPRCAL_BLOB_DIAG"), "1", StringComparison.Ordinal))
             {
                 Run("Blob ROI keeps only the largest white region", TestBlobAnalysis);
@@ -1622,6 +1651,58 @@ namespace NinePointRotationCalibration.Station.Tests
                 targetCenterColumn + (cos * localColumn) - (sin * localRow));
         }
 
+        private static void BenchmarkInspection(string[] args)
+        {
+            using (var sdk = new NinePointRotationCalibrationSdk())
+            using (var source = Image.FromFile(args[1]))
+            using (var image = new Bitmap(source))
+            using (var cache = (IDisposable)Activator.CreateInstance(typeof(BoardInspectionService).Assembly.GetType(
+                "NinePointRotationCalibration.Station.Services.Inspection.LockedFrameGrayCache", true), true))
+            {
+                var job = sdk.TryLoadJob(Path.Combine(args[2], "positioning.nprcal"));
+                True(job.Success, job.Message);
+                var profile = new AtomicJsonStore().Load<DetectionProfile>(Path.Combine(args[2], "detection-profile.json"));
+                var service = new BoardInspectionService(sdk);
+                var inspect = typeof(BoardInspectionService).GetMethod("InspectCore", BindingFlags.Instance | BindingFlags.NonPublic);
+                int expected = int.Parse(args[3], System.Globalization.CultureInfo.InvariantCulture);
+                var totals = new[] { new List<double>(), new List<double>() };
+                var conversions = new[] { new List<double>(), new List<double>() };
+                string signature = null;
+                for (int i = 0; i < 66; i++)
+                {
+                    // Alternate AB and BA pairs to balance warm-up, CPU load and call order.
+                    int mode = (i / 2 + i % 2) % 2;
+                    var result = mode == 0 ? service.InspectWithoutMapping(image, job.Job, profile, expected)
+                        : (InspectionResult)inspect.Invoke(service, new object[] { image, job.Job, null, null, profile, expected, 0.0, false, cache });
+                    True(result.Executed && result.ActualCount > 0 && result.Items.Count == result.ActualCount, result.Message);
+                    var detail = string.Join("|", result.Items.Select(item => FormattableString.Invariant(
+                        $"{item.BoardIndex},{item.ImageRow:R},{item.ImageColumn:R},{item.ImageAngleDegrees:R},{item.MatchScore:R},{item.HasManualMark},{item.Blobs.Count}")));
+                    if (signature == null) signature = detail;
+                    True(signature == detail, "Replay produced different board results");
+                    if (i >= 6)
+                    {
+                        totals[mode].Add(result.ElapsedMilliseconds);
+                        conversions[mode].Add(result.ImageConversionElapsedMilliseconds);
+                    }
+                    if (i == 0)
+                    {
+                        using (var hash = System.Security.Cryptography.SHA256.Create())
+                            Console.WriteLine("boards={0}, marked={1}, judgement={2}, SHA256={3}", result.ActualCount,
+                                result.Items.Count(item => item.HasManualMark), result.ErrorCode,
+                                BitConverter.ToString(hash.ComputeHash(System.Text.Encoding.UTF8.GetBytes(detail))).Replace("-", ""));
+                    }
+                }
+                for (int mode = 0; mode < totals.Length; mode++)
+                {
+                    totals[mode].Sort();
+                    conversions[mode].Sort();
+                    Console.WriteLine("{0} 30 frames: CT median={1:F2}ms p95={2:F2}ms, conversion median={3:F2}ms",
+                        mode == 0 ? "Uncached" : "Locked frame", (totals[mode][14] + totals[mode][15]) / 2,
+                        totals[mode][28], (conversions[mode][14] + conversions[mode][15]) / 2);
+                }
+            }
+        }
+
         private static void TestBoardInspection()
         {
             TemplateMatchResult board = SuccessfulMatch(60.0, 80.0, 5.0);
@@ -1819,7 +1900,7 @@ namespace NinePointRotationCalibration.Station.Tests
             };
             using (CameraAcquisitionService camera = new CameraAcquisitionService(device, 50))
             {
-                await camera.ConnectAsync("TEST-CAMERA", 1000.0, CancellationToken.None).ConfigureAwait(false);
+                await camera.ConnectAsync("TEST-CAMERA", CancellationToken.None).ConfigureAwait(false);
                 object stateSync = new object();
                 List<bool> states = new List<bool>();
                 TaskCompletionSource<bool> recovered = NewCompletion<bool>();
@@ -2214,14 +2295,9 @@ namespace NinePointRotationCalibration.Station.Tests
                     True(reloaded.ArchiveImages,
                         "toggling chkArchiveImages must immediately persist ArchiveImages to station.json");
 
-                    Control advPanel = form.Controls.Find("flpCameraAdvancedParameters", true).Single();
-                    True(!advPanel.Enabled,
-                        "advanced camera parameters panel must be disabled when camera is disabled");
-                    TableLayoutPanel firstRow = advPanel.Controls.OfType<TableLayoutPanel>().First();
-                    Label firstLabel = firstRow.Controls.OfType<Label>().Single();
-                    ComboBox firstCombo = firstRow.Controls.OfType<ComboBox>().Single();
-                    True(firstLabel.Text == "自动曝光" && Equals(firstCombo.SelectedItem, "Off"),
-                        "ExposureAuto must keep localized ComboBox metadata instead of stale 0.0000 numeric fallback");
+                    True(form.Controls.Find("flpCameraAdvancedParameters", true).Length == 0 &&
+                         !form.Controls.Find("nudCameraExposure", true).Single().Enabled,
+                        "only common camera settings should be exposed, with exposure disabled offline");
 
                     form.StartPosition = FormStartPosition.Manual;
                     form.Location = new Point(-32000, -32000);
@@ -2249,7 +2325,7 @@ namespace NinePointRotationCalibration.Station.Tests
                             "btnSyncLiveToMain",
                             "btnFitLivePreview",
                             "cameraLiveViewport",
-                            "nudPreviewInterval"
+                            "nudCameraExposure"
                         })
                         {
                             Control control = form.Controls.Find(name, true).Single();
@@ -2294,6 +2370,8 @@ namespace NinePointRotationCalibration.Station.Tests
                 {
                     using (FrameEventArgs inspection = SolidFrame(Color.Red, "offline-inspection"))
                         InvokeBinder(binder, "Runtime_FrameReady", runtime, inspection);
+                    object redCache = GetPrivateField<object>(binder, "_lockedGray");
+                    True(redCache != null, "a locked frame must have its own grayscale cache");
 
                     InspectionResult result = new InspectionResult
                     {
@@ -2347,6 +2425,10 @@ namespace NinePointRotationCalibration.Station.Tests
 
                     using (FrameEventArgs manual = SolidFrame(Color.Green, "manual"))
                         InvokeBinder(binder, "Runtime_FrameReady", runtime, manual);
+                    object greenCache = GetPrivateField<object>(binder, "_lockedGray");
+                    True(greenCache != null && !ReferenceEquals(redCache, greenCache),
+                        "a same-size replacement must not inherit the previous frame's gray pixels");
+                    True((bool)GetPrivateField<object>(redCache, "_disposed"), "replacing a frame must release its gray cache");
                     True(GetViewportPointOverlayCount(form.Viewport) == 0,
                         "a new explicit frame must clear overlays from the previous frame");
                     InvokeBinder(
@@ -2358,6 +2440,7 @@ namespace NinePointRotationCalibration.Station.Tests
                         "an inspection result must not draw on a newer unrelated frame");
 
                     InvokeBinder(binder, "ResumeLivePreview");
+                    True((bool)GetPrivateField<object>(greenCache, "_disposed"), "live preview must release the locked gray cache");
                     True(GetLockedDisplayImage(binder) == null,
                         "resuming camera preview must release the retained offline frame");
                 }
@@ -3174,12 +3257,10 @@ namespace NinePointRotationCalibration.Station.Tests
                     Application.DoEvents();
 
                     // 启动预热验证：所有未点击切换的标签页及内部复杂容器句柄应在加载阶段提前就绪，避免切页时现加载
-                    FlowLayoutPanel advancedCamPanel = form.Controls.Find("flpCameraAdvancedParameters", true).OfType<FlowLayoutPanel>().Single();
                     True(form.WorkTabs.TabPages.Count == 6 &&
                          form.WorkTabs.TabPages.Cast<TabPage>().All(p => p.IsHandleCreated) &&
                          form.DetectionResultGrid.IsHandleCreated &&
-                         advancedCamPanel.IsHandleCreated &&
-                         advancedCamPanel.Controls.Cast<Control>().All(c => c.IsHandleCreated),
+                         form.Controls.Find("nudCameraExposure", true).Single().IsHandleCreated,
                         "MainForm must pre-warm handles and layout for every unselected tab page on load");
 
                     SplitContainer imageSplit = form.Controls.Find("imageSplit", true).OfType<SplitContainer>().Single();
@@ -3698,6 +3779,40 @@ namespace NinePointRotationCalibration.Station.Tests
                 try { setLogDir.Invoke(null, new object[] { null }); } catch { }
                 if (Directory.Exists(directory)) Directory.Delete(directory, true);
             }
+        }
+
+        private static async Task TestDeviceSettingsAsync()
+        {
+            string directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+            try
+            {
+                string path = Path.Combine(directory, "station.json");
+                StationOptions options = CreateTestOptions(directory, Path.Combine(directory, "detection.json"),
+                    Path.Combine(directory, "positioning.nprcal"));
+                options.CameraEnabled = true;
+                options.CameraExposureMicroseconds = 9000;
+                var camera = new MockCameraDevice();
+                using (StationRuntime runtime = CreateRuntime(path, options, camera))
+                {
+                    var token = CancellationToken.None;
+                    await camera.ConnectAsync(MockCameraDevice.DefaultDeviceId, token);
+                    await camera.SetParametersAsync(new CameraParameterSet {
+                        ExposureMicroseconds = 3456, Gain = 4, Gamma = 1.8, TriggerMode = "Hardware"
+                    }, token);
+                    await runtime.ConnectCameraAsync(MockCameraDevice.DefaultDeviceId, token);
+                    var read = await runtime.GetCameraParametersAsync(token);
+                    True(read.ExposureMicroseconds == 3456 && read.Gamma == 1.8 && read.TriggerMode == "Hardware",
+                        "connect and read must preserve device parameters");
+                    await runtime.SetCameraExposureAsync(7890, token);
+                    await runtime.DisconnectCameraAsync();
+                    await runtime.ConnectCameraAsync(MockCameraDevice.DefaultDeviceId, token);
+                    read = await runtime.GetCameraParametersAsync(token);
+                    True(read.ExposureMicroseconds == 7890 && read.Gain == 4 &&
+                        read.Gamma == 1.8 && read.TriggerMode == "Hardware", "only exposure should change");
+                }
+            }
+            finally { Directory.Delete(directory, true); }
         }
 
         private static async Task TestTemplateDefaultAutoThresholdAndCameraLiveWindowAsync()

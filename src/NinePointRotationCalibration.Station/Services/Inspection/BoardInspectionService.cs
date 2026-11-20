@@ -10,6 +10,38 @@ using NinePointRotationCalibration.Station.Models;
 
 namespace NinePointRotationCalibration.Station.Services.Inspection
 {
+    // One instance per immutable locked frame. Each inspection owns its native image reference.
+    internal sealed class LockedFrameGrayCache : IDisposable
+    {
+        private readonly object _sync = new object();
+        private HalconGrayImage _gray;
+        private bool _disposed;
+
+        internal HalconGrayImage Acquire(Bitmap snapshot)
+        {
+            lock (_sync)
+            {
+                if (_disposed) return HalconGrayImage.FromBitmap(snapshot);
+                if (_gray != null) return _gray.Share();
+                using (HalconGrayImage first = HalconGrayImage.FromBitmap(snapshot))
+                {
+                    _gray = first.Share();
+                }
+                return _gray.Share();
+            }
+        }
+
+        public void Dispose()
+        {
+            lock (_sync)
+            {
+                _disposed = true;
+                if (_gray != null) _gray.Dispose();
+                _gray = null;
+            }
+        }
+    }
+
     /// <summary>负责 PCB 多板模板定位、ROI Blob 标记检测及双吸嘴目标位姿映射的检测服务。</summary>
     public sealed class BoardInspectionService
     {
@@ -63,7 +95,7 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
                 false);
         }
 
-        private InspectionResult InspectCore(
+        internal InspectionResult InspectCore(
             Bitmap image,
             CalibrationJob positioningJob,
             CalibrationResult calibration,
@@ -71,7 +103,8 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
             DetectionProfile profile,
             int expectedCount,
             double currentR,
-            bool mapTargets)
+            bool mapTargets,
+            LockedFrameGrayCache frameCache = null)
         {
             Stopwatch watch = Stopwatch.StartNew();
             InspectionResult result = new InspectionResult
@@ -172,8 +205,9 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
                         ? expectedCount
                         : expectedCount + 1;
                     // 整帧仅转换一次灰度图，供模板匹配与后续多 ROI Blob 分析共享
-                    gray = HalconGrayImage.FromBitmap(image);
-                    result.ImageConversionElapsedMilliseconds += gray.ConversionElapsedMilliseconds;
+                    var conversion = Stopwatch.StartNew();
+                    gray = frameCache == null ? HalconGrayImage.FromBitmap(image) : frameCache.Acquire(image);
+                    result.ImageConversionElapsedMilliseconds += conversion.Elapsed.TotalMilliseconds;
                     Stopwatch matchWatch = Stopwatch.StartNew();
                     TemplateMatchCollectionResult matches = _sdk.LocateAll(image, gray, locateTemplate, true);
                     matchWatch.Stop();

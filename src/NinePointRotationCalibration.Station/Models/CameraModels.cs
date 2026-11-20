@@ -53,7 +53,6 @@ namespace NinePointRotationCalibration.Station.Models
     {
         public string Id { get; set; }
         public string DisplayName { get; set; }
-
         public override string ToString()
         {
             return string.IsNullOrWhiteSpace(DisplayName) ? Id : DisplayName;
@@ -132,6 +131,7 @@ namespace NinePointRotationCalibration.Station.Models
             Image = image ?? throw new ArgumentNullException(nameof(image));
             Sequence = sequence;
             CapturedAtUtc = capturedAtUtc;
+
         }
 
         public Bitmap Image { get; private set; }

@@ -191,8 +191,8 @@ namespace NinePointRotationCalibration.Station.Devices
                                 maximum));
                     }
 
-                    if (_camera.IMV_FeatureIsAvailable("ExposureAuto"))
-                        CheckResult(_camera.IMV_SetEnumFeatureSymbol("ExposureAuto", "Off"), "Disable auto exposure");
+                    if (!_camera.IMV_FeatureIsWriteable("ExposureTime"))
+                        throw new InvalidOperationException("当前曝光不可写，请检查相机的自动曝光设置。");
 
                     CheckResult(
                         _camera.IMV_SetDoubleFeatureValue("ExposureTime", exposureMicroseconds),
@@ -211,16 +211,13 @@ namespace NinePointRotationCalibration.Station.Devices
                     cancellationToken.ThrowIfCancellationRequested();
                     EnsureConnectedCore();
                     CameraParameterSet parameters = new CameraParameterSet();
-                    parameters.ExposureMicroseconds = GetDoubleFeature("ExposureTime", parameters.ExposureMicroseconds);
-                    parameters.Gain = GetDoubleFeature("GainRaw", parameters.Gain);
-                    parameters.Gamma = GetDoubleFeature("Gamma", parameters.Gamma);
-                    parameters.Saturation = GetIntFeature("Saturation", (long)parameters.Saturation);
-                    parameters.Width = checked((int)GetIntFeature("Width", 0));
-                    parameters.Height = checked((int)GetIntFeature("Height", 0));
-                    parameters.ReverseX = GetBoolFeature("ReverseX");
-                    parameters.ReverseY = GetBoolFeature("ReverseY");
-                    parameters.TriggerMode = GetTriggerMode();
-                    parameters.Features.AddRange(ReadWritableFeatures());
+                    parameters.ExposureMicroseconds = GetDoubleFeature("ExposureTime", double.NaN);
+                    string gainNode = _camera.IMV_FeatureIsAvailable("Gain") ? "Gain" : "GainRaw";
+                    CameraFeatureValue gain = TryReadFeature(gainNode);
+                    double value;
+                    parameters.Gain = gain != null && double.TryParse(gain.Value, NumberStyles.Float,
+                        CultureInfo.InvariantCulture, out value) ? value : double.NaN;
+                    parameters.TriggerMode = _cachedTriggerMode = GetTriggerMode();
                     return parameters;
                 },
                 cancellationToken);
@@ -474,13 +471,13 @@ namespace NinePointRotationCalibration.Station.Devices
 
         private void SetBoolFeatureIfAvailable(string name, bool value)
         {
-            if (_camera.IMV_FeatureIsAvailable(name))
+            if (_camera.IMV_FeatureIsAvailable(name) && _camera.IMV_FeatureIsWriteable(name))
                 CheckResult(_camera.IMV_SetBoolFeatureValue(name, value), "Set " + name);
         }
 
         private string GetTriggerMode()
         {
-            if (!_camera.IMV_FeatureIsAvailable("TriggerMode")) return "Software";
+            if (!_camera.IMV_FeatureIsAvailable("TriggerMode")) return "Continuous";
             IMVDefine.IMV_String mode = new IMVDefine.IMV_String();
             CheckResult(_camera.IMV_GetEnumFeatureSymbol("TriggerMode", ref mode), "Get TriggerMode");
             if (string.Equals(mode.str, "Off", StringComparison.OrdinalIgnoreCase)) return "Continuous";
@@ -620,19 +617,11 @@ namespace NinePointRotationCalibration.Station.Devices
                 _cameraOpened = true;
 
                 CheckResult(_camera.IMV_SetBufferCount(DriverBufferCount), "Set stream buffer count");
-                SetEnumFeatureIfAvailable("AcquisitionMode", "Continuous");
-                CheckResult(
-                    _camera.IMV_SetEnumFeatureSymbol("TriggerSource", "Software"),
-                    "Set software trigger source");
-                SetEnumFeatureIfAvailable("TriggerSelector", "FrameStart");
-                CheckResult(
-                    _camera.IMV_SetEnumFeatureSymbol("TriggerMode", "On"),
-                    "Enable trigger mode");
+                _cachedTriggerMode = GetTriggerMode();
 
                 cancellationToken.ThrowIfCancellationRequested();
                 CheckResult(_camera.IMV_StartGrabbing(), "Start grabbing");
                 _streamStarted = true;
-                _cachedTriggerMode = "Software";
 
                 lock (_stateSync)
                 {
@@ -711,7 +700,8 @@ namespace NinePointRotationCalibration.Station.Devices
                 throw new CameraDeviceException("Release frame", releaseResult);
             }
 
-            if (cancellationToken.IsCancellationRequested)
+            // The preview loop owns its final frame even if stop was requested during IMV_GetFrame.
+            if (!isPreview && cancellationToken.IsCancellationRequested)
             {
                 bitmap.Dispose();
                 cancellationToken.ThrowIfCancellationRequested();
@@ -723,7 +713,7 @@ namespace NinePointRotationCalibration.Station.Devices
 
         private bool IsSoftwareTriggerEnabled()
         {
-            if (!_camera.IMV_FeatureIsAvailable("TriggerMode")) return true;
+            if (!_camera.IMV_FeatureIsAvailable("TriggerMode")) return false;
             IMVDefine.IMV_String mode = new IMVDefine.IMV_String();
             CheckResult(_camera.IMV_GetEnumFeatureSymbol("TriggerMode", ref mode), "Get TriggerMode before capture");
             if (string.Equals(mode.str, "Off", StringComparison.OrdinalIgnoreCase)) return false;

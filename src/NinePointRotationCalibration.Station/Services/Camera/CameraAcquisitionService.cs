@@ -108,10 +108,15 @@ namespace NinePointRotationCalibration.Station.Services.Camera
             }
         }
 
-        /// <summary>连接指定相机并同步设置初始曝光时间。</summary>
+        // Retained for callers compiled against the previous connection API.
+        public Task ConnectAsync(string deviceId, double exposureMicroseconds, CancellationToken cancellationToken)
+        {
+            return ConnectAsync(deviceId, cancellationToken);
+        }
+
+        /// <summary>连接指定相机，沿用设备当前采集参数。</summary>
         public async Task ConnectAsync(
             string deviceId,
-            double exposureMicroseconds,
             CancellationToken cancellationToken)
         {
             ThrowIfDisposed();
@@ -120,7 +125,6 @@ namespace NinePointRotationCalibration.Station.Services.Camera
             {
                 if (_device.IsConnected) await _device.DisconnectAsync().ConfigureAwait(false);
                 await _device.ConnectAsync(deviceId, cancellationToken).ConfigureAwait(false);
-                await _device.SetExposureAsync(exposureMicroseconds, cancellationToken).ConfigureAwait(false);
                 OnLog("INFO", "Camera connected: " + _device.ProviderName + " / " + _device.ConnectedDeviceId);
             }
             finally
@@ -261,7 +265,8 @@ namespace NinePointRotationCalibration.Station.Services.Camera
                 if (_previewCancellation != null) return;
                 _previewCancellation = new CancellationTokenSource();
                 _liveFps = 0.0;
-                _previewTask = Task.Run(() => PreviewLoopAsync(_previewCancellation.Token));
+                CancellationToken token = _previewCancellation.Token;
+                _previewTask = Task.Run(() => PreviewLoopAsync(token));
                 started = true;
             }
             if (started)
@@ -322,6 +327,7 @@ namespace NinePointRotationCalibration.Station.Services.Camera
         {
             int consecutiveFailures = 0;
             bool failureReported = false;
+            bool firstFrame = true;
             Stopwatch frameWatch = new Stopwatch();
             Stopwatch fpsWindowWatch = Stopwatch.StartNew();
             Stopwatch statsLogWatch = Stopwatch.StartNew();
@@ -355,6 +361,13 @@ namespace NinePointRotationCalibration.Station.Services.Camera
                     frameWatch.Restart();
                     using (CameraFrame frame = await CaptureCoreAsync(cancellationToken, true).ConfigureAwait(false))
                     {
+                        if (cancellationToken.IsCancellationRequested) break;
+                        if (firstFrame)
+                        {
+                            firstFrame = false;
+                            LocalDebugLog.Write("INFO", "camera.preview", "First preview frame: " +
+                                frame.Image.Width + "x" + frame.Image.Height + ", format=" + frame.Image.PixelFormat + ".");
+                        }
                         Interlocked.Increment(ref _liveFrameCount);
                         windowFrames++;
                         double fpsElapsed = fpsWindowWatch.Elapsed.TotalSeconds;
@@ -407,7 +420,7 @@ namespace NinePointRotationCalibration.Station.Services.Camera
                         await Task.Yield();
                     }
                 }
-                catch (OperationCanceledException)
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
                     break;
                 }

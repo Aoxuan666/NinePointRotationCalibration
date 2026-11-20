@@ -31,6 +31,12 @@ namespace NinePointRotationCalibration.WinForms.Controls
         };
 
         private readonly List<MaskStroke> _maskStrokes = new List<MaskStroke>();
+        private Bitmap _maskHistory;
+        private Bitmap _maskInk;
+        private int _paintedStrokes;
+        private int _paintedInkPoints;
+        private MaskStroke _inkOwner;
+        private double _maskZoom, _maskX, _maskY;
         private readonly Timer _zoomRenderTimer;
         private Bitmap _image;
         private Bitmap _interactivePreview;
@@ -351,6 +357,7 @@ namespace NinePointRotationCalibration.WinForms.Controls
         /// </summary>
         public void SetMaskStrokes(IEnumerable<MaskStroke> strokes)
         {
+            ClearMaskCache();
             _maskStrokes.Clear();
             if (strokes != null)
             {
@@ -409,6 +416,7 @@ namespace NinePointRotationCalibration.WinForms.Controls
             {
                 _zoomRenderTimer.Stop();
                 _zoomRenderTimer.Dispose();
+                ClearMaskCache();
                 InvalidateImageCache();
                 if (_image != null)
                 {
@@ -988,14 +996,13 @@ namespace NinePointRotationCalibration.WinForms.Controls
                 {
                     path.AddPolygon(clipPoints);
                     graphics.SetClip(path, CombineMode.Intersect);
-                    foreach (MaskStroke stroke in _maskStrokes)
-                    {
-                        DrawMaskStroke(graphics, stroke);
-                    }
+                    if (ClientSize.Width <= 0 || ClientSize.Height <= 0) return;
+                    UpdateMaskCache();
+                    graphics.DrawImageUnscaled(_maskHistory, 0, 0);
 
                     if (_activeStroke != null)
                     {
-                        DrawMaskStroke(graphics, _activeStroke);
+                        graphics.DrawImageUnscaled(_maskInk, 0, 0);
                     }
                 }
             }
@@ -1005,7 +1012,58 @@ namespace NinePointRotationCalibration.WinForms.Controls
             }
         }
 
-        private void DrawMaskStroke(Graphics graphics, MaskStroke stroke)
+        private void ClearMaskCache()
+        {
+            if (_maskHistory != null) _maskHistory.Dispose();
+            if (_maskInk != null) _maskInk.Dispose();
+            _maskHistory = _maskInk = null;
+            _inkOwner = null;
+            _paintedStrokes = _paintedInkPoints = 0;
+        }
+
+        private void UpdateMaskCache()
+        {
+            // Coordinates are viewport-relative. The template ROI clips the layers at presentation.
+            if (_maskHistory == null || _maskHistory.Size != ClientSize ||
+                _maskZoom != _zoom || _maskX != _offsetX || _maskY != _offsetY)
+            {
+                ClearMaskCache();
+                _maskHistory = new Bitmap(ClientSize.Width, ClientSize.Height, PixelFormat.Format32bppPArgb);
+                _maskZoom = _zoom;
+                _maskX = _offsetX;
+                _maskY = _offsetY;
+            }
+            if (_paintedStrokes < _maskStrokes.Count)
+            {
+                using (Graphics layer = Graphics.FromImage(_maskHistory))
+                {
+                    layer.SmoothingMode = SmoothingMode.AntiAlias;
+                    while (_paintedStrokes < _maskStrokes.Count)
+                    {
+                        DrawMaskStroke(layer, _maskStrokes[_paintedStrokes], 0);
+                        _paintedStrokes++;
+                    }
+                }
+            }
+            if (_activeStroke == null) return;
+            if (_maskInk == null)
+                _maskInk = new Bitmap(ClientSize.Width, ClientSize.Height, PixelFormat.Format32bppPArgb);
+            if (_inkOwner == _activeStroke && _paintedInkPoints == _activeStroke.Points.Count) return;
+            using (Graphics ink = Graphics.FromImage(_maskInk))
+            {
+                ink.CompositingMode = CompositingMode.SourceCopy;
+                if (_inkOwner != _activeStroke)
+                {
+                    ink.Clear(Color.Transparent);
+                    _inkOwner = _activeStroke;
+                    _paintedInkPoints = 0;
+                }
+                DrawMaskStroke(ink, _activeStroke, Math.Max(0, _paintedInkPoints - 1));
+                _paintedInkPoints = _activeStroke.Points.Count;
+            }
+        }
+
+        private void DrawMaskStroke(Graphics graphics, MaskStroke stroke, int firstPoint)
         {
             if (stroke == null || stroke.Points == null || stroke.Points.Count == 0)
             {
@@ -1022,7 +1080,8 @@ namespace NinePointRotationCalibration.WinForms.Controls
                 pen.StartCap = LineCap.Round;
                 pen.EndCap = LineCap.Round;
                 pen.LineJoin = LineJoin.Round;
-                PointF[] points = stroke.Points.Select(ImageToClient).ToArray();
+                PointF[] points = new PointF[stroke.Points.Count - firstPoint];
+                for (int i = 0; i < points.Length; i++) points[i] = ImageToClient(stroke.Points[firstPoint + i]);
                 if (points.Length == 1)
                 {
                     graphics.FillEllipse(brush, points[0].X - (width / 2.0f), points[0].Y - (width / 2.0f), width, width);
@@ -1585,7 +1644,11 @@ namespace NinePointRotationCalibration.WinForms.Controls
 
             _activeStroke.Points.Add(current);
             _transactionChanged = true;
-            Invalidate();
+            PointF start = ImageToClient(previous);
+            PointF end = ImageToClient(current);
+            float margin = (float)Math.Max(1, _activeStroke.Radius * _zoom) + 3;
+            Invalidate(Rectangle.Ceiling(RectangleF.FromLTRB(Math.Min(start.X, end.X) - margin,
+                Math.Min(start.Y, end.Y) - margin, Math.Max(start.X, end.X) + margin, Math.Max(start.Y, end.Y) + margin)));
         }
 
         private void FinishDrag(bool commit)
@@ -1620,8 +1683,8 @@ namespace NinePointRotationCalibration.WinForms.Controls
 
             if (operation == DragOperation.Mask && _activeStroke != null)
             {
-                MaskStroke completed = _activeStroke.DeepClone();
-                _maskStrokes.Add(completed.DeepClone());
+                MaskStroke completed = _activeStroke;
+                _maskStrokes.Add(completed);
                 _activeStroke = null;
                 EventHandler<MaskStrokeEventArgs> strokeHandler = MaskStrokeCreated;
                 if (strokeHandler != null)

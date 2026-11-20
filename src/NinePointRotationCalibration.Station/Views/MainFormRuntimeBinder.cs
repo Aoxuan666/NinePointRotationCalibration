@@ -37,6 +37,7 @@ namespace NinePointRotationCalibration.Station.Views
         private readonly object _binaryPreviewSync = new object();
         private readonly BoardBlobAnalyzer _binaryAnalyzer = new BoardBlobAnalyzer();
         private Bitmap _lockedDisplayImage;
+        private LockedFrameGrayCache _lockedGray;
         private CancellationTokenSource _binaryPreviewCancellation;
         private List<DetectionRoi> _lastDetectionRegions = new List<DetectionRoi>();
         private List<ViewportPointOverlay> _lastInspectionPoints = new List<ViewportPointOverlay>();
@@ -54,8 +55,7 @@ namespace NinePointRotationCalibration.Station.Views
         private long _displayGeneration;
         private long _inspectionFrameGeneration = -1;
         private bool _disposed;
-        private bool _cameraFeatureResizeHooked;
-        private CameraParameterSet _cameraParameterSnapshot;
+        private decimal? _readExposure;
         private int _lastLiveInfoUpdateTick;
 
         public MainFormRuntimeBinder(MainForm view, StationRuntime runtime)
@@ -102,28 +102,7 @@ namespace NinePointRotationCalibration.Station.Views
             SetNumeric("nudCalibrationStepR", options.RotationStepDegrees);
             SetNumeric("nudMotionTimeout", options.MotionTimeoutMilliseconds);
             SetNumeric("nudExpectedCount", options.ExpectedBoardCount);
-            SetNumeric("nudCameraExposure", options.CameraExposureMicroseconds);
-            SetNumeric("nudCameraGain", options.CameraGain);
-            SetNumeric("nudCameraGamma", options.CameraGamma);
-            SetNumeric("nudCameraTimeout", options.CameraTimeoutMilliseconds);
-            SetNumeric("nudPreviewInterval", options.PreviewIntervalMilliseconds);
-            RenderCameraFeatures(new CameraParameterSet
-            {
-                Features = options.CameraFeatures == null
-                    ? new List<CameraFeatureValue>()
-                    : options.CameraFeatures.Select(item => new CameraFeatureValue
-                    {
-                        Name = item.Key,
-                        Value = item.Value,
-                        IsWritable = false
-                    }).ToList()
-            });
-            ComboBox triggerMode = FindControl<ComboBox>("cmbCameraTriggerMode");
-            triggerMode.SelectedItem = string.Equals(options.CameraTriggerMode, "Hardware", StringComparison.OrdinalIgnoreCase)
-                ? "硬件触发"
-                : string.Equals(options.CameraTriggerMode, "Continuous", StringComparison.OrdinalIgnoreCase)
-                    ? "连续采集"
-                    : "软件触发";
+            RenderCameraFeatures(null);
             SelectCameraProvider(options.CameraProvider);
             _runtime.SetPreviewConsumerBusyCallback(IsPreviewConsumerBusy);
             _view.RefreshFeatureAvailability(
@@ -396,7 +375,10 @@ namespace NinePointRotationCalibration.Station.Views
                         await RunOperationAsync(
                             "断开相机",
                             e.Source,
-                            token => _runtime.DisconnectCameraAsync()).ConfigureAwait(true);
+                            async token => { await _runtime.DisconnectCameraAsync(); RenderCameraFeatures(null); }).ConfigureAwait(true);
+                        return;
+                    case "camera.read":
+                        await RunOperationAsync("读取相机参数", e.Source, ReadDeviceParametersAsync).ConfigureAwait(true);
                         return;
                     case "camera.apply":
                         await RunOperationAsync("应用相机参数", e.Source, ApplyCameraSettingsAsync).ConfigureAwait(true);
@@ -745,6 +727,8 @@ namespace NinePointRotationCalibration.Station.Views
             {
                 locked = _lockedDisplayImage;
                 _lockedDisplayImage = null;
+                if (_lockedGray != null) _lockedGray.Dispose();
+                _lockedGray = null;
                 _displayGeneration++;
                 _inspectionFrameGeneration = -1;
             }

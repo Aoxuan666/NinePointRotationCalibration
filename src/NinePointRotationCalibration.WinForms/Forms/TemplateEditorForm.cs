@@ -834,9 +834,9 @@ namespace NinePointRotationCalibration.WinForms.Forms
 
         private void CanvasMaskStrokeCreated(object sender, MaskStrokeEventArgs eventArgs)
         {
-            _state.MaskStrokes = _canvas.GetMaskStrokes().ToList();
+            _state.MaskStrokes.Add(eventArgs.Stroke);
             MarkChanged(true);
-            RequestAutoFeaturePreview(true);
+            RequestAutoFeaturePreview(false);
         }
 
         private void StructuralParameterChanged(object sender, EventArgs eventArgs)

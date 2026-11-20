@@ -305,7 +305,7 @@ namespace NinePointRotationCalibration.Station.Services
             return devices;
         }
 
-        /// <summary>断开预览并连接指定相机，下发采集参数后启动实时预览循环。</summary>
+        /// <summary>停止旧预览，使用设备当前参数连接相机。</summary>
         public async Task ConnectCameraAsync(string deviceId, CancellationToken cancellationToken)
         {
             EnsureCameraEnabled();
@@ -313,19 +313,9 @@ namespace NinePointRotationCalibration.Station.Services
             LocalDebugLog.Write(
                 "INFO",
                 "camera.connect",
-                "Connecting camera deviceId='" + deviceId + "', provider=" + _camera.ProviderName +
-                ", exposure=" + options.CameraExposureMicroseconds.ToString("0.##", CultureInfo.InvariantCulture) + "us, trigger=" + options.CameraTriggerMode);
+                "Connecting camera deviceId='" + deviceId + "', provider=" + _camera.ProviderName);
             await _camera.StopPreviewAsync().ConfigureAwait(false);
-            await _camera.ConnectAsync(deviceId, options.CameraExposureMicroseconds, cancellationToken).ConfigureAwait(false);
-            CameraParameterSet paramSet = new CameraParameterSet
-            {
-                ExposureMicroseconds = options.CameraExposureMicroseconds,
-                Gain = options.CameraGain,
-                Gamma = options.CameraGamma,
-                Features = ParseCameraFeatures(options.CameraFeatures),
-                TriggerMode = options.CameraTriggerMode
-            };
-            await _camera.SetParametersAsync(paramSet, cancellationToken).ConfigureAwait(false);
+            await _camera.ConnectAsync(deviceId, cancellationToken).ConfigureAwait(false);
             // 仅真实相机且开启“兼容相机实时采集”选项时自动开启实时预览流；模拟相机启动时不自动推送默认测试图
             bool autoStartPreview = options.LiveAcquisitionEnabled && !IsMockCamera;
             if (autoStartPreview)
@@ -336,8 +326,7 @@ namespace NinePointRotationCalibration.Station.Services
                 "INFO",
                 "camera.connect",
                 "Camera connected: " + _camera.ProviderName + " / " + _camera.ConnectedDeviceId +
-                ", liveOption=" + options.LiveAcquisitionEnabled + ", previewStarted=" + autoStartPreview + ", " +
-                StationLogFormatter.FormatCameraParameters(paramSet));
+                ", liveOption=" + options.LiveAcquisitionEnabled + ", previewStarted=" + autoStartPreview);
             OnStateChanged("camera", true, _camera.ProviderName + " / " + _camera.ConnectedDeviceId);
         }
 
@@ -1117,10 +1106,16 @@ namespace NinePointRotationCalibration.Station.Services
             double currentR,
             CancellationToken cancellationToken)
         {
+            return RunOfflineInspectionAsync(image, expectedCount, currentR, cancellationToken, null);
+        }
+
+        internal Task<InspectionResult> RunOfflineInspectionAsync(Bitmap image, int expectedCount,
+            double currentR, CancellationToken cancellationToken, LockedFrameGrayCache frameCache)
+        {
             if (image == null) throw new ArgumentNullException(nameof(image));
             return RunExclusiveAsync(
                 "offline inspection",
-                () => ExecuteOfflineInspectionAsync(image, expectedCount, currentR, cancellationToken),
+                () => ExecuteOfflineInspectionAsync(image, expectedCount, currentR, cancellationToken, frameCache),
                 cancellationToken);
         }
 
@@ -1604,7 +1599,8 @@ namespace NinePointRotationCalibration.Station.Services
             Bitmap image,
             int expectedCount,
             double currentR,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            LockedFrameGrayCache frameCache)
         {
             await _inspectionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
@@ -1651,20 +1647,8 @@ namespace NinePointRotationCalibration.Station.Services
 
                 PublishFrame(image, "offline-inspection");
                 InspectionResult result = await Task.Run(
-                    () => canMapTargets
-                        ? _inspection.Inspect(
-                            image,
-                            positioning,
-                            calibration,
-                            teaching,
-                            profile,
-                            expectedCount,
-                            currentR)
-                        : _inspection.InspectWithoutMapping(
-                            image,
-                            positioning,
-                            profile,
-                            expectedCount),
+                    () => _inspection.InspectCore(image, positioning, calibration, teaching,
+                        profile, expectedCount, canMapTargets ? currentR : 0.0, canMapTargets, frameCache),
                     cancellationToken).ConfigureAwait(false);
                 if (calibrationEnabled && !canMapTargets && result != null && result.Executed)
                 {

@@ -9,6 +9,7 @@ using NinePointRotationCalibration.Station.Models;
 using NinePointRotationCalibration.Station.Services;
 #if HIKVISION_SDK
 using Seprays.Camera;
+using MvsCamera = MvCamCtrl.NET.MyCamera;
 #endif
 
 namespace NinePointRotationCalibration.Station.Devices
@@ -64,7 +65,7 @@ namespace NinePointRotationCalibration.Station.Devices
             }, cancellationToken);
         }
 
-        /// <summary>按序列号打开海康相机并默认切至软触发模式。</summary>
+        /// <summary>按序列号连接并读取设备的触发模式。</summary>
         public Task ConnectAsync(string deviceId, CancellationToken cancellationToken)
         {
             if (string.IsNullOrWhiteSpace(deviceId)) throw new ArgumentException("A camera serial number is required.", nameof(deviceId));
@@ -77,12 +78,12 @@ namespace NinePointRotationCalibration.Station.Devices
                 {
                     int error = 0;
                     EnsureSuccess(camera.Open(deviceId.Trim(), ref error), error, "Open camera", camera);
-                    SetTriggerModeCore(camera, "Software");
+                    string mode = ReadTriggerMode(camera);
                     lock (_stateSync)
                     {
                         _camera = camera;
                         _connectedDeviceId = deviceId.Trim();
-                        _triggerMode = "Software";
+                        _triggerMode = mode;
                         _reverseX = false;
                         _reverseY = false;
                     }
@@ -128,41 +129,16 @@ namespace NinePointRotationCalibration.Station.Devices
                 int error = 0;
                 float exposure = 0;
                 EnsureSuccess(camera.GetExposureTime(ref exposure, ref error), error, "Get exposure", camera);
-                float gamma = 1;
-                error = 0;
-                EnsureSuccess(camera.GetGamma(ref gamma, ref error), error, "Get gamma", camera);
-                uint saturation = 0;
-                error = 0;
-                EnsureSuccess(camera.GetSaturation(ref saturation, ref error), error, "Get saturation", camera);
-                float gain = 0;
-                TryGetOptionalFloat(camera, new[] { "GetGain", "GetGainValue" }, out gain);
-                string triggerMode;
-                bool reverseX;
-                bool reverseY;
-                lock (_stateSync)
-                {
-                    triggerMode = _triggerMode;
-                    reverseX = _reverseX;
-                    reverseY = _reverseY;
-                }
-                CameraParameterSet parameters = new CameraParameterSet
+                MvsCamera.MVCC_FLOATVALUE gain = new MvsCamera.MVCC_FLOATVALUE();
+                int gainResult = GetMvsHandle(camera).MV_CC_GetFloatValue_NET("Gain", ref gain);
+                string triggerMode = ReadTriggerMode(camera);
+                lock (_stateSync) _triggerMode = triggerMode;
+                return new CameraParameterSet
                 {
                     ExposureMicroseconds = exposure,
-                    Gain = gain,
-                    Gamma = gamma,
-                    Saturation = saturation,
-                    TriggerMode = triggerMode,
-                    ReverseX = reverseX,
-                    ReverseY = reverseY
+                    Gain = gainResult == 0 ? gain.fCurValue : double.NaN,
+                    TriggerMode = triggerMode
                 };
-                AddFeature(parameters, "ExposureTime", "曝光", CameraFeatureKind.Number, exposure.ToString("0.###", CultureInfo.InvariantCulture), "us");
-                AddFeature(parameters, "Gain", "增益", CameraFeatureKind.Number, gain.ToString("0.###", CultureInfo.InvariantCulture), string.Empty);
-                AddFeature(parameters, "Gamma", "伽马", CameraFeatureKind.Number, gamma.ToString("0.###", CultureInfo.InvariantCulture), string.Empty);
-                AddFeature(parameters, "Saturation", "饱和度", CameraFeatureKind.Integer, saturation.ToString(CultureInfo.InvariantCulture), string.Empty);
-                AddFeature(parameters, "ReverseX", "水平翻转", CameraFeatureKind.Boolean, reverseX ? "true" : "false", string.Empty);
-                AddFeature(parameters, "ReverseY", "垂直翻转", CameraFeatureKind.Boolean, reverseY ? "true" : "false", string.Empty);
-                AddFeature(parameters, "TriggerMode", "触发模式", CameraFeatureKind.Enumeration, triggerMode, string.Empty);
-                return parameters;
             }, cancellationToken);
         }
 
@@ -350,6 +326,26 @@ namespace NinePointRotationCalibration.Station.Devices
                 catch (Exception ex) { LocalDebugLog.WriteException("WARN", "camera.hikvision", "FreeHGlobal failed during disconnect", ex); }
             }
             LocalDebugLog.Write("INFO", "camera.hikvision", "Disconnected Hikvision camera: serial='" + previousId + "'.");
+        }
+
+        // Seprays.Camera 2.0 exposes no trigger/gain getters. Use the already-open SDK handle.
+        private static MvsCamera GetMvsHandle(CameraMVS camera)
+        {
+            FieldInfo field = typeof(CameraMVS).GetField("camera", BindingFlags.Instance | BindingFlags.NonPublic);
+            MvsCamera handle = field == null ? null : field.GetValue(camera) as MvsCamera;
+            if (handle == null) throw new NotSupportedException("当前海康相机组件无法读取 MVS 设备节点。");
+            return handle;
+        }
+
+        private static string ReadTriggerMode(CameraMVS camera)
+        {
+            MvsCamera handle = GetMvsHandle(camera);
+            MvsCamera.MVCC_ENUMVALUE value = new MvsCamera.MVCC_ENUMVALUE();
+            if (handle.MV_CC_GetEnumValue_NET("TriggerMode", ref value) != 0) return "Unknown";
+            if (value.nCurValue == (uint)MvsCamera.MV_CAM_TRIGGER_MODE.MV_TRIGGER_MODE_OFF) return "Continuous";
+            if (handle.MV_CC_GetEnumValue_NET("TriggerSource", ref value) != 0) return "Unknown";
+            return value.nCurValue == (uint)MvsCamera.MV_CAM_TRIGGER_SOURCE.MV_TRIGGER_SOURCE_SOFTWARE
+                ? "Software" : "Hardware";
         }
 
         private static void SetTriggerModeCore(CameraMVS camera, string mode)

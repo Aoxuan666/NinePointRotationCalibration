@@ -289,32 +289,25 @@ namespace NinePointRotationCalibration.Halcon
                 return circle;
             }
 
-            HRegion combined = new HRegion();
-            combined.GenEmptyRegion();
-            try
+            int segments = points.Count - 1;
+            int[] startRows = new int[segments], startColumns = new int[segments];
+            int[] endRows = new int[segments], endColumns = new int[segments];
+            for (int i = 0; i < segments; i++)
             {
-                for (int index = 1; index < points.Count; index++)
-                {
-                    using (HRegion line = new HRegion())
-                    {
-                        line.GenRegionLine(
-                            (int)Math.Round(points[index - 1].Row),
-                            (int)Math.Round(points[index - 1].Column),
-                            (int)Math.Round(points[index].Row),
-                            (int)Math.Round(points[index].Column));
-                        using (HRegion widened = line.DilationCircle(radius))
-                        {
-                            Replace(ref combined, combined.Union2(widened));
-                        }
-                    }
-                }
-
-                return combined;
+                startRows[i] = (int)Math.Round(points[i].Row);
+                startColumns[i] = (int)Math.Round(points[i].Column);
+                endRows[i] = (int)Math.Round(points[i + 1].Row);
+                endColumns[i] = (int)Math.Round(points[i + 1].Column);
             }
-            catch
+            using (HTuple r1 = new HTuple(startRows))
+            using (HTuple c1 = new HTuple(startColumns))
+            using (HTuple r2 = new HTuple(endRows))
+            using (HTuple c2 = new HTuple(endColumns))
+            using (HRegion lines = new HRegion())
             {
-                combined.Dispose();
-                throw;
+                lines.GenRegionLine(r1, c1, r2, c2);
+                using (HRegion centerline = lines.Union1())
+                    return centerline.DilationCircle(radius);
             }
         }
 

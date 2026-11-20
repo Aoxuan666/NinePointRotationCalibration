@@ -61,9 +61,7 @@ namespace NinePointRotationCalibration.Station.Views
             StationLog.Write("INFO", "camera.switch", "Connecting selected camera " + deviceId + ".");
             LocalDebugLog.Write("INFO", "camera.switch", "Connecting selected camera " + deviceId + ".");
             await _runtime.ConnectCameraAsync(deviceId, cancellationToken).ConfigureAwait(true);
-            await _runtime.SetCameraParametersAsync(ReadCameraParametersFromView(), cancellationToken).ConfigureAwait(true);
-            CameraParameterSet connectedParameters = await _runtime.GetCameraParametersAsync(cancellationToken).ConfigureAwait(true);
-            RenderCameraFeatures(connectedParameters);
+            await ReadDeviceParametersAsync(cancellationToken).ConfigureAwait(true);
             ResumeLivePreview();
             UpdateCameraLiveUiStatus();
             StationLog.Write("INFO", "camera.switch", "Live preview resumed for " + deviceId + ".");
@@ -188,10 +186,7 @@ namespace NinePointRotationCalibration.Station.Views
 
             try
             {
-                CameraParameterSet connectedParameters = await _runtime
-                    .GetCameraParametersAsync(cancellationToken)
-                    .ConfigureAwait(true);
-                RenderCameraFeatures(connectedParameters);
+                await ReadDeviceParametersAsync(cancellationToken).ConfigureAwait(true);
             }
             catch (OperationCanceledException)
             {
@@ -206,318 +201,39 @@ namespace NinePointRotationCalibration.Station.Views
 
         private async Task ApplyCameraSettingsAsync(CancellationToken cancellationToken)
         {
-            StationOptions before = _runtime.GetOptionsSnapshot();
-            StationOptions updated = ReadOptionsFromView(before);
-            _runtime.UpdateOptions(updated);
-
-            bool providerChanged = !string.Equals(before.CameraProvider, updated.CameraProvider, StringComparison.OrdinalIgnoreCase);
-            if (providerChanged)
-            {
-                _view.AppendLog("相机驱动变更已保存，重启工作站后生效。", false);
-                return;
-            }
-
-            if (_runtime.IsCameraConnected)
-            {
-                CameraParameterSet applied = ReadCameraParametersFromView();
-                await _runtime.SetCameraParametersAsync(applied, cancellationToken).ConfigureAwait(true);
-                RenderCameraFeatures(await _runtime.GetCameraParametersAsync(cancellationToken).ConfigureAwait(true));
-            }
+            if (!_runtime.IsCameraConnected) throw new InvalidOperationException("请先连接相机。");
+            if (!_readExposure.HasValue) throw new InvalidOperationException("请先读取相机当前曝光。");
+            decimal requested = FindControl<NumericUpDown>("nudCameraExposure").Value;
+            if (requested != _readExposure.Value)
+                await _runtime.SetCameraExposureAsync((double)requested, cancellationToken).ConfigureAwait(true);
+            await ReadDeviceParametersAsync(cancellationToken).ConfigureAwait(true);
             UpdateCameraLiveUiStatus();
         }
 
-        private CameraParameterSet ReadCameraParametersFromView()
+        private async Task ReadDeviceParametersAsync(CancellationToken token)
         {
-            ComboBox triggerMode = FindControl<ComboBox>("cmbCameraTriggerMode");
-            string trigger = Convert.ToString(triggerMode.SelectedItem, CultureInfo.InvariantCulture);
-            return new CameraParameterSet
-            {
-                ExposureMicroseconds = ReadNumeric("nudCameraExposure"),
-                Gain = ReadNumeric("nudCameraGain"),
-                Gamma = ReadNumeric("nudCameraGamma"),
-                Features = ReadCameraFeaturesFromView(),
-                TriggerMode = string.Equals(trigger, "硬件触发", StringComparison.Ordinal) ? "Hardware" :
-                    string.Equals(trigger, "连续采集", StringComparison.Ordinal) ? "Continuous" : "Software"
-            };
-        }
-
-        private List<CameraFeatureValue> ReadCameraFeaturesFromView()
-        {
-            FlowLayoutPanel panel = FindControl<FlowLayoutPanel>("flpCameraAdvancedParameters");
-            List<CameraFeatureValue> features = new List<CameraFeatureValue>();
-            foreach (Control container in panel.Controls)
-            {
-                Control control = container.Controls.Count > 1 ? container.Controls[1] : container;
-                CameraFeatureValue metadata = container.Tag as CameraFeatureValue;
-                if (metadata == null) continue;
-                CameraFeatureValue feature = metadata.Clone();
-                NumericUpDown numeric = control as NumericUpDown;
-                CheckBox checkBox = control as CheckBox;
-                ComboBox comboBox = control as ComboBox;
-                TextBox textBox = control as TextBox;
-                if (numeric != null) feature.Value = numeric.Value.ToString(CultureInfo.InvariantCulture);
-                else if (checkBox != null) feature.Value = checkBox.Checked ? "true" : "false";
-                else if (comboBox != null) feature.Value = Convert.ToString(comboBox.SelectedItem, CultureInfo.InvariantCulture);
-                else if (textBox != null) feature.Value = textBox.Text;
-                features.Add(feature);
-            }
-            return features;
+            RenderCameraFeatures(null);
+            RenderCameraFeatures(await _runtime.GetCameraParametersAsync(token).ConfigureAwait(true));
         }
 
         private void RenderCameraFeatures(CameraParameterSet parameters)
         {
-            _cameraParameterSnapshot = parameters == null ? null : parameters.Clone();
-            FlowLayoutPanel panel = FindControl<FlowLayoutPanel>("flpCameraAdvancedParameters");
-            if (!_cameraFeatureResizeHooked)
+            _readExposure = null;
+            NumericUpDown exposure = FindControl<NumericUpDown>("nudCameraExposure");
+            exposure.Value = 0M;
+            if (parameters != null && parameters.ExposureMicroseconds > 0 &&
+                parameters.ExposureMicroseconds <= (double)exposure.Maximum)
             {
-                _cameraFeatureResizeHooked = true;
-                panel.SizeChanged += delegate { ResizeCameraFeatureRows(panel); };
+                exposure.Value = (decimal)parameters.ExposureMicroseconds;
+                _readExposure = exposure.Value;
             }
-
-            panel.SuspendLayout();
-            try
-            {
-                UiRenderOptimizer.EnableDoubleBufferingRecursive(panel);
-                panel.Controls.Clear();
-                int rowWidth = GetCameraFeatureRowWidth(panel);
-                Dictionary<string, CameraFeatureValue> supported = (parameters == null || parameters.Features == null)
-                    ? new Dictionary<string, CameraFeatureValue>(StringComparer.OrdinalIgnoreCase)
-                    : parameters.Features.Where(item => item != null && !string.IsNullOrWhiteSpace(item.Name))
-                        .ToDictionary(item => item.Name, item => item, StringComparer.OrdinalIgnoreCase);
-                foreach (CameraFeatureValue feature in CreateFixedCameraFeatures(parameters, supported))
-                {
-                    Control input = CreateFeatureInput(feature);
-                    if (input == null) continue;
-                    UiRenderOptimizer.EnableDoubleBufferingRecursive(input);
-                    input.Tag = feature.Clone();
-                    if (input.Controls.Count > 1) input.Controls[1].Tag = feature.Clone();
-                    input.Margin = new Padding(0, 2, 0, 2);
-                    input.Width = rowWidth;
-                    panel.Controls.Add(input);
-                }
-            }
-            finally { panel.ResumeLayout(true); }
-        }
-
-        private static int GetCameraFeatureRowWidth(FlowLayoutPanel panel)
-        {
-            int available = panel.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - panel.Padding.Horizontal - 6;
-            return Math.Max(260, available);
-        }
-
-        private static void ResizeCameraFeatureRows(FlowLayoutPanel panel)
-        {
-            if (panel == null || panel.IsDisposed || panel.Controls.Count == 0) return;
-            int rowWidth = GetCameraFeatureRowWidth(panel);
-            bool anyChanged = false;
-            foreach (Control child in panel.Controls)
-            {
-                if (child.Width != rowWidth)
-                {
-                    anyChanged = true;
-                    break;
-                }
-            }
-            if (!anyChanged) return;
-
-            panel.SuspendLayout();
-            try
-            {
-                foreach (Control child in panel.Controls)
-                {
-                    if (child.Width != rowWidth) child.Width = rowWidth;
-                }
-            }
-            finally
-            {
-                panel.ResumeLayout(true);
-            }
-        }
-
-        // 将大华/海康/模拟相机上报的差异化特征统一映射到固定中文表单行，设备不支持项置为只读
-        private static List<CameraFeatureValue> CreateFixedCameraFeatures(CameraParameterSet parameters, Dictionary<string, CameraFeatureValue> supported)
-        {
-            string[] names =
-            {
-                "ExposureAuto", "GainAuto", "BalanceWhiteAuto", "Gain", "BalanceRatioRed", "BalanceRatioGreen",
-                "BalanceRatioBlue", "AcquisitionFrameRate", "BlackLevel", "OffsetX", "OffsetY", "Width", "Height",
-                "PixelFormat", "ReverseX", "ReverseY"
-            };
-            List<CameraFeatureValue> result = new List<CameraFeatureValue>();
-            foreach (string name in names)
-            {
-                CameraFeatureValue defaults = CreateDefaultFixedFeature(name, parameters);
-                CameraFeatureValue raw;
-                if (!supported.TryGetValue(name, out raw))
-                {
-                    string alias = name == "Gain" ? "GainRaw" : name == "BlackLevel" ? "BlackLevelRaw" : null;
-                    if (!string.IsNullOrWhiteSpace(alias)) supported.TryGetValue(alias, out raw);
-                }
-
-                CameraFeatureValue feature = defaults.Clone();
-                if (raw == null)
-                {
-                    feature.IsWritable = false;
-                }
-                else
-                {
-                    bool hasTypedMetadata = raw.HasRange || raw.Minimum < raw.Maximum ||
-                        (raw.EnumValues != null && raw.EnumValues.Count > 0) ||
-                        raw.Kind != CameraFeatureKind.Number;
-                    if (hasTypedMetadata)
-                    {
-                        feature.Kind = raw.Kind;
-                        feature.Minimum = raw.Minimum;
-                        feature.Maximum = raw.Maximum;
-                        feature.Increment = raw.Increment;
-                        feature.HasRange = raw.HasRange;
-                        if (raw.EnumValues != null)
-                        {
-                            foreach (string enumItem in raw.EnumValues)
-                            {
-                                if (!string.IsNullOrWhiteSpace(enumItem) && !feature.EnumValues.Contains(enumItem))
-                                    feature.EnumValues.Add(enumItem);
-                            }
-                        }
-                    }
-
-                    if (!string.IsNullOrWhiteSpace(raw.DisplayName) &&
-                        !string.Equals(raw.DisplayName, name, StringComparison.OrdinalIgnoreCase) &&
-                        !string.Equals(raw.DisplayName, raw.Name, StringComparison.OrdinalIgnoreCase))
-                    {
-                        feature.DisplayName = raw.DisplayName;
-                    }
-
-                    if (!string.IsNullOrWhiteSpace(raw.Unit))
-                        feature.Unit = raw.Unit;
-
-                    if (!string.IsNullOrWhiteSpace(raw.Value))
-                    {
-                        decimal unusedNumeric;
-                        bool looksNumericForEnum = feature.Kind == CameraFeatureKind.Enumeration &&
-                            (feature.EnumValues == null || feature.EnumValues.Count == 0 ||
-                             !feature.EnumValues.Contains(raw.Value)) &&
-                            decimal.TryParse(raw.Value, NumberStyles.Float, CultureInfo.InvariantCulture, out unusedNumeric);
-                        if (!looksNumericForEnum)
-                            feature.Value = raw.Value;
-                    }
-
-                    feature.IsWritable = raw.IsWritable;
-                }
-
-                result.Add(feature);
-            }
-            return result;
-        }
-
-        private static CameraFeatureValue CreateDefaultFixedFeature(string name, CameraParameterSet parameters)
-        {
-            CameraFeatureValue feature = new CameraFeatureValue
-            {
-                Name = name,
-                DisplayName = name,
-                Kind = CameraFeatureKind.Number,
-                Value = "0",
-                IsWritable = false
-            };
-            switch (name)
-            {
-                case "ExposureAuto": feature.DisplayName = "自动曝光"; feature.Kind = CameraFeatureKind.Enumeration; feature.Value = "Off"; break;
-                case "GainAuto": feature.DisplayName = "自动增益"; feature.Kind = CameraFeatureKind.Enumeration; feature.Value = "Off"; break;
-                case "BalanceWhiteAuto": feature.DisplayName = "自动白平衡"; feature.Kind = CameraFeatureKind.Enumeration; feature.Value = "Off"; break;
-                case "Gain": feature.DisplayName = "增益"; break;
-                case "BalanceRatioRed": feature.DisplayName = "白平衡 R"; feature.Value = "1"; break;
-                case "BalanceRatioGreen": feature.DisplayName = "白平衡 G"; feature.Value = "1"; break;
-                case "BalanceRatioBlue": feature.DisplayName = "白平衡 B"; feature.Value = "1"; break;
-                case "AcquisitionFrameRate": feature.DisplayName = "采集帧率"; feature.Unit = "fps"; break;
-                case "BlackLevel": feature.DisplayName = "黑电平"; break;
-                case "OffsetX": feature.DisplayName = "ROI X 偏移"; feature.Kind = CameraFeatureKind.Integer; break;
-                case "OffsetY": feature.DisplayName = "ROI Y 偏移"; feature.Kind = CameraFeatureKind.Integer; break;
-                case "Width": feature.DisplayName = "ROI 宽度"; feature.Kind = CameraFeatureKind.Integer; break;
-                case "Height": feature.DisplayName = "ROI 高度"; feature.Kind = CameraFeatureKind.Integer; break;
-                case "PixelFormat": feature.DisplayName = "像素格式"; feature.Kind = CameraFeatureKind.Enumeration; feature.Value = ""; break;
-                case "ReverseX": feature.DisplayName = "水平翻转"; feature.Kind = CameraFeatureKind.Boolean; feature.Value = "false"; break;
-                case "ReverseY": feature.DisplayName = "垂直翻转"; feature.Kind = CameraFeatureKind.Boolean; feature.Value = "false"; break;
-            }
-            return feature;
-        }
-
-        private static Control CreateFeatureInput(CameraFeatureValue feature)
-        {
-            string label = string.IsNullOrWhiteSpace(feature.DisplayName) ? feature.Name : feature.DisplayName;
-            if (feature.Kind == CameraFeatureKind.Boolean)
-            {
-                return new CheckBox
-                {
-                    AutoSize = false,
-                    Height = 26,
-                    Padding = new Padding(2, 0, 0, 0),
-                    Text = label,
-                    Enabled = feature.IsWritable,
-                    Checked = string.Equals(feature.Value, "true", StringComparison.OrdinalIgnoreCase)
-                };
-            }
-            if (feature.Kind == CameraFeatureKind.Enumeration)
-            {
-                ComboBox combo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList };
-                if (feature.EnumValues != null) combo.Items.AddRange(feature.EnumValues.ToArray());
-                if (!string.IsNullOrWhiteSpace(feature.Value) && combo.Items.IndexOf(feature.Value) < 0) combo.Items.Add(feature.Value);
-                combo.SelectedItem = feature.Value;
-                combo.Enabled = feature.IsWritable;
-                return WrapFeatureControl(label, combo);
-            }
-            if (feature.Kind == CameraFeatureKind.String)
-                return WrapFeatureControl(label, new TextBox { Text = feature.Value ?? string.Empty, Enabled = feature.IsWritable });
-
-            decimal current;
-            decimal.TryParse(feature.Value, NumberStyles.Float, CultureInfo.InvariantCulture, out current);
-            decimal minimum = feature.HasRange ? ToDecimal(feature.Minimum, decimal.MinValue) : (feature.Kind == CameraFeatureKind.Integer ? decimal.MinValue : -1000000000M);
-            decimal maximum = feature.HasRange ? ToDecimal(feature.Maximum, decimal.MaxValue) : (feature.Kind == CameraFeatureKind.Integer ? decimal.MaxValue : 1000000000M);
-            if (minimum >= maximum) { minimum = -1000000000M; maximum = 1000000000M; }
-            NumericUpDown numeric = new NumericUpDown
-            {
-                DecimalPlaces = feature.Kind == CameraFeatureKind.Integer ? 0 : 4,
-                Increment = feature.Increment > 0.0 ? ToDecimal(feature.Increment, 0.0001M) : (feature.Kind == CameraFeatureKind.Integer ? 1M : 0.01M),
-                Minimum = minimum,
-                Maximum = maximum,
-                TextAlign = HorizontalAlignment.Right,
-                Value = Math.Min(maximum, Math.Max(minimum, current))
-            };
-            numeric.Enabled = feature.IsWritable;
-            return WrapFeatureControl(label, numeric);
-        }
-
-        private static Control WrapFeatureControl(string label, Control input)
-        {
-            TableLayoutPanel row = new TableLayoutPanel();
-            row.ColumnCount = 2;
-            row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 118.0F));
-            row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100.0F));
-            row.RowCount = 1;
-            row.RowStyles.Add(new RowStyle(SizeType.Percent, 100.0F));
-            row.Height = 28;
-            row.Margin = Padding.Empty;
-
-            Label title = new Label
-            {
-                AutoEllipsis = true,
-                AutoSize = false,
-                Dock = DockStyle.Fill,
-                Margin = new Padding(0, 0, 6, 0),
-                Text = label,
-                TextAlign = ContentAlignment.MiddleLeft
-            };
-            input.Dock = DockStyle.Fill;
-            input.Margin = new Padding(0, 2, 0, 2);
-            row.Controls.Add(title, 0, 0);
-            row.Controls.Add(input, 1, 0);
-            return row;
-        }
-
-        private static decimal ToDecimal(double value, decimal fallback)
-        {
-            try { return Convert.ToDecimal(value, CultureInfo.InvariantCulture); }
-            catch (OverflowException) { return fallback; }
+            if (!_readExposure.HasValue) exposure.Text = string.Empty;
+            FindControl<Label>("lblCameraGain").Text = parameters == null ? "未读取" :
+                double.IsNaN(parameters.Gain) ? "不可读" : parameters.Gain.ToString("0.###", CultureInfo.CurrentCulture);
+            string mode = parameters == null ? null : parameters.TriggerMode;
+            FindControl<Label>("lblCameraTrigger").Text = mode == "Software" ? "软件触发" :
+                mode == "Hardware" ? "硬件触发" : mode == "Continuous" ? "连续采集" :
+                parameters == null ? "未读取" : "不可读";
         }
 
         private Task EditTemplateAsync(bool positioning)
@@ -811,12 +527,13 @@ namespace NinePointRotationCalibration.Station.Views
             double currentR = ReadNumeric("nudInspectionCurrentR");
 
             // 只要当前已加载/锁定图像，或未启用实体相机（含模拟相机），均直接检测当前加载图像，避免回退抓取默认模拟图
-            using (Bitmap image = SnapshotAndLockCurrentImage())
+            LockedFrameGrayCache cache;
+            using (Bitmap image = SnapshotForInspection(out cache))
             {
                 if (image != null)
                 {
                     InspectionResult offlineResult = await _runtime
-                        .RunOfflineInspectionAsync(image, expectedCount, currentR, cancellationToken)
+                        .RunOfflineInspectionAsync(image, expectedCount, currentR, cancellationToken, cache)
                         .ConfigureAwait(true);
                     if (offlineResult != null && !offlineResult.Executed)
                     {
@@ -845,7 +562,8 @@ namespace NinePointRotationCalibration.Station.Views
 
         private async Task RunCurrentImageInspectionAsync(CancellationToken cancellationToken)
         {
-            using (Bitmap image = SnapshotAndLockCurrentImage())
+            LockedFrameGrayCache cache;
+            using (Bitmap image = SnapshotForInspection(out cache))
             {
                 if (image == null) throw new InvalidOperationException("请先点击「导入图片」加载检测图像。");
 
@@ -854,7 +572,7 @@ namespace NinePointRotationCalibration.Station.Views
                 int expectedCount = Decimal.ToInt32(_view.ExpectedBoardCountInput.Value);
                 double currentR = ReadNumeric("nudInspectionCurrentR");
                 InspectionResult result = await _runtime
-                    .RunOfflineInspectionAsync(image, expectedCount, currentR, cancellationToken)
+                    .RunOfflineInspectionAsync(image, expectedCount, currentR, cancellationToken, cache)
                     .ConfigureAwait(true);
                 if (result != null && !result.Executed)
                 {
@@ -979,16 +697,6 @@ namespace NinePointRotationCalibration.Station.Views
             options.TcpPort = Decimal.ToInt32(_view.TcpPortInput.Value);
             options.CameraProvider = GetSelectedCameraProvider();
             options.CameraSerialNumber = GetSelectedCameraId();
-            options.CameraExposureMicroseconds = ReadNumeric("nudCameraExposure");
-            options.CameraGain = ReadNumeric("nudCameraGain");
-            options.CameraGamma = ReadNumeric("nudCameraGamma");
-            options.CameraFeatures = ReadCameraFeaturesFromView()
-                .ToDictionary(item => item.Name, item => item.Value ?? string.Empty, StringComparer.OrdinalIgnoreCase);
-            string trigger = Convert.ToString(FindControl<ComboBox>("cmbCameraTriggerMode").SelectedItem, CultureInfo.InvariantCulture);
-            options.CameraTriggerMode = string.Equals(trigger, "硬件触发", StringComparison.Ordinal) ? "Hardware" :
-                string.Equals(trigger, "连续采集", StringComparison.Ordinal) ? "Continuous" : "Software";
-            options.CameraTimeoutMilliseconds = Convert.ToInt32(ReadNumeric("nudCameraTimeout"), CultureInfo.InvariantCulture);
-            options.PreviewIntervalMilliseconds = Convert.ToInt32(ReadNumeric("nudPreviewInterval"), CultureInfo.InvariantCulture);
             options.LiveAcquisitionEnabled = _view.LiveAcquisitionInput == null || _view.LiveAcquisitionInput.Checked;
             options.ArchiveImages = FindControl<CheckBox>("chkArchiveImages").Checked;
             options.TranslationStepX = ReadNumeric("nudCalibrationStepX");

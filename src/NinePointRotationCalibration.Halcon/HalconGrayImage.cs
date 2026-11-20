@@ -45,6 +45,12 @@ namespace NinePointRotationCalibration.Halcon
             return new HalconGrayImage(image, source.Width, source.Height, watch.Elapsed.TotalMilliseconds);
         }
 
+        /// <summary>Acquire an independently disposable reference to the same read-only pixels.</summary>
+        public HalconGrayImage Share()
+        {
+            return new HalconGrayImage(Image.CopyObj(1, 1), Width, Height, 0);
+        }
+
         /// <summary>释放底层 HALCON 图像句柄。</summary>
         public void Dispose()
         {

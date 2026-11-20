@@ -713,6 +713,16 @@ namespace NinePointRotationCalibration.Station.Views
             };
         }
 
+        private Bitmap SnapshotForInspection(out LockedFrameGrayCache cache)
+        {
+            lock (_displaySync)
+            {
+                Bitmap snapshot = SnapshotAndLockCurrentImage();
+                cache = _lockedGray;
+                return snapshot;
+            }
+        }
+
         private Bitmap SnapshotAndLockCurrentImage()
         {
             // 已处于锁定帧模式时直接克隆返回，避免重复截屏并保持当前基准帧不变
@@ -761,6 +771,8 @@ namespace NinePointRotationCalibration.Station.Views
 
                 previous = _lockedDisplayImage;
                 _lockedDisplayImage = image;
+                if (_lockedGray != null) _lockedGray.Dispose();
+                _lockedGray = new LockedFrameGrayCache();
                 _displayMode = DisplayMode.LockedFrame;
                 _displayGeneration++;
                 generation = _displayGeneration;
@@ -795,6 +807,8 @@ namespace NinePointRotationCalibration.Station.Views
             {
                 previous = _lockedDisplayImage;
                 _lockedDisplayImage = null;
+                if (_lockedGray != null) _lockedGray.Dispose();
+                _lockedGray = null;
                 _displayMode = DisplayMode.LivePreview;
                 _displayGeneration++;
                 _inspectionFrameGeneration = -1;
