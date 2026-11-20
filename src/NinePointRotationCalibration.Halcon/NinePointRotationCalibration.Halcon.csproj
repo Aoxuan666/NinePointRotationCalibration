@@ -46,6 +46,10 @@
       <Link>libs\halcon\halcondotnet.dll</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
+    <Content Include="$(MSBuildThisFileDirectory)..\..\lib\halcon.dll" Condition="Exists('$(MSBuildThisFileDirectory)..\..\lib\halcon.dll')">
+      <Link>libs\halcon\halcon.dll</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\NinePointRotationCalibration.Core\NinePointRotationCalibration.Core.csproj">
