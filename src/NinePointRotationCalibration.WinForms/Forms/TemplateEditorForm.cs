@@ -31,7 +31,6 @@ namespace NinePointRotationCalibration.WinForms.Forms
         private readonly Button _addSearchRoiButton;
         private readonly Button _addDetectionRoiButton;
         private readonly Button _deleteRoiButton;
-        private readonly Button _selectToolButton;
         private readonly Button _moveAnchorToolButton;
         private readonly Button _maskToolButton;
         private readonly ComboBox _maskShapeCombo;
@@ -96,6 +95,8 @@ namespace NinePointRotationCalibration.WinForms.Forms
         private TemplateEditorState _originalState;
         private List<List<ImageCoordinate>> _unmaskedBaseContours = new List<List<ImageCoordinate>>();
         private RotatedRectangle _unmaskedBaseRoi;
+        private List<ImageCoordinate> _committedVisiblePoints = new List<ImageCoordinate>();
+        private int _lastMaskPreviewFilterTick;
         private CancellationTokenSource _operationCancellation;
         private CancellationTokenSource _autoPreviewCancellation;
         private bool _autoPreviewRunning;
@@ -152,7 +153,6 @@ namespace NinePointRotationCalibration.WinForms.Forms
             _addTemplateRoiButton = CreatePanelToggleButton("模板", (sender, args) => AddOrSelectRoi(CanvasRoiTarget.Template));
             _addSearchRoiButton = CreatePanelToggleButton("搜索", (sender, args) => AddOrSelectRoi(CanvasRoiTarget.Search));
             _addDetectionRoiButton = CreatePanelToggleButton("检测", (sender, args) => AddOrSelectRoi(CanvasRoiTarget.Detection));
-            _selectToolButton = CreatePanelToggleButton("选择", (sender, args) => SelectTool(CanvasEditTool.Select));
             _moveAnchorToolButton = CreatePanelToggleButton("移动中心", (sender, args) => ActivateMoveAnchorTool());
             _deleteRoiButton = CreatePanelToggleButton("删除", (sender, args) => DeleteSelectedRoi());
             _deleteRoiButton.ForeColor = Color.Firebrick;
@@ -549,8 +549,8 @@ namespace NinePointRotationCalibration.WinForms.Forms
             {
                 roiGrid.Controls.Add(_addDetectionRoiButton, 2, 0);
             }
-            roiGrid.Controls.Add(_selectToolButton, 0, 1);
-            roiGrid.Controls.Add(_moveAnchorToolButton, 1, 1);
+            roiGrid.Controls.Add(_moveAnchorToolButton, 0, 1);
+            roiGrid.SetColumnSpan(_moveAnchorToolButton, 2);
             roiGrid.Controls.Add(_deleteRoiButton, 2, 1);
             roiGroup.Controls.Add(roiGrid);
             AddStackSection(teachStack, roiGroup);
@@ -1015,7 +1015,58 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 return;
             }
 
+            // 矩形/圆形区域掩膜拖拽期间：按 33ms 节流并仅用单块 activeMask 过滤已提交可见点集，
+            // 避免每帧 mousemove 重复遍历历史掩膜栈，确保区域掩膜拖拽完全流畅不卡顿。
+            if (eventArgs.ActiveMask != null &&
+                (eventArgs.ActiveMask.Kind == MaskShapeKind.Rectangle || eventArgs.ActiveMask.Kind == MaskShapeKind.Circle) &&
+                !_state.MaskInverted && _committedVisiblePoints != null && _committedVisiblePoints.Count > 0)
+            {
+                int now = Environment.TickCount;
+                if (unchecked(now - _lastMaskPreviewFilterTick) < 33)
+                {
+                    return;
+                }
+                _lastMaskPreviewFilterTick = now;
+                FilterCommittedPointsBySingleMask(eventArgs.ActiveMask);
+                return;
+            }
+
             ApplyInstantMaskFilter(eventArgs.ActiveMask);
+        }
+
+        private void FilterCommittedPointsBySingleMask(MaskStroke activeMask)
+        {
+            CanvasRuntimeOverlay overlay = new CanvasRuntimeOverlay();
+            if (activeMask.Kind == MaskShapeKind.Rectangle && activeMask.Rectangle != null)
+            {
+                RectangleF bounds = activeMask.Rectangle.GetAxisAlignedBounds();
+                for (int i = 0; i < _committedVisiblePoints.Count; i++)
+                {
+                    ImageCoordinate pt = _committedVisiblePoints[i];
+                    if (pt.Column >= bounds.Left && pt.Column <= bounds.Right &&
+                        pt.Row >= bounds.Top && pt.Row <= bounds.Bottom &&
+                        activeMask.Rectangle.Contains(pt))
+                    {
+                        continue;
+                    }
+                    AddPreviewPoint(overlay, pt, Color.Lime);
+                }
+            }
+            else if (activeMask.Kind == MaskShapeKind.Circle)
+            {
+                double cr = activeMask.Center.Row;
+                double cc = activeMask.Center.Column;
+                double r2 = activeMask.Radius * activeMask.Radius;
+                for (int i = 0; i < _committedVisiblePoints.Count; i++)
+                {
+                    ImageCoordinate pt = _committedVisiblePoints[i];
+                    double dr = pt.Row - cr;
+                    double dc = pt.Column - cc;
+                    if ((dr * dr) + (dc * dc) <= r2) continue;
+                    AddPreviewPoint(overlay, pt, Color.Lime);
+                }
+            }
+            _canvas.EditorOverlay = overlay;
         }
 
         private void ApplyInstantMaskFilter(MaskStroke activePreview)
@@ -1028,6 +1079,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
             bool hasMasks = _state.MaskInverted ||
                             (_state.MaskStrokes != null && _state.MaskStrokes.Count > 0) ||
                             (activePreview != null && activePreview.IsValid);
+            List<ImageCoordinate> committed = activePreview == null ? new List<ImageCoordinate>() : null;
             foreach (List<ImageCoordinate> contour in sourceContours)
             {
                 if (contour == null) continue;
@@ -1039,8 +1091,13 @@ namespace NinePointRotationCalibration.WinForms.Forms
                     {
                         continue;
                     }
+                    if (committed != null) committed.Add(point);
                     AddPreviewPoint(overlay, point, Color.Lime);
                 }
+            }
+            if (committed != null)
+            {
+                _committedVisiblePoints = committed;
             }
             _canvas.EditorOverlay = overlay;
         }
@@ -1890,6 +1947,14 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 contours = new[] { _state.FeaturePoints ?? new List<ImageCoordinate>() };
             }
 
+            List<ImageCoordinate> visible = new List<ImageCoordinate>();
+            foreach (List<ImageCoordinate> contour in contours)
+            {
+                if (contour == null) continue;
+                for (int i = 0; i < contour.Count; i++)
+                    if (IsFinite(contour[i].Row) && IsFinite(contour[i].Column)) visible.Add(contour[i]);
+            }
+            _committedVisiblePoints = visible;
             AddFeaturePoints(overlay, contours, Color.Lime);
             _canvas.EditorOverlay = overlay;
         }
@@ -1990,6 +2055,11 @@ namespace NinePointRotationCalibration.WinForms.Forms
 
         private void ActivateMoveAnchorTool()
         {
+            if (_canvas.Tool == CanvasEditTool.MoveAnchor)
+            {
+                SelectTool(CanvasEditTool.Select);
+                return;
+            }
             if (_state.AnchorLocked)
             {
                 SetStatus("基准中心已锁定，请先在右侧「基准中心」页取消勾选“锁定基准中心”。", true);
@@ -2020,7 +2090,6 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 }
             }
 
-            StyleToggleButton(_selectToolButton, tool == CanvasEditTool.Select, Color.FromArgb(37, 99, 235));
             StyleToggleButton(_moveAnchorToolButton, tool == CanvasEditTool.MoveAnchor, Color.FromArgb(190, 24, 93));
             StyleToggleButton(_maskToolButton, maskActive, Color.FromArgb(220, 38, 38));
             _brushRadiusInput.Enabled = !_busy && (tool == CanvasEditTool.EraseMask || tool == CanvasEditTool.RestoreMask ||
@@ -2416,6 +2485,11 @@ namespace NinePointRotationCalibration.WinForms.Forms
             else if (eventArgs.KeyCode == Keys.Escape && _busy)
             {
                 CancelCurrentOperation();
+                eventArgs.Handled = true;
+            }
+            else if (eventArgs.KeyCode == Keys.Escape && _canvas.Tool != CanvasEditTool.Select)
+            {
+                SelectTool(CanvasEditTool.Select);
                 eventArgs.Handled = true;
             }
         }

@@ -449,19 +449,29 @@ namespace NinePointRotationCalibration.Station.Controls
                 PointF origin;
                 if (!TryGetTransform(out scale, out origin)) return;
 
-                RectangleF destination = new RectangleF(
-                    origin.X,
-                    origin.Y,
-                    image.Width * scale,
-                    image.Height * scale);
+                // 仅裁取当前视口可见的源图子区域并保持稳定的双线性/最近邻插值与 Half 像素偏移，
+                // 彻底消除缩放、平移以及高倍率放大时 GDI+ 坐标舍入与 Low 插值引起的图像抖动。
+                int srcLeft = Math.Max(0, (int)Math.Floor((-origin.X) / scale) - 1);
+                int srcTop = Math.Max(0, (int)Math.Floor((-origin.Y) / scale) - 1);
+                int srcRight = Math.Min(image.Width, (int)Math.Ceiling((ClientSize.Width - origin.X) / scale) + 1);
+                int srcBottom = Math.Min(image.Height, (int)Math.Ceiling((ClientSize.Height - origin.Y) / scale) + 1);
+                if (srcRight > srcLeft && srcBottom > srcTop)
+                {
+                    RectangleF srcRect = new RectangleF(srcLeft, srcTop, srcRight - srcLeft, srcBottom - srcTop);
+                    RectangleF dstRect = new RectangleF(
+                        origin.X + (srcLeft * scale),
+                        origin.Y + (srcTop * scale),
+                        (srcRight - srcLeft) * scale,
+                        (srcBottom - srcTop) * scale);
 
-                e.Graphics.InterpolationMode = scale >= 1.0f
-                    ? InterpolationMode.NearestNeighbor
-                    : InterpolationMode.Low;
-                e.Graphics.PixelOffsetMode = PixelOffsetMode.Half;
-                e.Graphics.CompositingMode = CompositingMode.SourceCopy;
-                e.Graphics.DrawImage(image, destination);
-                e.Graphics.CompositingMode = CompositingMode.SourceOver;
+                    e.Graphics.InterpolationMode = scale >= 2.0f
+                        ? InterpolationMode.NearestNeighbor
+                        : InterpolationMode.Bilinear;
+                    e.Graphics.PixelOffsetMode = PixelOffsetMode.Half;
+                    e.Graphics.CompositingMode = CompositingMode.SourceCopy;
+                    e.Graphics.DrawImage(image, dstRect, srcRect, GraphicsUnit.Pixel);
+                    e.Graphics.CompositingMode = CompositingMode.SourceOver;
+                }
 
                 DrawOverlays(e.Graphics, scale, origin);
             }

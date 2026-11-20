@@ -501,9 +501,9 @@ namespace NinePointRotationCalibration.WinForms.Controls
             base.OnPaint(eventArgs);
             Graphics graphics = eventArgs.Graphics;
             graphics.Clear(BackColor);
-            bool interactive = _dragOperation != DragOperation.None || _fastViewport;
-            graphics.SmoothingMode = interactive ? SmoothingMode.None : SmoothingMode.AntiAlias;
-            graphics.PixelOffsetMode = interactive ? PixelOffsetMode.HighSpeed : PixelOffsetMode.HighQuality;
+            // 始终锁定一致的 PixelOffsetMode.Half，避免鼠标按下/松开、画笔涂抹或缩放结束时出现 0.5px 图像抖动
+            graphics.SmoothingMode = _dragOperation != DragOperation.None ? SmoothingMode.None : SmoothingMode.AntiAlias;
+            graphics.PixelOffsetMode = PixelOffsetMode.Half;
 
             if (_image == null)
             {
@@ -574,9 +574,6 @@ namespace NinePointRotationCalibration.WinForms.Controls
             _offsetY = eventArgs.Y - (anchor.Row * _zoom);
             _autoFit = false;
             _viewInitialized = true;
-            _fastViewport = true;
-            _zoomRenderTimer.Stop();
-            _zoomRenderTimer.Start();
             OnViewChanged();
             Invalidate();
         }
@@ -1121,34 +1118,42 @@ namespace NinePointRotationCalibration.WinForms.Controls
                 (float)_offsetY,
                 (float)(_image.Width * _zoom),
                 (float)(_image.Height * _zoom));
-            Bitmap displayImage = _fastViewport
-                ? (_interactivePreview ?? _image)
-                : GetDisplayImage();
-            if (ReferenceEquals(displayImage, _image))
+
+            // 当缩放到小于预降采样预览图比例时复用 _interactivePreview，否则直接按可见视口裁剪 _image 绘制；
+            // 全程使用统一 PixelOffsetMode.Half 与稳定插值模式，彻底消除缩放、拖拽与掩膜画笔时的图像跳动与重采样卡顿。
+            double previewRatio = _interactivePreview != null && _image.Width > 0
+                ? (double)_interactivePreview.Width / _image.Width
+                : 0.0;
+            bool usePreview = _interactivePreview != null && _zoom <= previewRatio * 1.02;
+            Bitmap source = usePreview ? _interactivePreview : _image;
+            double scaleX = source.Width / (double)_image.Width;
+            double scaleY = source.Height / (double)_image.Height;
+            double effZoomX = _zoom / scaleX;
+            double effZoomY = _zoom / scaleY;
+
+            int srcLeft = Math.Max(0, (int)Math.Floor((-_offsetX) / effZoomX) - 1);
+            int srcTop = Math.Max(0, (int)Math.Floor((-_offsetY) / effZoomY) - 1);
+            int srcRight = Math.Min(source.Width, (int)Math.Ceiling((ClientSize.Width - _offsetX) / effZoomX) + 1);
+            int srcBottom = Math.Min(source.Height, (int)Math.Ceiling((ClientSize.Height - _offsetY) / effZoomY) + 1);
+
+            if (srcRight > srcLeft && srcBottom > srcTop)
             {
-                bool interactive = _dragOperation != DragOperation.None || _fastViewport;
-                graphics.InterpolationMode = interactive
-                    ? InterpolationMode.Bilinear
-                    : _zoom >= 4.0
-                        ? InterpolationMode.NearestNeighbor
-                        : InterpolationMode.HighQualityBicubic;
-                graphics.DrawImage(
-                    _image,
-                    destination,
-                    new RectangleF(0, 0, _image.Width, _image.Height),
-                    GraphicsUnit.Pixel);
-            }
-            else
-            {
+                RectangleF srcRect = new RectangleF(srcLeft, srcTop, srcRight - srcLeft, srcBottom - srcTop);
+                RectangleF dstRect = new RectangleF(
+                    (float)(_offsetX + (srcLeft * effZoomX)),
+                    (float)(_offsetY + (srcTop * effZoomY)),
+                    (float)((srcRight - srcLeft) * effZoomX),
+                    (float)((srcBottom - srcTop) * effZoomY));
+
                 graphics.CompositingMode = CompositingMode.SourceCopy;
-                graphics.InterpolationMode = InterpolationMode.NearestNeighbor;
+                graphics.InterpolationMode = _zoom >= 2.0
+                    ? InterpolationMode.NearestNeighbor
+                    : InterpolationMode.Bilinear;
                 graphics.PixelOffsetMode = PixelOffsetMode.Half;
-                // 保持精确的浮点视口变换：缩放缓存尺寸经过整数取整，若按整数原点直接贴图，
-                // ROI 与特征点叠加会相对底层图像偏移最多 1 个像素。
                 graphics.DrawImage(
-                    displayImage,
-                    destination,
-                    new RectangleF(0, 0, displayImage.Width, displayImage.Height),
+                    source,
+                    dstRect,
+                    srcRect,
                     GraphicsUnit.Pixel);
                 graphics.CompositingMode = CompositingMode.SourceOver;
             }
