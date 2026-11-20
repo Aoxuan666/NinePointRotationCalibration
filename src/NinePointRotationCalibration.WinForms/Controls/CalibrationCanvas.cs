@@ -1294,6 +1294,7 @@ namespace NinePointRotationCalibration.WinForms.Controls
                     if (ClientSize.Width <= 0 || ClientSize.Height <= 0) return;
                     UpdateMaskCache();
                     graphics.DrawImageUnscaled(_maskHistory, 0, 0);
+                    DrawCommittedMaskOutlines(graphics);
 
                     if (_activeStroke != null && _activeStroke.Kind == MaskShapeKind.Brush)
                     {
@@ -1304,6 +1305,36 @@ namespace NinePointRotationCalibration.WinForms.Controls
             finally
             {
                 graphics.Restore(state);
+            }
+        }
+
+        private void DrawCommittedMaskOutlines(Graphics graphics)
+        {
+            if (_maskStrokes.Count == 0) return;
+            using (Pen outline = new Pen(Color.FromArgb(215, 248, 113, 113), 1.35f))
+            {
+                outline.DashStyle = DashStyle.Dash;
+                for (int i = 0; i < _maskStrokes.Count; i++)
+                {
+                    MaskStroke stroke = _maskStrokes[i];
+                    if (stroke == null || !stroke.IsValid || !stroke.IsErase) continue;
+                    if (stroke.Kind == MaskShapeKind.Rectangle && stroke.Rectangle != null)
+                    {
+                        PointF[] corners = stroke.Rectangle.GetCorners().Select(ImageToClient).ToArray();
+                        graphics.DrawPolygon(outline, corners);
+                    }
+                    else if (stroke.Kind == MaskShapeKind.Circle)
+                    {
+                        PointF center = ImageToClient(stroke.Center);
+                        float radius = (float)Math.Max(1.0, stroke.Radius * _zoom);
+                        graphics.DrawEllipse(outline, center.X - radius, center.Y - radius, radius * 2.0f, radius * 2.0f);
+                    }
+                    else if (stroke.Kind == MaskShapeKind.Polygon && stroke.Points != null && stroke.Points.Count >= 3)
+                    {
+                        PointF[] pts = stroke.Points.Select(ImageToClient).ToArray();
+                        graphics.DrawPolygon(outline, pts);
+                    }
+                }
             }
         }
 
@@ -1399,7 +1430,9 @@ namespace NinePointRotationCalibration.WinForms.Controls
             {
                 using (Graphics layer = Graphics.FromImage(_maskHistory))
                 {
-                    layer.SmoothingMode = SmoothingMode.AntiAlias;
+                    // GDI+ 中 CompositingMode.SourceCopy 不能与 SmoothingMode.AntiAlias 混用，
+                    // 否则在 32bppPArgb 位图上会静默丢弃绘制导致掩膜无痕迹；此处使用 None 确保像素精确写入。
+                    layer.SmoothingMode = SmoothingMode.None;
                     layer.CompositingMode = CompositingMode.SourceCopy;
                     while (_paintedStrokes < _maskStrokes.Count)
                     {
@@ -1414,6 +1447,7 @@ namespace NinePointRotationCalibration.WinForms.Controls
             if (_inkOwner == _activeStroke && _paintedInkPoints == _activeStroke.Points.Count) return;
             using (Graphics ink = Graphics.FromImage(_maskInk))
             {
+                ink.SmoothingMode = SmoothingMode.None;
                 ink.CompositingMode = CompositingMode.SourceCopy;
                 if (_inkOwner != _activeStroke)
                 {
@@ -1436,8 +1470,8 @@ namespace NinePointRotationCalibration.WinForms.Controls
             // 使用 SourceCopy：擦除统一着半透明红（重复涂抹不变黑），恢复直接擦回透明露出清晰原图
             bool isInkLayer = ReferenceEquals(stroke, _activeStroke);
             Color color = stroke.IsErase
-                ? Color.FromArgb(100, 239, 68, 68)
-                : (isInkLayer ? Color.FromArgb(95, 74, 222, 128) : Color.Transparent);
+                ? Color.FromArgb(115, 239, 68, 68)
+                : (isInkLayer ? Color.FromArgb(105, 74, 222, 128) : Color.Transparent);
 
             if (stroke.Kind == MaskShapeKind.Rectangle && stroke.Rectangle != null)
             {
@@ -1526,7 +1560,7 @@ namespace NinePointRotationCalibration.WinForms.Controls
         {
             return target == CanvasRoiTarget.Template
                 ? Color.Gold
-                : target == CanvasRoiTarget.Search ? Color.DeepSkyBlue : Color.LimeGreen;
+                : target == CanvasRoiTarget.Search ? Color.DeepSkyBlue : Color.Cyan;
         }
 
         private void DrawRoi(Graphics graphics, RotatedRectangle roi, CanvasRoiTarget target, Color color, IList<RectangleF> occupiedLabels)

@@ -2755,18 +2755,28 @@ namespace NinePointRotationCalibration.Station.Tests
                 };
                 using (UiTemplateEditorForm form = new UiTemplateEditorForm(img, editorState))
                 {
+                    form.ShowInTaskbar = false;
+                    form.StartPosition = FormStartPosition.Manual;
+                    form.Location = new Point(-32000, -32000);
+                    form.Show();
+                    Application.DoEvents();
                     UiCalibrationCanvas canvas = GetPrivateField<UiCalibrationCanvas>(form, "_canvas");
                     canvas.Size = new Size(300, 300);
                     canvas.CreateControl();
                     canvas.FitImage();
                     True(canvas.EditorOverlay.Points.Count == 3, "initial overlay must show 3 feature points");
+                    True(canvas.EditorOverlay.Points.All(p => p.Color == Color.Lime), "feature points must be rendered in green (Lime)");
 
                     MethodInfo mouseDown = typeof(UiCalibrationCanvas).GetMethod("OnMouseDown", BindingFlags.Instance | BindingFlags.NonPublic);
                     MethodInfo mouseMove = typeof(UiCalibrationCanvas).GetMethod("OnMouseMove", BindingFlags.Instance | BindingFlags.NonPublic);
                     MethodInfo mouseUp = typeof(UiCalibrationCanvas).GetMethod("OnMouseUp", BindingFlags.Instance | BindingFlags.NonPublic);
+                    ComboBox maskShapeCombo = GetPrivateField<ComboBox>(form, "_maskShapeCombo");
+                    Button maskButton = GetPrivateField<Button>(form, "_maskToolButton");
+                    maskButton.PerformClick();
+                    True(canvas.Tool == NinePointRotationCalibration.WinForms.Models.CanvasEditTool.MaskRectangle,
+                        "clicking mask button with default combo item must activate rectangle mask tool");
 
                     // 绘制矩形掩膜覆盖 (100, 100)
-                    canvas.Tool = NinePointRotationCalibration.WinForms.Models.CanvasEditTool.MaskRectangle;
                     PointF p1 = canvas.ImageToClient(new UiImageCoordinate(85, 85));
                     PointF p2 = canvas.ImageToClient(new UiImageCoordinate(115, 115));
                     mouseDown.Invoke(canvas, new object[] { new MouseEventArgs(MouseButtons.Left, 1, (int)p1.X, (int)p1.Y, 0) });
@@ -2776,9 +2786,21 @@ namespace NinePointRotationCalibration.Station.Tests
                     True(form.CurrentState.MaskStrokes.Count == 1 &&
                          form.CurrentState.MaskStrokes[0].Kind == NinePointRotationCalibration.WinForms.Models.MaskShapeKind.Rectangle,
                         "releasing rectangle mask must commit rectangle mask to state");
+                    // 触发一次真实重绘并验证 _maskHistory 位图上确实留下了红色半透明掩膜像素痕迹
+                    using (Bitmap paintTarget = new Bitmap(canvas.Width, canvas.Height))
+                    {
+                        canvas.DrawToBitmap(paintTarget, new Rectangle(0, 0, canvas.Width, canvas.Height));
+                    }
+                    Bitmap maskHistory = GetPrivateField<Bitmap>(canvas, "_maskHistory");
+                    PointF centerClient = canvas.ImageToClient(new UiImageCoordinate(100, 100));
+                    Color maskPixel = maskHistory.GetPixel((int)centerClient.X, (int)centerClient.Y);
+                    True(maskPixel.A > 0 && maskPixel.R > maskPixel.G,
+                        "committed mask must leave a visible translucent red trace on _maskHistory");
 
-                    // 绘制圆形掩膜覆盖 (140, 140)
-                    canvas.Tool = NinePointRotationCalibration.WinForms.Models.CanvasEditTool.MaskCircle;
+                    // 通过下拉框切换到圆形掩膜覆盖 (140, 140)
+                    maskShapeCombo.SelectedIndex = 1;
+                    True(canvas.Tool == NinePointRotationCalibration.WinForms.Models.CanvasEditTool.MaskCircle,
+                        "selecting circle in mask combo must switch tool to MaskCircle");
                     PointF c0 = canvas.ImageToClient(new UiImageCoordinate(140, 140));
                     PointF c1 = canvas.ImageToClient(new UiImageCoordinate(140, 155));
                     mouseDown.Invoke(canvas, new object[] { new MouseEventArgs(MouseButtons.Left, 1, (int)c0.X, (int)c0.Y, 0) });
@@ -2789,8 +2811,8 @@ namespace NinePointRotationCalibration.Station.Tests
                          canvas.EditorOverlay.Points.Count == 1,
                         "circle mask must commit and leave only uncovered point (60, 60)");
 
-                    // 绘制多边形掩膜并右键闭合覆盖 (60, 60)
-                    canvas.Tool = NinePointRotationCalibration.WinForms.Models.CanvasEditTool.MaskPolygon;
+                    // 通过下拉框切换到多边形掩膜并右键闭合覆盖 (60, 60)
+                    maskShapeCombo.SelectedIndex = 2;
                     PointF v1 = canvas.ImageToClient(new UiImageCoordinate(45, 45));
                     PointF v2 = canvas.ImageToClient(new UiImageCoordinate(45, 75));
                     PointF v3 = canvas.ImageToClient(new UiImageCoordinate(75, 60));
@@ -3403,10 +3425,10 @@ namespace NinePointRotationCalibration.Station.Tests
                         "TemplateEditorForm must pre-warm handles for every parameter tab on load");
 
                     UiCalibrationCanvas canvas = GetPrivateField<UiCalibrationCanvas>(editor, "_canvas");
-                    ToolStripButton addTemplateButton = GetPrivateField<ToolStripButton>(editor, "_addTemplateRoiButton");
-                    ToolStripButton addSearchButton = GetPrivateField<ToolStripButton>(editor, "_addSearchRoiButton");
-                    ToolStripButton addDetectionButton = GetPrivateField<ToolStripButton>(editor, "_addDetectionRoiButton");
-                    ToolStripButton deleteButton = GetPrivateField<ToolStripButton>(editor, "_deleteRoiButton");
+                    Button addTemplateButton = GetPrivateField<Button>(editor, "_addTemplateRoiButton");
+                    Button addSearchButton = GetPrivateField<Button>(editor, "_addSearchRoiButton");
+                    Button addDetectionButton = GetPrivateField<Button>(editor, "_addDetectionRoiButton");
+                    Button deleteButton = GetPrivateField<Button>(editor, "_deleteRoiButton");
                     Button okButton = GetPrivateField<Button>(editor, "_okButton");
 
                     // 1. 新建模板打开时默认不生成模板 ROI / 搜索 ROI / 检测 ROI，按钮文字处于待添加态
@@ -3426,7 +3448,7 @@ namespace NinePointRotationCalibration.Station.Tests
                         "adding template ROI must automatically extract and display feature points");
                     True(canvas.TemplateRoi != null && canvas.SearchRoi == null,
                         "adding template ROI must keep search ROI unset until added or confirmed");
-                    True(addTemplateButton.Checked && !addSearchButton.Checked && !addDetectionButton.Checked,
+                    True(addTemplateButton.ForeColor == Color.White && addSearchButton.ForeColor != Color.White,
                         "template button must be highlighted as selected once template ROI is added");
 
                     int extractCountAfterAdd = service.ExtractCallCount;

@@ -27,25 +27,23 @@ namespace NinePointRotationCalibration.WinForms.Forms
         private readonly Stack<TemplateEditorState> _redoStack = new Stack<TemplateEditorState>();
         private readonly ToolStripButton _undoButton;
         private readonly ToolStripButton _redoButton;
-        private readonly ToolStripButton _maskVisibleButton;
-        private readonly ToolStripButton _addTemplateRoiButton;
-        private readonly ToolStripButton _addSearchRoiButton;
-        private readonly ToolStripButton _addDetectionRoiButton;
-        private readonly ToolStripButton _deleteRoiButton;
-        private readonly ToolStripButton _selectToolButton;
-        private readonly ToolStripButton _moveAnchorToolButton;
-        private readonly ToolStripButton _maskRectToolButton;
-        private readonly ToolStripButton _maskCircleToolButton;
-        private readonly ToolStripButton _maskPolygonToolButton;
-        private readonly ToolStripButton _eraseToolButton;
-        private readonly ToolStripButton _restoreToolButton;
-        private readonly NumericUpDown _toolbarBrushRadiusInput;
+        private readonly Button _addTemplateRoiButton;
+        private readonly Button _addSearchRoiButton;
+        private readonly Button _addDetectionRoiButton;
+        private readonly Button _deleteRoiButton;
+        private readonly Button _selectToolButton;
+        private readonly Button _moveAnchorToolButton;
+        private readonly Button _maskToolButton;
+        private readonly ComboBox _maskShapeCombo;
+        private readonly CheckBox _maskVisibleCheck;
+        private readonly Button _invertMaskButton;
+        private readonly Button _clearMaskButton;
         private readonly System.Windows.Forms.Timer _autoPreviewTimer;
         private readonly TabControl _parameterTabs;
         private readonly CheckBox _teachAdvancedToggle;
         private readonly CheckBox _matchAdvancedToggle;
-        private readonly List<AdvancedRow> _teachAdvancedRows = new List<AdvancedRow>();
-        private readonly List<AdvancedRow> _matchAdvancedRows = new List<AdvancedRow>();
+        private Panel _teachAdvancedPanel;
+        private Panel _matchAdvancedPanel;
         private readonly ComboBox _modelTypeCombo;
         private readonly CheckBox _autoThresholdCheck;
         private readonly NumericUpDown _levelsInput;
@@ -151,31 +149,25 @@ namespace NinePointRotationCalibration.WinForms.Forms
 
             _undoButton = CreateToolButton("撤销", "撤销上一步模板编辑", UndoEdit);
             _redoButton = CreateToolButton("重做", "重做刚才撤销的模板编辑", RedoEdit);
-            _maskVisibleButton = CreateToolButton("掩膜", "显示或隐藏掩膜叠加", ToggleMaskVisibility, true);
-            _addTemplateRoiButton = CreateToolButton("模板", "添加或选中模板 ROI（自动提取特征）", (sender, args) => AddOrSelectRoi(CanvasRoiTarget.Template), false);
-            _addSearchRoiButton = CreateToolButton("搜索", "添加或选中搜索 ROI", (sender, args) => AddOrSelectRoi(CanvasRoiTarget.Search), false);
-            _addDetectionRoiButton = CreateToolButton("检测", "添加或选中检测 ROI", (sender, args) => AddOrSelectRoi(CanvasRoiTarget.Detection), false);
-            _deleteRoiButton = CreateToolButton("删除", "删除当前选中的 ROI (Delete)", (sender, args) => DeleteSelectedRoi());
-            _selectToolButton = CreateToolButton("选择", "选择、移动、缩放或旋转 ROI", (sender, args) => SelectTool(CanvasEditTool.Select), true);
-            _moveAnchorToolButton = CreateToolButton("移动中心", "点击或拖动移动模板基准中心（支持方向键微调）", (sender, args) => ActivateMoveAnchorTool(), true);
-            _maskRectToolButton = CreateToolButton("矩形掩膜", "拖动框选矩形屏蔽区域", (sender, args) => SelectTool(CanvasEditTool.MaskRectangle), true);
-            _maskCircleToolButton = CreateToolButton("圆形掩膜", "从圆心拖动绘制圆形屏蔽区域", (sender, args) => SelectTool(CanvasEditTool.MaskCircle), true);
-            _maskPolygonToolButton = CreateToolButton("多边形掩膜", "依次点击顶点绘制多边形屏蔽区域（双击/右键/点击起点闭合，Esc取消）", (sender, args) => SelectTool(CanvasEditTool.MaskPolygon), true);
-            _eraseToolButton = CreateToolButton("擦除", "使用画笔从模板有效域中排除区域", (sender, args) => SelectTool(CanvasEditTool.EraseMask), true);
-            _restoreToolButton = CreateToolButton("恢复", "使用画笔恢复已擦除的模板区域", (sender, args) => SelectTool(CanvasEditTool.RestoreMask), true);
-            _toolbarBrushRadiusInput = new NumericUpDown
+            _addTemplateRoiButton = CreatePanelToggleButton("模板", (sender, args) => AddOrSelectRoi(CanvasRoiTarget.Template));
+            _addSearchRoiButton = CreatePanelToggleButton("搜索", (sender, args) => AddOrSelectRoi(CanvasRoiTarget.Search));
+            _addDetectionRoiButton = CreatePanelToggleButton("检测", (sender, args) => AddOrSelectRoi(CanvasRoiTarget.Detection));
+            _selectToolButton = CreatePanelToggleButton("选择", (sender, args) => SelectTool(CanvasEditTool.Select));
+            _moveAnchorToolButton = CreatePanelToggleButton("移动中心", (sender, args) => ActivateMoveAnchorTool());
+            _deleteRoiButton = CreatePanelToggleButton("删除", (sender, args) => DeleteSelectedRoi());
+            _deleteRoiButton.ForeColor = Color.Firebrick;
+
+            _maskToolButton = CreatePanelToggleButton("掩膜", (sender, args) => ToggleMaskDrawTool());
+            _maskShapeCombo = CreateCombo(new[] { "矩形区域", "圆形区域", "多边形区域", "画笔涂抹", "画笔恢复" });
+            _maskShapeCombo.SelectedIndex = 0;
+            _maskVisibleCheck = new CheckBox
             {
-                Minimum = 1,
-                Maximum = 500,
-                Value = 12,
-                Increment = 2,
-                DecimalPlaces = 0,
-                Width = 54,
-                TextAlign = HorizontalAlignment.Right
+                Text = "显示掩膜",
+                AutoSize = true,
+                Checked = true
             };
-            _addTemplateRoiButton.DisplayStyle = ToolStripItemDisplayStyle.ImageAndText;
-            _addSearchRoiButton.DisplayStyle = ToolStripItemDisplayStyle.ImageAndText;
-            _addDetectionRoiButton.DisplayStyle = ToolStripItemDisplayStyle.ImageAndText;
+            _invertMaskButton = CreateCompactButton("反选", InvertMask);
+            _clearMaskButton = CreateCompactButton("清空", ClearMask);
 
             _modelTypeCombo = CreateCombo(new[] { "Shape", "NCC" });
             _autoThresholdCheck = new CheckBox
@@ -270,7 +262,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
             SetStatus(Service == null
                 ? "尚未注入模板服务；可编辑已有模板，提取/建模/测试暂不可用。"
                 : _state.TemplateRoi == null
-                    ? "默认无 ROI：请点击顶部「模板」「搜索」「检测」快速添加或切换 ROI。"
+                    ? "默认无 ROI：请点击右侧「模板」「搜索」「检测」按钮添加或切换 ROI。"
                     : "已加载模板 ROI，拖动或调参时将自动实时刷新特征点。", false);
             Shown += HandleFirstShown;
         }
@@ -448,28 +440,6 @@ namespace NinePointRotationCalibration.WinForms.Forms
             tools.Items.Add(CreateToolButton("适应", "使整幅图像适应窗口 (F / 双击空白)", (sender, args) => _canvas.FitImage()));
             tools.Items.Add(CreateToolButton("1:1", "以一个图像像素对应一个屏幕像素显示 (1)", (sender, args) => _canvas.ShowOneToOne()));
             tools.Items.Add(new ToolStripSeparator());
-            tools.Items.Add(_addTemplateRoiButton);
-            tools.Items.Add(_addSearchRoiButton);
-            if (_enableDetectionRoi)
-            {
-                tools.Items.Add(_addDetectionRoiButton);
-            }
-            tools.Items.Add(_deleteRoiButton);
-            tools.Items.Add(new ToolStripSeparator());
-            tools.Items.Add(_selectToolButton);
-            tools.Items.Add(_moveAnchorToolButton);
-            tools.Items.Add(new ToolStripSeparator());
-            tools.Items.Add(_maskRectToolButton);
-            tools.Items.Add(_maskCircleToolButton);
-            tools.Items.Add(_maskPolygonToolButton);
-            tools.Items.Add(_eraseToolButton);
-            tools.Items.Add(_restoreToolButton);
-            tools.Items.Add(new ToolStripLabel("半径:") { Margin = new Padding(4, 0, 0, 0) });
-            tools.Items.Add(new ToolStripControlHost(_toolbarBrushRadiusInput) { AutoSize = false, Width = 56, Margin = new Padding(0, 1, 4, 1) });
-            tools.Items.Add(_maskVisibleButton);
-            tools.Items.Add(CreateToolButton("清除掩膜", "清除所有擦除和恢复笔画", ClearMask));
-            tools.Items.Add(CreateToolButton("反选掩膜", "反转模板有效域的包含关系", InvertMask));
-            tools.Items.Add(new ToolStripSeparator());
             tools.Items.Add(_undoButton);
             tools.Items.Add(_redoButton);
 
@@ -480,8 +450,8 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 Orientation = Orientation.Vertical,
                 SplitterWidth = 6,
                 FixedPanel = FixedPanel.Panel2,
-                Panel2MinSize = 370,
-                SplitterDistance = 800
+                Panel2MinSize = 400,
+                SplitterDistance = 780
             };
             mainSplit.Panel1.Controls.Add(_canvas);
             mainSplit.Panel1.Controls.Add(tools);
@@ -538,48 +508,188 @@ namespace NinePointRotationCalibration.WinForms.Forms
 
         private void BuildParameterTabs()
         {
-            TabPage teachPage = new TabPage("示教参数");
-            TableLayoutPanel teachTable = CreateParameterTable();
-            AddParameterRow(teachTable, "模型类型", _modelTypeCombo);
-            AddParameterRow(teachTable, "起始角度 (°)", _angleStartInput);
-            AddParameterRow(teachTable, "角度范围 (°)", _angleExtentInput);
-            AddControlRow(teachTable, _autoThresholdCheck);
-            AddParameterRow(teachTable, "对比度", _contrastInput);
-            AddAdvancedToggleRow(teachTable, _teachAdvancedToggle, _teachAdvancedRows);
-            AddAdvancedParameterRow(teachTable, "金字塔层数", _levelsInput, _teachAdvancedRows);
-            AddAdvancedParameterRow(teachTable, "角度步长 (°)", _angleStepInput, _teachAdvancedRows);
-            AddAdvancedParameterRow(teachTable, "优化方式", _optimizationCombo, _teachAdvancedRows);
-            AddAdvancedParameterRow(teachTable, "极性 / Metric", _metricCombo, _teachAdvancedRows);
-            AddAdvancedParameterRow(teachTable, "最小对比度", _minimumContrastInput, _teachAdvancedRows);
-            AddAdvancedControlRow(teachTable, _edgeContourModeCheck, _teachAdvancedRows);
-            AddAdvancedParameterRow(teachTable, "边缘 Sigma", _edgeSigmaInput, _teachAdvancedRows);
-            AddAdvancedParameterRow(teachTable, "边缘低阈值", _edgeLowThresholdInput, _teachAdvancedRows);
-            AddAdvancedParameterRow(teachTable, "边缘高阈值", _edgeHighThresholdInput, _teachAdvancedRows);
-            AddAdvancedParameterRow(teachTable, "最小轮廓长度 (px)", _minimumContourLengthInput, _teachAdvancedRows);
-            AddAdvancedParameterRow(teachTable, "特征点间距 (px)", _featurePointSpacingInput, _teachAdvancedRows);
-            AddAdvancedParameterRow(teachTable, "最大特征点数", _maximumFeaturePointCountInput, _teachAdvancedRows);
-            AddAdvancedParameterRow(teachTable, "画笔半径 (px)", _brushRadiusInput, _teachAdvancedRows);
-            AddAdvancedControlRow(teachTable, _templateLockedCheck, _teachAdvancedRows);
-            AddAdvancedControlRow(teachTable, _searchLockedCheck, _teachAdvancedRows);
-            UpdateAdvancedRows(_teachAdvancedToggle, _teachAdvancedRows);
-            teachPage.Controls.Add(WrapScrollable(teachTable));
+            TabPage teachPage = new TabPage("示教设置");
+            Panel teachScroll = new Panel { Dock = DockStyle.Fill, AutoScroll = true, Padding = new Padding(4) };
+            TableLayoutPanel teachStack = new TableLayoutPanel
+            {
+                Dock = DockStyle.Top,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                ColumnCount = 1,
+                RowCount = 0,
+                Padding = new Padding(2)
+            };
+            teachStack.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100.0f));
+
+            // 1. ROI 区域操作卡片（位于高级选项上方）
+            GroupBox roiGroup = new GroupBox
+            {
+                Text = "ROI 区域（点击添加或切换选中）",
+                Dock = DockStyle.Top,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                Padding = new Padding(8, 6, 8, 8),
+                Margin = new Padding(2, 2, 2, 6)
+            };
+            TableLayoutPanel roiGrid = new TableLayoutPanel
+            {
+                Dock = DockStyle.Top,
+                AutoSize = true,
+                ColumnCount = 3,
+                RowCount = 2
+            };
+            roiGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.33f));
+            roiGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.33f));
+            roiGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.34f));
+            roiGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 36.0f));
+            roiGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 36.0f));
+            roiGrid.Controls.Add(_addTemplateRoiButton, 0, 0);
+            roiGrid.Controls.Add(_addSearchRoiButton, 1, 0);
+            if (_enableDetectionRoi)
+            {
+                roiGrid.Controls.Add(_addDetectionRoiButton, 2, 0);
+            }
+            roiGrid.Controls.Add(_selectToolButton, 0, 1);
+            roiGrid.Controls.Add(_moveAnchorToolButton, 1, 1);
+            roiGrid.Controls.Add(_deleteRoiButton, 2, 1);
+            roiGroup.Controls.Add(roiGrid);
+            AddStackSection(teachStack, roiGroup);
+
+            // 2. 模板掩膜操作卡片（紧接 ROI 下方，位于高级选项上方）
+            GroupBox maskGroup = new GroupBox
+            {
+                Text = "模板掩膜",
+                Dock = DockStyle.Top,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                Padding = new Padding(8, 6, 8, 8),
+                Margin = new Padding(2, 0, 2, 6)
+            };
+            TableLayoutPanel maskGrid = new TableLayoutPanel
+            {
+                Dock = DockStyle.Top,
+                AutoSize = true,
+                ColumnCount = 4,
+                RowCount = 2
+            };
+            maskGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 30.0f));
+            maskGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 30.0f));
+            maskGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 20.0f));
+            maskGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 20.0f));
+            maskGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 34.0f));
+            maskGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 34.0f));
+            maskGrid.Controls.Add(_maskToolButton, 0, 0);
+            _maskShapeCombo.Margin = new Padding(4, 4, 2, 4);
+            maskGrid.Controls.Add(_maskShapeCombo, 1, 0);
+            maskGrid.SetColumnSpan(_maskShapeCombo, 3);
+            Label radiusLabel = new Label
+            {
+                Text = "画笔半径",
+                AutoSize = true,
+                Anchor = AnchorStyles.Left,
+                Margin = new Padding(2, 8, 2, 4)
+            };
+            _brushRadiusInput.Margin = new Padding(2, 4, 4, 4);
+            maskGrid.Controls.Add(radiusLabel, 0, 1);
+            maskGrid.Controls.Add(_brushRadiusInput, 1, 1);
+            maskGrid.Controls.Add(_invertMaskButton, 2, 1);
+            maskGrid.Controls.Add(_clearMaskButton, 3, 1);
+
+            FlowLayoutPanel maskFooter = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Top,
+                AutoSize = true,
+                FlowDirection = FlowDirection.LeftToRight,
+                Padding = new Padding(2, 4, 2, 0)
+            };
+            maskFooter.Controls.Add(_maskVisibleCheck);
+            maskGroup.Controls.Add(maskFooter);
+            maskGroup.Controls.Add(maskGrid);
+            AddStackSection(teachStack, maskGroup);
+
+            // 3. 基础示教参数
+            TableLayoutPanel teachBasicTable = CreateParameterTable();
+            teachBasicTable.Padding = new Padding(4, 2, 4, 2);
+            AddParameterRow(teachBasicTable, "模型类型", _modelTypeCombo);
+            AddParameterRow(teachBasicTable, "起始角度 (°)", _angleStartInput);
+            AddParameterRow(teachBasicTable, "角度范围 (°)", _angleExtentInput);
+            AddControlRow(teachBasicTable, _autoThresholdCheck);
+            AddParameterRow(teachBasicTable, "对比度", _contrastInput);
+            AddStackSection(teachStack, teachBasicTable);
+
+            // 4. 单容器原子折叠高级选项（一次性切换 Panel.Visible，彻底消除逐行卡顿闪烁）
+            AddStackSection(teachStack, _teachAdvancedToggle);
+            TableLayoutPanel teachAdvancedTable = CreateParameterTable();
+            teachAdvancedTable.Padding = new Padding(4, 2, 4, 6);
+            AddParameterRow(teachAdvancedTable, "金字塔层数", _levelsInput);
+            AddParameterRow(teachAdvancedTable, "角度步长 (°)", _angleStepInput);
+            AddParameterRow(teachAdvancedTable, "优化方式", _optimizationCombo);
+            AddParameterRow(teachAdvancedTable, "极性 / Metric", _metricCombo);
+            AddParameterRow(teachAdvancedTable, "最小对比度", _minimumContrastInput);
+            AddControlRow(teachAdvancedTable, _edgeContourModeCheck);
+            AddParameterRow(teachAdvancedTable, "边缘 Sigma", _edgeSigmaInput);
+            AddParameterRow(teachAdvancedTable, "边缘低阈值", _edgeLowThresholdInput);
+            AddParameterRow(teachAdvancedTable, "边缘高阈值", _edgeHighThresholdInput);
+            AddParameterRow(teachAdvancedTable, "最小轮廓长度 (px)", _minimumContourLengthInput);
+            AddParameterRow(teachAdvancedTable, "特征点间距 (px)", _featurePointSpacingInput);
+            AddParameterRow(teachAdvancedTable, "最大特征点数", _maximumFeaturePointCountInput);
+            AddControlRow(teachAdvancedTable, _templateLockedCheck);
+            AddControlRow(teachAdvancedTable, _searchLockedCheck);
+            _teachAdvancedPanel = new Panel
+            {
+                Dock = DockStyle.Top,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                Visible = false
+            };
+            _teachAdvancedPanel.Controls.Add(teachAdvancedTable);
+            AddStackSection(teachStack, _teachAdvancedPanel);
+            _teachAdvancedToggle.CheckedChanged += (s, a) => ToggleAdvancedPanel(teachScroll, teachStack, _teachAdvancedToggle, _teachAdvancedPanel);
+
+            teachScroll.Controls.Add(teachStack);
+            teachPage.Controls.Add(teachScroll);
 
             TabPage matchPage = new TabPage("运行参数");
-            TableLayoutPanel matchTable = CreateParameterTable();
-            AddParameterRow(matchTable, "最低分数", _minimumScoreInput);
-            AddParameterRow(matchTable, "测试返回上限 (0=全部)", _matchCountInput);
-            AddParameterRow(matchTable, "搜索起始角度 (°)", _matchAngleStartInput);
-            AddParameterRow(matchTable, "搜索角度范围 (°)", _matchAngleExtentInput);
-            AddAdvancedToggleRow(matchTable, _matchAdvancedToggle, _matchAdvancedRows);
-            AddAdvancedParameterRow(matchTable, "搜索金字塔层数 (0=自动)", _matchLevelsInput, _matchAdvancedRows);
-            AddAdvancedParameterRow(matchTable, "Greediness", _greedinessInput, _matchAdvancedRows);
-            AddAdvancedParameterRow(matchTable, "最大重叠", _maximumOverlapInput, _matchAdvancedRows);
-            AddAdvancedParameterRow(matchTable, "亚像素", _subPixelCombo, _matchAdvancedRows);
-            AddAdvancedParameterRow(matchTable, "超时 (ms, 0=不限)", _timeoutInput, _matchAdvancedRows);
-            AddAdvancedParameterRow(matchTable, "轮廓采点间隔半径 (px)", _contourPointSpacingInput, _matchAdvancedRows);
-            AddAdvancedControlRow(matchTable, _allowPartialCheck, _matchAdvancedRows);
-            UpdateAdvancedRows(_matchAdvancedToggle, _matchAdvancedRows);
-            matchPage.Controls.Add(WrapScrollable(matchTable));
+            Panel matchScroll = new Panel { Dock = DockStyle.Fill, AutoScroll = true, Padding = new Padding(4) };
+            TableLayoutPanel matchStack = new TableLayoutPanel
+            {
+                Dock = DockStyle.Top,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                ColumnCount = 1,
+                RowCount = 0,
+                Padding = new Padding(2)
+            };
+            matchStack.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100.0f));
+            TableLayoutPanel matchBasicTable = CreateParameterTable();
+            matchBasicTable.Padding = new Padding(4, 2, 4, 2);
+            AddParameterRow(matchBasicTable, "最低分数", _minimumScoreInput);
+            AddParameterRow(matchBasicTable, "测试返回上限 (0=全部)", _matchCountInput);
+            AddParameterRow(matchBasicTable, "搜索起始角度 (°)", _matchAngleStartInput);
+            AddParameterRow(matchBasicTable, "搜索角度范围 (°)", _matchAngleExtentInput);
+            AddStackSection(matchStack, matchBasicTable);
+            AddStackSection(matchStack, _matchAdvancedToggle);
+            TableLayoutPanel matchAdvancedTable = CreateParameterTable();
+            matchAdvancedTable.Padding = new Padding(4, 2, 4, 6);
+            AddParameterRow(matchAdvancedTable, "搜索金字塔层数 (0=自动)", _matchLevelsInput);
+            AddParameterRow(matchAdvancedTable, "Greediness", _greedinessInput);
+            AddParameterRow(matchAdvancedTable, "最大重叠", _maximumOverlapInput);
+            AddParameterRow(matchAdvancedTable, "亚像素", _subPixelCombo);
+            AddParameterRow(matchAdvancedTable, "超时 (ms, 0=不限)", _timeoutInput);
+            AddParameterRow(matchAdvancedTable, "轮廓采点间隔半径 (px)", _contourPointSpacingInput);
+            AddControlRow(matchAdvancedTable, _allowPartialCheck);
+            _matchAdvancedPanel = new Panel
+            {
+                Dock = DockStyle.Top,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                Visible = false
+            };
+            _matchAdvancedPanel.Controls.Add(matchAdvancedTable);
+            AddStackSection(matchStack, _matchAdvancedPanel);
+            _matchAdvancedToggle.CheckedChanged += (s, a) => ToggleAdvancedPanel(matchScroll, matchStack, _matchAdvancedToggle, _matchAdvancedPanel);
+            matchScroll.Controls.Add(matchStack);
+            matchPage.Controls.Add(matchScroll);
 
             TabPage anchorPage = new TabPage("基准中心");
             TableLayoutPanel anchorTable = CreateParameterTable();
@@ -679,7 +789,8 @@ namespace NinePointRotationCalibration.WinForms.Forms
             _contourPointSpacingInput.ValueChanged += DisplayParameterChanged;
             _allowPartialCheck.CheckedChanged += RuntimeParameterChanged;
             _brushRadiusInput.ValueChanged += BrushRadiusChanged;
-            _toolbarBrushRadiusInput.ValueChanged += ToolbarBrushRadiusChanged;
+            _maskShapeCombo.SelectedIndexChanged += MaskShapeComboChanged;
+            _maskVisibleCheck.CheckedChanged += ToggleMaskVisibility;
 
             _anchorRowInput.ValueChanged += AnchorNumericChanged;
             _anchorColumnInput.ValueChanged += AnchorNumericChanged;
@@ -731,7 +842,6 @@ namespace NinePointRotationCalibration.WinForms.Forms
                     : 3.0);
                 _allowPartialCheck.Checked = parameters.AllowPartialMatch;
                 SetNumeric(_brushRadiusInput, parameters.BrushRadius);
-                SetNumeric(_toolbarBrushRadiusInput, parameters.BrushRadius);
                 SetNumeric(_anchorRowInput, _state.ReferenceAnchor.Row);
                 SetNumeric(_anchorColumnInput, _state.ReferenceAnchor.Column);
                 _anchorLockedCheck.Checked = _state.AnchorLocked;
@@ -751,7 +861,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 _canvas.MaskVisible = _state.MaskVisible;
                 _canvas.BrushRadiusImage = parameters.BrushRadius;
                 _canvas.SetMaskStrokes(_state.MaskStrokes);
-                _maskVisibleButton.Checked = _state.MaskVisible;
+                _maskVisibleCheck.Checked = _state.MaskVisible;
                 SyncUnmaskedBaseIfApplicable();
                 UpdateEditorOverlay();
                 UpdateModelState();
@@ -929,7 +1039,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
                     {
                         continue;
                     }
-                    AddPreviewPoint(overlay, point, Color.Cyan);
+                    AddPreviewPoint(overlay, point, Color.Lime);
                 }
             }
             _canvas.EditorOverlay = overlay;
@@ -1050,21 +1160,6 @@ namespace NinePointRotationCalibration.WinForms.Forms
 
             _state.Parameters.BrushRadius = (double)_brushRadiusInput.Value;
             _canvas.BrushRadiusImage = _state.Parameters.BrushRadius;
-            bool prev = _loadingControls;
-            _loadingControls = true;
-            try { SetNumeric(_toolbarBrushRadiusInput, _state.Parameters.BrushRadius); }
-            finally { _loadingControls = prev; }
-        }
-
-        private void ToolbarBrushRadiusChanged(object sender, EventArgs eventArgs)
-        {
-            if (_loadingControls) return;
-            _state.Parameters.BrushRadius = (double)_toolbarBrushRadiusInput.Value;
-            _canvas.BrushRadiusImage = _state.Parameters.BrushRadius;
-            bool prev = _loadingControls;
-            _loadingControls = true;
-            try { SetNumeric(_brushRadiusInput, _state.Parameters.BrushRadius); }
-            finally { _loadingControls = prev; }
         }
 
         private void CanvasBrushRadiusChanged(object sender, EventArgs eventArgs)
@@ -1075,9 +1170,47 @@ namespace NinePointRotationCalibration.WinForms.Forms
             try
             {
                 SetNumeric(_brushRadiusInput, _state.Parameters.BrushRadius);
-                SetNumeric(_toolbarBrushRadiusInput, _state.Parameters.BrushRadius);
             }
             finally { _loadingControls = prev; }
+        }
+
+        private void MaskShapeComboChanged(object sender, EventArgs eventArgs)
+        {
+            if (_loadingControls) return;
+            SelectTool(GetSelectedMaskTool());
+        }
+
+        private void ToggleMaskDrawTool()
+        {
+            if (IsMaskEditTool(_canvas.Tool))
+            {
+                SelectTool(CanvasEditTool.Select);
+            }
+            else
+            {
+                SelectTool(GetSelectedMaskTool());
+            }
+        }
+
+        private CanvasEditTool GetSelectedMaskTool()
+        {
+            switch (_maskShapeCombo.SelectedIndex)
+            {
+                case 1: return CanvasEditTool.MaskCircle;
+                case 2: return CanvasEditTool.MaskPolygon;
+                case 3: return CanvasEditTool.EraseMask;
+                case 4: return CanvasEditTool.RestoreMask;
+                default: return CanvasEditTool.MaskRectangle;
+            }
+        }
+
+        private static bool IsMaskEditTool(CanvasEditTool tool)
+        {
+            return tool == CanvasEditTool.MaskRectangle ||
+                   tool == CanvasEditTool.MaskCircle ||
+                   tool == CanvasEditTool.MaskPolygon ||
+                   tool == CanvasEditTool.EraseMask ||
+                   tool == CanvasEditTool.RestoreMask;
         }
 
         private void CanvasMouseUpForContextMenu(object sender, MouseEventArgs e)
@@ -1757,7 +1890,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 contours = new[] { _state.FeaturePoints ?? new List<ImageCoordinate>() };
             }
 
-            AddFeaturePoints(overlay, contours, Color.Cyan);
+            AddFeaturePoints(overlay, contours, Color.Lime);
             _canvas.EditorOverlay = overlay;
         }
 
@@ -1871,13 +2004,27 @@ namespace NinePointRotationCalibration.WinForms.Forms
 
         private void SyncToolButtonCheckedState(CanvasEditTool tool)
         {
-            _selectToolButton.Checked = tool == CanvasEditTool.Select;
-            _moveAnchorToolButton.Checked = tool == CanvasEditTool.MoveAnchor;
-            _maskRectToolButton.Checked = tool == CanvasEditTool.MaskRectangle;
-            _maskCircleToolButton.Checked = tool == CanvasEditTool.MaskCircle;
-            _maskPolygonToolButton.Checked = tool == CanvasEditTool.MaskPolygon;
-            _eraseToolButton.Checked = tool == CanvasEditTool.EraseMask;
-            _restoreToolButton.Checked = tool == CanvasEditTool.RestoreMask;
+            bool maskActive = IsMaskEditTool(tool);
+            if (maskActive)
+            {
+                int shapeIndex = tool == CanvasEditTool.MaskCircle ? 1
+                    : tool == CanvasEditTool.MaskPolygon ? 2
+                    : tool == CanvasEditTool.EraseMask ? 3
+                    : tool == CanvasEditTool.RestoreMask ? 4 : 0;
+                if (_maskShapeCombo.SelectedIndex != shapeIndex)
+                {
+                    bool prev = _loadingControls;
+                    _loadingControls = true;
+                    try { _maskShapeCombo.SelectedIndex = shapeIndex; }
+                    finally { _loadingControls = prev; }
+                }
+            }
+
+            StyleToggleButton(_selectToolButton, tool == CanvasEditTool.Select, Color.FromArgb(37, 99, 235));
+            StyleToggleButton(_moveAnchorToolButton, tool == CanvasEditTool.MoveAnchor, Color.FromArgb(190, 24, 93));
+            StyleToggleButton(_maskToolButton, maskActive, Color.FromArgb(220, 38, 38));
+            _brushRadiusInput.Enabled = !_busy && (tool == CanvasEditTool.EraseMask || tool == CanvasEditTool.RestoreMask ||
+                _maskShapeCombo.SelectedIndex == 3 || _maskShapeCombo.SelectedIndex == 4);
             UpdateRoiToolbarButtons();
         }
 
@@ -2026,28 +2173,33 @@ namespace NinePointRotationCalibration.WinForms.Forms
             bool hasDetection = _enableDetectionRoi && _state.DetectionRoi != null;
             CanvasRoiTarget selected = _canvas.SelectedRoi;
             bool inSelectMode = _canvas.Tool == CanvasEditTool.Select;
+            Color activeBlue = Color.FromArgb(37, 99, 235);
 
             _addTemplateRoiButton.Text = "模板";
-            _addTemplateRoiButton.Checked = inSelectMode && selected == CanvasRoiTarget.Template && hasTemplate;
-            _addTemplateRoiButton.ToolTipText = hasTemplate ? "点击选中模板 ROI（已添加）" : "点击添加模板 ROI 并自动提取特征";
+            StyleToggleButton(_addTemplateRoiButton, inSelectMode && selected == CanvasRoiTarget.Template && hasTemplate, activeBlue);
             UpdateRoiButtonIcon(_addTemplateRoiButton, Color.Gold, hasTemplate);
 
             _addSearchRoiButton.Text = "搜索";
-            _addSearchRoiButton.Checked = inSelectMode && selected == CanvasRoiTarget.Search && hasSearch;
-            _addSearchRoiButton.ToolTipText = hasSearch ? "点击选中搜索 ROI（已添加）" : "点击添加搜索 ROI";
+            StyleToggleButton(_addSearchRoiButton, inSelectMode && selected == CanvasRoiTarget.Search && hasSearch, activeBlue);
             UpdateRoiButtonIcon(_addSearchRoiButton, Color.DeepSkyBlue, hasSearch);
 
             _addDetectionRoiButton.Text = "检测";
-            _addDetectionRoiButton.Checked = inSelectMode && selected == CanvasRoiTarget.Detection && hasDetection;
-            _addDetectionRoiButton.ToolTipText = hasDetection ? "点击选中检测 ROI（已添加）" : "点击添加检测 ROI";
-            UpdateRoiButtonIcon(_addDetectionRoiButton, Color.LimeGreen, hasDetection);
+            StyleToggleButton(_addDetectionRoiButton, inSelectMode && selected == CanvasRoiTarget.Detection && hasDetection, activeBlue);
+            UpdateRoiButtonIcon(_addDetectionRoiButton, Color.Cyan, hasDetection);
 
             bool locked = (selected == CanvasRoiTarget.Template && _state.TemplateRoiLocked) ||
                           (selected == CanvasRoiTarget.Search && _state.SearchRoiLocked);
             _deleteRoiButton.Enabled = !_busy && selected != CanvasRoiTarget.None && GetStateRoi(selected) != null && !locked;
         }
 
-        private static void UpdateRoiButtonIcon(ToolStripButton button, Color color, bool exists)
+        private static void StyleToggleButton(Button button, bool active, Color accent)
+        {
+            button.BackColor = active ? accent : Color.White;
+            button.ForeColor = active ? Color.White : Color.FromArgb(30, 41, 59);
+            button.FlatAppearance.BorderColor = active ? accent : Color.FromArgb(203, 213, 225);
+        }
+
+        private static void UpdateRoiButtonIcon(Button button, Color color, bool exists)
         {
             string tag = (exists ? "1:" : "0:") + color.ToArgb();
             if (Equals(button.Tag, tag)) return;
@@ -2123,7 +2275,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 {
                     if (IsFinite(point.Row) && IsFinite(point.Column) && activeRoi.Contains(point))
                     {
-                        AddPreviewPoint(overlay, point, Color.Cyan);
+                        AddPreviewPoint(overlay, point, Color.Lime);
                     }
                 }
             }
@@ -2164,7 +2316,8 @@ namespace NinePointRotationCalibration.WinForms.Forms
 
         private void ToggleMaskVisibility(object sender, EventArgs eventArgs)
         {
-            _state.MaskVisible = _maskVisibleButton.Checked;
+            if (_loadingControls) return;
+            _state.MaskVisible = _maskVisibleCheck.Checked;
             _canvas.MaskVisible = _state.MaskVisible;
             _canvas.Invalidate();
         }
@@ -2844,6 +2997,64 @@ namespace NinePointRotationCalibration.WinForms.Forms
             return table;
         }
 
+        private static Button CreatePanelToggleButton(string text, EventHandler onClick)
+        {
+            Button button = new Button
+            {
+                Text = text,
+                Dock = DockStyle.Fill,
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Color.White,
+                ForeColor = Color.FromArgb(30, 41, 59),
+                ImageAlign = ContentAlignment.MiddleLeft,
+                TextAlign = ContentAlignment.MiddleCenter,
+                TextImageRelation = TextImageRelation.ImageBeforeText,
+                Margin = new Padding(2, 2, 2, 2),
+                Cursor = Cursors.Hand
+            };
+            button.FlatAppearance.BorderColor = Color.FromArgb(203, 213, 225);
+            button.FlatAppearance.BorderSize = 1;
+            button.Click += onClick;
+            return button;
+        }
+
+        private static Button CreateCompactButton(string text, EventHandler onClick)
+        {
+            Button button = new Button
+            {
+                Text = text,
+                Dock = DockStyle.Fill,
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Color.White,
+                ForeColor = Color.FromArgb(51, 65, 85),
+                Margin = new Padding(2, 3, 2, 3),
+                Cursor = Cursors.Hand
+            };
+            button.FlatAppearance.BorderColor = Color.FromArgb(203, 213, 225);
+            button.FlatAppearance.BorderSize = 1;
+            button.Click += onClick;
+            return button;
+        }
+
+        private static void AddStackSection(TableLayoutPanel stack, Control section)
+        {
+            int row = stack.RowCount++;
+            stack.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            section.Dock = DockStyle.Top;
+            stack.Controls.Add(section, 0, row);
+        }
+
+        private static void ToggleAdvancedPanel(Panel scrollContainer, TableLayoutPanel stack, CheckBox toggle, Panel advancedPanel)
+        {
+            bool expanded = toggle.Checked;
+            toggle.Text = expanded ? "高级选项 ▼" : "高级选项 ▶";
+            // 单容器 + WM_SETREDRAW 冻结，一次性原子展开/折叠，彻底消除逐行重排卡顿
+            using (UiRenderOptimizer.BeginFreezeScope(scrollContainer, stack, advancedPanel))
+            {
+                advancedPanel.Visible = expanded;
+            }
+        }
+
         private static void AddParameterRow(TableLayoutPanel table, string labelText, Control control)
         {
             int row = table.RowCount++;
@@ -2867,70 +3078,6 @@ namespace NinePointRotationCalibration.WinForms.Forms
             control.Margin = new Padding(3, 7, 3, 7);
             table.Controls.Add(control, 0, row);
             table.SetColumnSpan(control, 2);
-        }
-
-        private static void AddAdvancedToggleRow(
-            TableLayoutPanel table,
-            CheckBox toggle,
-            IList<AdvancedRow> advancedRows)
-        {
-            int row = table.RowCount++;
-            table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            table.Controls.Add(toggle, 0, row);
-            table.SetColumnSpan(toggle, 2);
-            toggle.CheckedChanged += (sender, args) => UpdateAdvancedRows(toggle, advancedRows);
-        }
-
-        private static void AddAdvancedParameterRow(
-            TableLayoutPanel table,
-            string labelText,
-            Control control,
-            ICollection<AdvancedRow> advancedRows)
-        {
-            int row = table.RowCount++;
-            RowStyle rowStyle = new RowStyle(SizeType.AutoSize);
-            table.RowStyles.Add(rowStyle);
-            Label label = new Label
-            {
-                Text = labelText,
-                AutoSize = true,
-                Anchor = AnchorStyles.Left,
-                Margin = new Padding(3, 8, 6, 8)
-            };
-            control.Margin = new Padding(3, 4, 3, 4);
-            table.Controls.Add(label, 0, row);
-            table.Controls.Add(control, 1, row);
-            advancedRows.Add(new AdvancedRow(rowStyle, label, control));
-        }
-
-        private static void AddAdvancedControlRow(
-            TableLayoutPanel table,
-            Control control,
-            ICollection<AdvancedRow> advancedRows)
-        {
-            int row = table.RowCount++;
-            RowStyle rowStyle = new RowStyle(SizeType.AutoSize);
-            table.RowStyles.Add(rowStyle);
-            control.Margin = new Padding(3, 7, 3, 7);
-            table.Controls.Add(control, 0, row);
-            table.SetColumnSpan(control, 2);
-            advancedRows.Add(new AdvancedRow(rowStyle, control));
-        }
-
-        private static void UpdateAdvancedRows(CheckBox toggle, IEnumerable<AdvancedRow> advancedRows)
-        {
-            bool expanded = toggle.Checked;
-            toggle.Text = expanded ? "高级选项 ▼" : "高级选项 ▶";
-            foreach (AdvancedRow row in advancedRows)
-            {
-                row.SetVisible(expanded);
-            }
-
-            TableLayoutPanel table = toggle.Parent as TableLayoutPanel;
-            if (table != null)
-            {
-                table.PerformLayout();
-            }
         }
 
         private static Control WrapScrollable(Control child)
@@ -2958,32 +3105,6 @@ namespace NinePointRotationCalibration.WinForms.Forms
         {
             int index = combo.FindStringExact(value ?? string.Empty);
             combo.SelectedIndex = index >= 0 ? index : 0;
-        }
-
-        private sealed class AdvancedRow
-        {
-            private readonly Control[] _controls;
-            private readonly RowStyle _rowStyle;
-
-            public AdvancedRow(RowStyle rowStyle, params Control[] controls)
-            {
-                _rowStyle = rowStyle ?? throw new ArgumentNullException(nameof(rowStyle));
-                _controls = controls ?? new Control[0];
-            }
-
-            public void SetVisible(bool visible)
-            {
-                // 折叠高级选项时将 TableLayoutPanel 行高置为绝对 0，避免残留空白占位
-                _rowStyle.SizeType = visible ? SizeType.AutoSize : SizeType.Absolute;
-                _rowStyle.Height = 0.0f;
-                foreach (Control control in _controls)
-                {
-                    if (control != null)
-                    {
-                        control.Visible = visible;
-                    }
-                }
-            }
         }
     }
 
