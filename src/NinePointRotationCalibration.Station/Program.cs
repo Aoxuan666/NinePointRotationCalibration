@@ -15,6 +15,8 @@ namespace NinePointRotationCalibration.Station
         [STAThread]
         private static void Main()
         {
+            // 最优先初始化 libs\ 外部 DLL 搜索与托管程序集解析，确保代码与第三方库完全物理分离
+            ExternalRuntimeLoader.Initialize();
             // 尽早初始化详细日志并挂接全局未捕获异常处理器（UI 线程 / AppDomain / 未观察 Task）
             StationLog.EnsureInitialized();
             LocalDebugLog.EnsureInitialized();

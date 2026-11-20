@@ -5,6 +5,8 @@
     <Prefer32Bit>false</Prefer32Bit>
     <Deterministic>true</Deterministic>
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <!-- 第三方/外包 DLL 源码仓库统一存放目录，编译产物统一隔离输出到 $(OutDir)libs\ 下 -->
+    <ExternalLibsDir Condition="'$(ExternalLibsDir)' == ''">$(MSBuildThisFileDirectory)lib\</ExternalLibsDir>
   </PropertyGroup>
 </Project>
 

@@ -24,7 +24,8 @@ if ($LASTEXITCODE -ne 0) { throw "Release build failed with exit code $LASTEXITC
 
 $sourceBundle = Join-Path $OutputDirectory "Source"
 $runtimeBundle = Join-Path $OutputDirectory "Run"
-New-Item -ItemType Directory -Force -Path $sourceBundle, $runtimeBundle | Out-Null
+$codeUpdateBundle = Join-Path $OutputDirectory "CodeUpdate"
+New-Item -ItemType Directory -Force -Path $sourceBundle, $runtimeBundle, $codeUpdateBundle | Out-Null
 
 $robocopyArguments = @(
     $repositoryRoot, $sourceBundle, "/E", "/R:2", "/W:1", "/NFL", "/NDL", "/NJH", "/NJS", "/NP",
@@ -39,6 +40,20 @@ if (-not (Test-Path -LiteralPath (Join-Path $stationOutput "NinePointRotationCal
     throw "Station executable was not produced: $stationOutput"
 }
 Copy-Item -Path (Join-Path $stationOutput "*") -Destination $runtimeBundle -Recurse -Force
+
+# 同步生成纯代码增量更新包（仅包含自有业务 exe/dll/config，不含第三方 libs\ 与现场 data\）
+$ownFiles = @(
+    "NinePointRotationCalibration.Station.exe",
+    "NinePointRotationCalibration.Station.exe.config",
+    "NinePointRotationCalibration.Core.dll",
+    "NinePointRotationCalibration.Halcon.dll",
+    "NinePointRotationCalibration.WinForms.dll",
+    "NinePointRotationCalibration.Sdk.dll"
+)
+foreach ($fileName in $ownFiles) {
+    $src = Join-Path $stationOutput $fileName
+    if (Test-Path -LiteralPath $src) { Copy-Item -LiteralPath $src -Destination $codeUpdateBundle -Force }
+}
 $runtimeDataDir = Join-Path $runtimeBundle "data"
 if (Test-Path -LiteralPath $runtimeDataDir) {
     Get-ChildItem -LiteralPath $runtimeDataDir -Filter "*.tmp" -File -ErrorAction SilentlyContinue | Remove-Item -Force
@@ -52,7 +67,8 @@ $guide = @'
 九点标定视觉工作站交付说明
 
 源码：打开 Source\NinePointRotationCalibration.sln，选择 x64 配置。建议 Visual Studio 2019/2022，并安装 .NET 桌面开发与 .NET Framework 4.7.2 Developer Pack。
-运行：先运行 Run\NinePointRotationCalibration.Station.exe。首次运行会在程序目录生成 data 配置。
+首次部署：整包复制 Run\ 目录到目标工控机，运行 Run\NinePointRotationCalibration.Station.exe（第三方/外包 DLL 已全部隔离在 Run\libs\ 下）。
+后续现场更新纯代码：只需把 CodeUpdate\ 内的 6 个自有程序文件覆盖到现场 Run\ 根目录即可，无需动 Run\libs\（外包/第三方 DLL）和 Run\data\（现场标定/模板配置）。
 日志：本地详细调试日志写入 Run\logs\station-yyyyMMdd.log（按天及 20 MB 自动切分），系统运行日志保留于 %LOCALAPPDATA%\NinePointRotationCalibration\logs\station.log。
 相机：相机页选择驱动、枚举设备、选中序列号后连接；切换设备时再次选择并连接，预览会随新设备恢复。大华/海康 native SDK 和设备驱动必须与目标电脑、相机型号和 x64 环境匹配。
 HALCON：包内包含用于编译的 halcondotnet.dll。运行模板匹配/标定仍需在目标电脑安装与程序集版本完全一致的 64 位 HALCON Runtime，并配置有效许可。未将开发机 HALCON Runtime 或许可打入交付包。

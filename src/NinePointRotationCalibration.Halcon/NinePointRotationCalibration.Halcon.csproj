@@ -39,8 +39,12 @@
     <Reference Include="System.Drawing" />
     <Reference Include="halcondotnet">
       <HintPath>$(HalconDotNetPath)</HintPath>
-      <Private>true</Private>
+      <Private>false</Private>
     </Reference>
+    <Content Include="$(HalconDotNetPath)" Condition="Exists('$(HalconDotNetPath)')">
+      <Link>libs\halcon\halcondotnet.dll</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\NinePointRotationCalibration.Core\NinePointRotationCalibration.Core.csproj">

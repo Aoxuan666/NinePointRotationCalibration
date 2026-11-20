@@ -40,24 +40,35 @@
     <Reference Include="Microsoft.CSharp" />
     <Reference Include="MVSDK_Net" Condition="Exists('$(DahuaSdkPath)')">
       <HintPath>$(DahuaSdkPath)</HintPath>
-      <Private>true</Private>
+      <Private>false</Private>
     </Reference>
     <Reference Include="Seprays.Camera" Condition="Exists('$(HikvisionSdkDirectory)\Seprays.Camera.dll')">
       <HintPath>$(HikvisionSdkDirectory)\Seprays.Camera.dll</HintPath>
-      <Private>true</Private>
+      <Private>false</Private>
     </Reference>
     <Reference Include="MvCameraControl.Net" Condition="Exists('$(HikvisionSdkDirectory)\MvCameraControl.Net.dll')">
       <HintPath>$(HikvisionSdkDirectory)\MvCameraControl.Net.dll</HintPath>
-      <Private>true</Private>
+      <Private>false</Private>
     </Reference>
+    <!-- 所有第三方/外包相机与视觉 DLL 统一隔离复制到输出目录 libs\ 下，根目录仅保留自有纯代码产物 -->
+    <Content Include="$(DahuaSdkPath)" Condition="Exists('$(DahuaSdkPath)')">
+      <Link>libs\dahua\MVSDK_Net.dll</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
     <Content Include="$(MSBuildThisFileDirectory)..\..\lib\Dahua\x64\CLIDelegate.dll" Condition="Exists('$(MSBuildThisFileDirectory)..\..\lib\Dahua\x64\CLIDelegate.dll')">
+      <Link>libs\dahua\CLIDelegate.dll</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
     <Content Include="$(MSBuildThisFileDirectory)..\..\lib\Dahua\x64\ThridLibray.dll" Condition="Exists('$(MSBuildThisFileDirectory)..\..\lib\Dahua\x64\ThridLibray.dll')">
+      <Link>libs\dahua\ThridLibray.dll</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
     <Content Include="$(MSBuildThisFileDirectory)..\..\lib\Dahua\x64\Runtime\*">
-      <Link>%(Filename)%(Extension)</Link>
+      <Link>libs\dahua\%(Filename)%(Extension)</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="$(HikvisionSdkDirectory)\*.dll">
+      <Link>libs\hikvision\%(Filename)%(Extension)</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
     <Reference Include="System" />
@@ -67,6 +78,9 @@
     <Reference Include="System.Web.Extensions" />
     <Reference Include="System.Windows.Forms" />
     <Reference Include="System.Xml" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="App.config" />
   </ItemGroup>
   <ItemGroup>
     <Compile Include="**\*.cs" Exclude="bin\**\*;obj\**\*;Views\BlobDebugForm.cs;Views\BlobDebugForm.Designer.cs" />
