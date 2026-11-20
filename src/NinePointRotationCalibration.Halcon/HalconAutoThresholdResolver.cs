@@ -34,7 +34,8 @@ namespace NinePointRotationCalibration.Halcon
         public static AdaptiveTemplateThresholds Resolve(
             HImage reducedImage,
             ShapeModelParameters shapeParameters,
-            string metric)
+            string metric,
+            bool fastPreview = false)
         {
             if (reducedImage == null) throw new ArgumentNullException(nameof(reducedImage));
             ShapeModelParameters parameters = shapeParameters ?? new ShapeModelParameters();
@@ -42,7 +43,10 @@ namespace NinePointRotationCalibration.Halcon
             double detLow = FallbackEdgeLow;
             double detHigh = FallbackEdgeHigh;
             double detMinContrast = FallbackMinContrast;
-            TryDetermineShapeContrast(reducedImage, parameters, metric, out detLow, out detHigh, out detMinContrast);
+            if (!fastPreview)
+            {
+                TryDetermineShapeContrast(reducedImage, parameters, metric, out detLow, out detHigh, out detMinContrast);
+            }
 
             double noise = EstimateNoiseFloor(reducedImage);
             double sobelP985 = EstimateStrongEdgeSobel(reducedImage);
@@ -51,10 +55,14 @@ namespace NinePointRotationCalibration.Halcon
             // 兼顾弱边缘（如哑光 PCB/丝印）检出率与抑制基板纹理碎边缘。
             double noiseFloor = Math.Max(4.0, noise * 2.8);
             double sobelCap = Math.Min(sobelP985 * 0.15, 24.0);
-            double edgeHigh = Math.Max(detHigh, Math.Max(noiseFloor * 1.35, sobelCap));
+            double edgeHigh = fastPreview
+                ? Math.Max(FallbackEdgeHigh * 0.5, Math.Max(noiseFloor * 1.35, Math.Min(sobelP985 * 0.22, 42.0)))
+                : Math.Max(detHigh, Math.Max(noiseFloor * 1.35, sobelCap));
             edgeHigh = Clamp(Math.Round(edgeHigh, 1), 8.0, 140.0);
 
-            double edgeLow = Math.Max(detLow, Math.Max(4.0, Math.Min(edgeHigh * 0.55, noiseFloor * 0.85)));
+            double edgeLow = fastPreview
+                ? Math.Max(4.0, Math.Min(edgeHigh * 0.55, noiseFloor * 0.85))
+                : Math.Max(detLow, Math.Max(4.0, Math.Min(edgeHigh * 0.55, noiseFloor * 0.85)));
             edgeLow = Math.Min(edgeHigh * 0.75, edgeLow);
             edgeLow = Math.Round(Math.Max(3.0, edgeLow), 1);
             if (edgeLow >= edgeHigh - 1.0)
@@ -62,13 +70,16 @@ namespace NinePointRotationCalibration.Halcon
                 edgeLow = Math.Round(Math.Max(2.0, edgeHigh * 0.55), 1);
             }
 
-            int contrastHigh = (int)Math.Round(Clamp(Math.Max(detHigh, Math.Max(8.0, noise * 3.0)), 6.0, 160.0));
+            int contrastHigh = (int)Math.Round(Clamp(
+                fastPreview ? Math.Max(edgeHigh, Math.Max(8.0, noise * 3.0)) : Math.Max(detHigh, Math.Max(8.0, noise * 3.0)),
+                6.0, 160.0));
             int contrastLow = (int)Math.Round(Clamp(
-                Math.Max(detLow, Math.Min(contrastHigh * 0.65, contrastHigh - 1.0)),
+                fastPreview ? Math.Min(contrastHigh * 0.65, contrastHigh - 1.0) : Math.Max(detLow, Math.Min(contrastHigh * 0.65, contrastHigh - 1.0)),
                 3.0,
                 Math.Max(3.0, contrastHigh - 1.0)));
 
-            int minContrast = (int)Math.Ceiling(Math.Max(detMinContrast, Math.Max(3.0, noise * 1.6)));
+            int minContrast = (int)Math.Ceiling(
+                fastPreview ? Math.Max(3.0, noise * 1.6) : Math.Max(detMinContrast, Math.Max(3.0, noise * 1.6)));
             minContrast = Math.Max(3, Math.Min(40, minContrast));
 
             return new AdaptiveTemplateThresholds
@@ -97,9 +108,9 @@ namespace NinePointRotationCalibration.Halcon
             try
             {
                 using (HTuple autoParam = new HTuple("auto"))
-                using (HTuple numLevels = parameters.NumLevels <= 0 ? new HTuple("auto") : new HTuple(parameters.NumLevels))
+                using (HTuple numLevels = new HTuple(1))
                 using (HTuple scaleOne = new HTuple(1.0))
-                using (HTuple allParam = new HTuple("all"))
+                using (HTuple targetParams = new HTuple(new[] { "contrast", "min_contrast" }))
                 {
                     HTuple values;
                     using (HTuple names = reducedImage.DetermineShapeModelParams(
@@ -112,7 +123,7 @@ namespace NinePointRotationCalibration.Halcon
                         string.IsNullOrWhiteSpace(metric) ? "ignore_local_polarity" : metric,
                         autoParam,
                         autoParam,
-                        allParam,
+                        targetParams,
                         out values))
                     using (values)
                     {

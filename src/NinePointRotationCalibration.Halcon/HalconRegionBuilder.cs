@@ -165,6 +165,28 @@ namespace NinePointRotationCalibration.Halcon
             }
         }
 
+        /// <summary>获取区域外接矩形并按指定像素外扩（钳位在图像边界内），供局部裁剪加速算子。</summary>
+        public static void GetRegionBoundingBox(
+            HRegion region,
+            int imageWidth,
+            int imageHeight,
+            int padding,
+            out int cropRow,
+            out int cropColumn,
+            out int cropWidth,
+            out int cropHeight)
+        {
+            int r1, c1, r2, c2;
+            region.SmallestRectangle1(out r1, out c1, out r2, out c2);
+            int pad = Math.Max(0, padding);
+            cropRow = Math.Max(0, r1 - pad);
+            cropColumn = Math.Max(0, c1 - pad);
+            int maxRow = Math.Min(imageHeight - 1, r2 + pad);
+            int maxCol = Math.Min(imageWidth - 1, c2 + pad);
+            cropWidth = Math.Max(1, maxCol - cropColumn + 1);
+            cropHeight = Math.Max(1, maxRow - cropRow + 1);
+        }
+
         /// <summary>提取区域内外边界的有序 XLD 轮廓点段。</summary>
         public static List<List<ImagePoint>> ExtractRegionContours(HRegion region)
         {

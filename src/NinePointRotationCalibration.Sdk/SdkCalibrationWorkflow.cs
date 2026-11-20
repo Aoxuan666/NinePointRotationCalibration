@@ -23,6 +23,7 @@ namespace NinePointRotationCalibration
         private readonly CalibrationJob _baseline;
         private readonly object _grayCacheSync = new object();
         private HalconGrayImage _cachedGrayImage;
+        private Bitmap _cachedSourceBitmap;
         private int _cachedWidth;
         private int _cachedHeight;
         private ulong _cachedSignature;
@@ -206,6 +207,7 @@ namespace NinePointRotationCalibration
                     _cachedGrayImage.Dispose();
                     _cachedGrayImage = null;
                 }
+                _cachedSourceBitmap = null;
                 _cachedWidth = 0;
                 _cachedHeight = 0;
                 _cachedSignature = 0;
@@ -214,6 +216,14 @@ namespace NinePointRotationCalibration
 
         private HalconGrayImage GetOrUpdateGrayCacheLocked(Bitmap image)
         {
+            if (_cachedGrayImage != null &&
+                ReferenceEquals(image, _cachedSourceBitmap) &&
+                _cachedWidth == image.Width &&
+                _cachedHeight == image.Height)
+            {
+                return _cachedGrayImage;
+            }
+
             ulong signature = ComputeBitmapSignature(image);
             if (_cachedGrayImage != null &&
                 _cachedWidth == image.Width &&
@@ -230,6 +240,7 @@ namespace NinePointRotationCalibration
             }
 
             _cachedGrayImage = HalconGrayImage.FromBitmap(image);
+            _cachedSourceBitmap = image;
             _cachedWidth = image.Width;
             _cachedHeight = image.Height;
             _cachedSignature = signature;

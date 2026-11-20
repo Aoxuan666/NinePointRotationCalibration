@@ -19,6 +19,8 @@ namespace NinePointRotationCalibration.Halcon
     {
         private const string XldMetric = "ignore_local_polarity";
         private readonly HalconTemplateEngine _legacyEngine = new HalconTemplateEngine();
+        private readonly object _previewCacheSync = new object();
+        private PreviewEdgeCacheEntry _previewEdgeCache;
         private bool _disposed;
 
         /// <summary>根据特征提取模式构建 XLD 轮廓模板或回退到传统图像域模板。</summary>
@@ -81,12 +83,7 @@ namespace NinePointRotationCalibration.Halcon
                     "Unsupported shape feature extraction mode: " + extraction.Mode + ".");
             }
 
-            return BuildOrPreviewXld(
-                grayImage.Image,
-                grayImage.Width,
-                grayImage.Height,
-                definition,
-                false);
+            return PreviewXldFast(grayImage, definition);
         }
 
         /// <summary>在图像中定位得分最高的单个模板匹配目标。</summary>
@@ -124,6 +121,7 @@ namespace NinePointRotationCalibration.Halcon
         public void ClearCache()
         {
             ThrowIfDisposed();
+            lock (_previewCacheSync) _previewEdgeCache = null;
             _legacyEngine.ClearCache();
         }
 
@@ -132,6 +130,7 @@ namespace NinePointRotationCalibration.Halcon
         {
             if (_disposed) return;
             _disposed = true;
+            lock (_previewCacheSync) _previewEdgeCache = null;
             _legacyEngine.Dispose();
         }
 
@@ -173,6 +172,331 @@ namespace NinePointRotationCalibration.Halcon
                     TemplateBuildResult.Failure(MapErrorCode(exception), FormatException(exception)),
                     stopwatch);
             }
+        }
+
+        /// <summary>
+        /// 快速预览路径：通过 ROI 局部裁剪提速 Canny，并对同一图像+ROI+提取参数缓存未掩膜基础轮廓；
+        /// 仅修改掩膜（画笔/矩形/圆形/多边形/反选）时完全跳过阈值分析与 Canny，仅做一次向量化点区域过滤（约 1~3ms）。
+        /// </summary>
+        private TemplateBuildResult PreviewXldFast(HalconGrayImage grayImage, TemplateDefinition definition)
+        {
+            Stopwatch stopwatch = Stopwatch.StartNew();
+            try
+            {
+                TemplateDefinition output = definition.DeepClone();
+                if (output.MatchParameters == null)
+                {
+                    output.MatchParameters = new MatchParameters();
+                }
+
+                ValidateShapeParameters(output);
+                ShapeFeatureExtractionSettings extraction = Normalize(output.ShapeParameters.FeatureExtraction);
+                output.ShapeParameters.FeatureExtraction = extraction;
+                output.ShapeParameters.Metric = XldMetric;
+                bool usedAutoThreshold = extraction.AutoThreshold || output.ShapeParameters.AutoThreshold;
+                bool hasMasks = HasAnyMasks(output);
+
+                PreviewCacheKey cacheKey = PreviewCacheKey.Create(grayImage, output.TemplateRoi, extraction, usedAutoThreshold);
+                PreviewEdgeCacheEntry cached;
+                lock (_previewCacheSync)
+                {
+                    cached = _previewEdgeCache != null && _previewEdgeCache.Key.Equals(cacheKey)
+                        ? _previewEdgeCache
+                        : null;
+                }
+
+                if (cached == null)
+                {
+                    TemplateDefinition unmasked = output.DeepClone();
+                    unmasked.MaskRegions = new List<TemplateMaskShape>();
+                    unmasked.EraseStrokes = new List<TemplateEraseStroke>();
+                    unmasked.IsMaskInverted = false;
+
+                    using (HRegion baseRegion = HalconRegionBuilder.BuildEffectiveRegion(
+                        unmasked,
+                        grayImage.Width,
+                        grayImage.Height))
+                    {
+                        int cropRow, cropCol, cropW, cropH;
+                        HalconRegionBuilder.GetRegionBoundingBox(
+                            baseRegion,
+                            grayImage.Width,
+                            grayImage.Height,
+                            8,
+                            out cropRow,
+                            out cropCol,
+                            out cropW,
+                            out cropH);
+                        using (HImage cropped = grayImage.Image.CropPart(cropRow, cropCol, cropW, cropH))
+                        using (HRegion localRegion = baseRegion.MoveRegion(-cropRow, -cropCol))
+                        using (HImage reduced = cropped.ReduceDomain(localRegion))
+                        {
+                            double resolvedLow = extraction.EdgeLowThreshold;
+                            double resolvedHigh = extraction.EdgeHighThreshold;
+                            int resolvedContrast = output.ShapeParameters.Contrast;
+                            int resolvedMinContrast = output.ShapeParameters.MinContrast;
+                            if (usedAutoThreshold)
+                            {
+                                AdaptiveTemplateThresholds resolved = HalconAutoThresholdResolver.Resolve(
+                                    reduced,
+                                    output.ShapeParameters,
+                                    XldMetric,
+                                    true);
+                                if (extraction.AutoThreshold)
+                                {
+                                    extraction.EdgeLowThreshold = resolved.EdgeLowThreshold;
+                                    extraction.EdgeHighThreshold = resolved.EdgeHighThreshold;
+                                }
+                                if (output.ShapeParameters.AutoThreshold)
+                                {
+                                    output.ShapeParameters.MinContrast = resolved.MinContrast;
+                                    output.ShapeParameters.Contrast = Math.Max(resolved.ContrastHigh, resolved.MinContrast);
+                                }
+                            }
+
+                            RegionDefinition localRoi = OffsetRegion(output.TemplateRoi, -cropRow, -cropCol);
+                            List<List<ImagePoint>> baseContours = XldFeatureExtractor.Extract(
+                                reduced,
+                                extraction,
+                                localRoi);
+                            if (cropRow != 0 || cropCol != 0)
+                            {
+                                baseContours = OffsetContours(baseContours, cropRow, cropCol);
+                            }
+
+                            resolvedLow = extraction.EdgeLowThreshold;
+                            resolvedHigh = extraction.EdgeHighThreshold;
+                            resolvedContrast = output.ShapeParameters.Contrast;
+                            resolvedMinContrast = output.ShapeParameters.MinContrast;
+
+                            double baseArea, baseRow, baseCol;
+                            HalconRegionBuilder.GetAreaCenter(baseRegion, out baseArea, out baseRow, out baseCol);
+
+                            cached = new PreviewEdgeCacheEntry(
+                                cacheKey,
+                                baseContours,
+                                resolvedLow,
+                                resolvedHigh,
+                                resolvedContrast,
+                                resolvedMinContrast,
+                                baseArea,
+                                baseRow,
+                                baseCol);
+                            lock (_previewCacheSync)
+                            {
+                                _previewEdgeCache = cached;
+                            }
+                        }
+                    }
+                }
+
+                if (extraction.AutoThreshold)
+                {
+                    extraction.EdgeLowThreshold = cached.EdgeLowThreshold;
+                    extraction.EdgeHighThreshold = cached.EdgeHighThreshold;
+                }
+                if (output.ShapeParameters.AutoThreshold)
+                {
+                    output.ShapeParameters.Contrast = cached.Contrast;
+                    output.ShapeParameters.MinContrast = cached.MinContrast;
+                }
+
+                double effectiveArea = cached.BaseArea;
+                double domainRow = cached.BaseDomainRow;
+                double domainColumn = cached.BaseDomainColumn;
+                List<List<ImagePoint>> resultContours;
+                if (hasMasks)
+                {
+                    using (HRegion effectiveRegion = HalconRegionBuilder.BuildEffectiveRegion(
+                        output,
+                        grayImage.Width,
+                        grayImage.Height))
+                    {
+                        HalconRegionBuilder.GetAreaCenter(
+                            effectiveRegion,
+                            out effectiveArea,
+                            out domainRow,
+                            out domainColumn);
+                        resultContours = FilterContoursByRegion(cached.BaseContours, effectiveRegion);
+                    }
+
+                    if (resultContours.Count == 0)
+                    {
+                        return Complete(
+                            TemplateBuildResult.Failure(
+                                CalibrationErrorCode.ParameterInvalid,
+                                "掩膜过滤后当前模板区域未剩余可用特征点。"),
+                            stopwatch);
+                    }
+                }
+                else
+                {
+                    resultContours = CloneContours(cached.BaseContours);
+                }
+
+                bool anchorWasUninitialized = output.ReferenceImageWidth <= 0
+                    && output.ReferenceImageHeight <= 0
+                    && output.ReferenceAnchor.Row == 0.0
+                    && output.ReferenceAnchor.Column == 0.0
+                    && !output.IsReferenceAnchorLocked;
+                output.ReferenceImageWidth = grayImage.Width;
+                output.ReferenceImageHeight = grayImage.Height;
+                output.DomainCenter = new ImagePoint(domainRow, domainColumn);
+                ImagePoint templateCenter = new ImagePoint(
+                    output.TemplateRoi.CenterRow,
+                    output.TemplateRoi.CenterColumn);
+                output.ModelReference = new ImagePose(templateCenter.Row, templateCenter.Column, 0.0);
+                if (anchorWasUninitialized)
+                {
+                    output.ReferenceAnchor = templateCenter;
+                }
+
+                string message = usedAutoThreshold
+                    ? string.Format(
+                        CultureInfo.InvariantCulture,
+                        "已预览 {0} 段有序 XLD 轮廓（自适应阈值 Canny {1:0.#}/{2:0.#}，最小对比度 {3}）。",
+                        resultContours.Count,
+                        extraction.EdgeLowThreshold,
+                        extraction.EdgeHighThreshold,
+                        output.ShapeParameters.MinContrast)
+                    : string.Format(
+                        CultureInfo.InvariantCulture,
+                        "Previewed {0} ordered XLD contour segments.",
+                        resultContours.Count);
+
+                return Complete(new TemplateBuildResult
+                {
+                    Success = true,
+                    ErrorCode = CalibrationErrorCode.None,
+                    Message = message,
+                    Template = output,
+                    EffectiveArea = effectiveArea,
+                    ContourSegments = resultContours
+                }, stopwatch);
+            }
+            catch (Exception exception)
+            {
+                return Complete(
+                    TemplateBuildResult.Failure(MapErrorCode(exception), FormatException(exception)),
+                    stopwatch);
+            }
+        }
+
+        private static bool HasAnyMasks(TemplateDefinition definition)
+        {
+            return definition.IsMaskInverted ||
+                   (definition.MaskRegions != null && definition.MaskRegions.Count > 0) ||
+                   (definition.EraseStrokes != null && definition.EraseStrokes.Count > 0);
+        }
+
+        private static List<List<ImagePoint>> FilterContoursByRegion(
+            IList<List<ImagePoint>> contours,
+            HRegion region)
+        {
+            List<List<ImagePoint>> filtered = new List<List<ImagePoint>>();
+            if (contours == null || contours.Count == 0) return filtered;
+
+            int r1, c1, r2, c2;
+            region.SmallestRectangle1(out r1, out c1, out r2, out c2);
+            int width = c2 - c1 + 1;
+            int height = r2 - r1 + 1;
+            if (width <= 0 || height <= 0) return filtered;
+
+            byte[] mask = new byte[width * height];
+            HTuple runRows = null;
+            HTuple colBegins = null;
+            HTuple colEnds = null;
+            try
+            {
+                region.GetRegionRuns(out runRows, out colBegins, out colEnds);
+                int runCount = Math.Min(runRows.Length, Math.Min(colBegins.Length, colEnds.Length));
+                for (int i = 0; i < runCount; i++)
+                {
+                    int localRow = runRows[i].I - r1;
+                    if (localRow < 0 || localRow >= height) continue;
+                    int startCol = Math.Max(0, colBegins[i].I - c1);
+                    int endCol = Math.Min(width - 1, colEnds[i].I - c1);
+                    int rowBase = localRow * width;
+                    for (int c = startCol; c <= endCol; c++)
+                    {
+                        mask[rowBase + c] = 1;
+                    }
+                }
+            }
+            finally
+            {
+                if (runRows != null) runRows.Dispose();
+                if (colBegins != null) colBegins.Dispose();
+                if (colEnds != null) colEnds.Dispose();
+            }
+
+            for (int i = 0; i < contours.Count; i++)
+            {
+                List<ImagePoint> seg = contours[i];
+                if (seg == null) continue;
+                List<ImagePoint> current = null;
+                for (int j = 0; j < seg.Count; j++)
+                {
+                    int lr = (int)Math.Round(seg[j].Row) - r1;
+                    int lc = (int)Math.Round(seg[j].Column) - c1;
+                    bool isInside = lr >= 0 && lr < height && lc >= 0 && lc < width && mask[(lr * width) + lc] != 0;
+                    if (isInside)
+                    {
+                        if (current == null) current = new List<ImagePoint>();
+                        current.Add(seg[j]);
+                    }
+                    else if (current != null)
+                    {
+                        if (current.Count >= 2) filtered.Add(current);
+                        current = null;
+                    }
+                }
+                if (current != null && current.Count >= 2) filtered.Add(current);
+            }
+
+            return filtered;
+        }
+
+        private static RegionDefinition OffsetRegion(RegionDefinition source, int rowOffset, int columnOffset)
+        {
+            RegionDefinition copy = source.DeepClone();
+            copy.CenterRow += rowOffset;
+            copy.CenterColumn += columnOffset;
+            if (copy.Points != null)
+            {
+                for (int i = 0; i < copy.Points.Count; i++)
+                {
+                    copy.Points[i] = new ImagePoint(copy.Points[i].Row + rowOffset, copy.Points[i].Column + columnOffset);
+                }
+            }
+            return copy;
+        }
+
+        private static List<List<ImagePoint>> OffsetContours(IList<List<ImagePoint>> contours, int rowOffset, int columnOffset)
+        {
+            List<List<ImagePoint>> shifted = new List<List<ImagePoint>>(contours.Count);
+            for (int i = 0; i < contours.Count; i++)
+            {
+                List<ImagePoint> seg = contours[i];
+                if (seg == null || seg.Count == 0) continue;
+                List<ImagePoint> copy = new List<ImagePoint>(seg.Count);
+                for (int j = 0; j < seg.Count; j++)
+                {
+                    copy.Add(new ImagePoint(seg[j].Row + rowOffset, seg[j].Column + columnOffset));
+                }
+                shifted.Add(copy);
+            }
+            return shifted;
+        }
+
+        private static List<List<ImagePoint>> CloneContours(IList<List<ImagePoint>> contours)
+        {
+            List<List<ImagePoint>> copy = new List<List<ImagePoint>>(contours.Count);
+            for (int i = 0; i < contours.Count; i++)
+            {
+                if (contours[i] != null) copy.Add(new List<ImagePoint>(contours[i]));
+            }
+            return copy;
         }
 
         private static TemplateBuildResult BuildOrPreviewXld(
@@ -225,7 +549,6 @@ namespace NinePointRotationCalibration.Halcon
                     output,
                     imageWidth,
                     imageHeight))
-                using (HImage reduced = gray.ReduceDomain(effectiveRegion))
                 {
                     double effectiveArea;
                     double domainRow;
@@ -260,28 +583,50 @@ namespace NinePointRotationCalibration.Halcon
                     }
 
                     bool usedAutoThreshold = extraction.AutoThreshold || output.ShapeParameters.AutoThreshold;
-                    if (usedAutoThreshold)
+                    int cropRow, cropCol, cropW, cropH;
+                    HalconRegionBuilder.GetRegionBoundingBox(
+                        effectiveRegion,
+                        imageWidth,
+                        imageHeight,
+                        8,
+                        out cropRow,
+                        out cropCol,
+                        out cropW,
+                        out cropH);
+                    List<List<ImagePoint>> sampledContours;
+                    using (HImage cropped = gray.CropPart(cropRow, cropCol, cropW, cropH))
+                    using (HRegion localRegion = effectiveRegion.MoveRegion(-cropRow, -cropCol))
+                    using (HImage reduced = cropped.ReduceDomain(localRegion))
                     {
-                        AdaptiveTemplateThresholds resolved = HalconAutoThresholdResolver.Resolve(
-                            reduced,
-                            output.ShapeParameters,
-                            output.ShapeParameters.Metric);
-                        if (extraction.AutoThreshold)
+                        if (usedAutoThreshold)
                         {
-                            extraction.EdgeLowThreshold = resolved.EdgeLowThreshold;
-                            extraction.EdgeHighThreshold = resolved.EdgeHighThreshold;
+                            AdaptiveTemplateThresholds resolved = HalconAutoThresholdResolver.Resolve(
+                                reduced,
+                                output.ShapeParameters,
+                                output.ShapeParameters.Metric,
+                                !buildModel);
+                            if (extraction.AutoThreshold)
+                            {
+                                extraction.EdgeLowThreshold = resolved.EdgeLowThreshold;
+                                extraction.EdgeHighThreshold = resolved.EdgeHighThreshold;
+                            }
+                            if (output.ShapeParameters.AutoThreshold)
+                            {
+                                output.ShapeParameters.MinContrast = resolved.MinContrast;
+                                output.ShapeParameters.Contrast = Math.Max(resolved.ContrastHigh, resolved.MinContrast);
+                            }
                         }
-                        if (output.ShapeParameters.AutoThreshold)
+
+                        RegionDefinition localRoi = OffsetRegion(output.TemplateRoi, -cropRow, -cropCol);
+                        sampledContours = XldFeatureExtractor.Extract(
+                            reduced,
+                            extraction,
+                            localRoi);
+                        if (cropRow != 0 || cropCol != 0)
                         {
-                            output.ShapeParameters.MinContrast = resolved.MinContrast;
-                            output.ShapeParameters.Contrast = Math.Max(resolved.ContrastHigh, resolved.MinContrast);
+                            sampledContours = OffsetContours(sampledContours, cropRow, cropCol);
                         }
                     }
-
-                    List<List<ImagePoint>> sampledContours = XldFeatureExtractor.Extract(
-                        reduced,
-                        extraction,
-                        output.TemplateRoi);
                     if (buildModel)
                     {
                         using (HXLDCont xldContours = XldFeatureExtractor.CreateXld(sampledContours))
@@ -532,6 +877,111 @@ namespace NinePointRotationCalibration.Halcon
         private void ThrowIfDisposed()
         {
             if (_disposed) throw new ObjectDisposedException(nameof(XldTemplateMatchingEngine));
+        }
+
+        private sealed class PreviewEdgeCacheEntry
+        {
+            public PreviewEdgeCacheEntry(
+                PreviewCacheKey key,
+                List<List<ImagePoint>> baseContours,
+                double edgeLowThreshold,
+                double edgeHighThreshold,
+                int contrast,
+                int minContrast,
+                double baseArea,
+                double baseDomainRow,
+                double baseDomainColumn)
+            {
+                Key = key;
+                BaseContours = baseContours;
+                EdgeLowThreshold = edgeLowThreshold;
+                EdgeHighThreshold = edgeHighThreshold;
+                Contrast = contrast;
+                MinContrast = minContrast;
+                BaseArea = baseArea;
+                BaseDomainRow = baseDomainRow;
+                BaseDomainColumn = baseDomainColumn;
+            }
+
+            public PreviewCacheKey Key { get; private set; }
+            public List<List<ImagePoint>> BaseContours { get; private set; }
+            public double EdgeLowThreshold { get; private set; }
+            public double EdgeHighThreshold { get; private set; }
+            public int Contrast { get; private set; }
+            public int MinContrast { get; private set; }
+            public double BaseArea { get; private set; }
+            public double BaseDomainRow { get; private set; }
+            public double BaseDomainColumn { get; private set; }
+        }
+
+        private struct PreviewCacheKey : IEquatable<PreviewCacheKey>
+        {
+            public long ImageCacheId;
+            public int Width;
+            public int Height;
+            public RegionKind RoiKind;
+            public double CenterRow;
+            public double CenterColumn;
+            public double PhiRadians;
+            public double Length1;
+            public double Length2;
+            public double Radius;
+            public bool AutoThreshold;
+            public double EdgeSigma;
+            public double ManualLow;
+            public double ManualHigh;
+            public double MinContourLength;
+            public double PointSpacing;
+            public int MaxPointCount;
+
+            public static PreviewCacheKey Create(
+                HalconGrayImage grayImage,
+                RegionDefinition roi,
+                ShapeFeatureExtractionSettings extraction,
+                bool autoThreshold)
+            {
+                return new PreviewCacheKey
+                {
+                    ImageCacheId = grayImage.CacheId,
+                    Width = grayImage.Width,
+                    Height = grayImage.Height,
+                    RoiKind = roi.Kind,
+                    CenterRow = Math.Round(roi.CenterRow, 4),
+                    CenterColumn = Math.Round(roi.CenterColumn, 4),
+                    PhiRadians = Math.Round(roi.PhiRadians, 6),
+                    Length1 = Math.Round(roi.Length1, 4),
+                    Length2 = Math.Round(roi.Length2, 4),
+                    Radius = Math.Round(roi.Radius, 4),
+                    AutoThreshold = autoThreshold,
+                    EdgeSigma = Math.Round(extraction.EdgeSigma, 4),
+                    ManualLow = autoThreshold ? 0.0 : Math.Round(extraction.EdgeLowThreshold, 4),
+                    ManualHigh = autoThreshold ? 0.0 : Math.Round(extraction.EdgeHighThreshold, 4),
+                    MinContourLength = Math.Round(extraction.MinimumContourLengthPixels, 4),
+                    PointSpacing = Math.Round(extraction.PointSpacingPixels, 4),
+                    MaxPointCount = extraction.MaximumPointCount
+                };
+            }
+
+            public bool Equals(PreviewCacheKey other)
+            {
+                return ImageCacheId == other.ImageCacheId &&
+                       Width == other.Width &&
+                       Height == other.Height &&
+                       RoiKind == other.RoiKind &&
+                       CenterRow == other.CenterRow &&
+                       CenterColumn == other.CenterColumn &&
+                       PhiRadians == other.PhiRadians &&
+                       Length1 == other.Length1 &&
+                       Length2 == other.Length2 &&
+                       Radius == other.Radius &&
+                       AutoThreshold == other.AutoThreshold &&
+                       EdgeSigma == other.EdgeSigma &&
+                       ManualLow == other.ManualLow &&
+                       ManualHigh == other.ManualHigh &&
+                       MinContourLength == other.MinContourLength &&
+                       PointSpacing == other.PointSpacing &&
+                       MaxPointCount == other.MaxPointCount;
+            }
         }
     }
 

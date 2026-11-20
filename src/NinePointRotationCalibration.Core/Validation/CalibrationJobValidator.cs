@@ -202,8 +202,10 @@ namespace NinePointRotationCalibration
                     break;
                 case RegionKind.Polygon:
                 case RegionKind.Freehand:
-                    if (region.Points == null || region.Points.Count < 3)
-                        result.Add(ValidationSeverity.Error, "REGION_POINTS_INVALID", "Polygon/freehand region needs at least three points.", member);
+                    int minPoints = region.Kind == RegionKind.Freehand && Numeric.IsFinite(region.Radius) && region.Radius > 0.0 ? 1 : 3;
+                    if (region.Points == null || region.Points.Count < minPoints)
+                        result.Add(ValidationSeverity.Error, "REGION_POINTS_INVALID",
+                            minPoints == 1 ? "Freehand stroke region needs at least one point." : "Polygon/freehand region needs at least three points.", member);
                     else
                     {
                         foreach (ImagePoint point in region.Points)

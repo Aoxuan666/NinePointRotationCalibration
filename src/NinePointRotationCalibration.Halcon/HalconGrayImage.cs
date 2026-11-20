@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.Drawing;
+using System.Threading;
 using HalconDotNet;
 
 namespace NinePointRotationCalibration.Halcon
@@ -10,14 +11,16 @@ namespace NinePointRotationCalibration.Halcon
     /// </summary>
     public sealed class HalconGrayImage : IDisposable
     {
+        private static long _nextCacheId;
         private HImage _image;
 
-        private HalconGrayImage(HImage image, int width, int height, double conversionMilliseconds)
+        private HalconGrayImage(HImage image, int width, int height, double conversionMilliseconds, long cacheId)
         {
             _image = image;
             Width = width;
             Height = height;
             ConversionElapsedMilliseconds = conversionMilliseconds;
+            CacheId = cacheId;
         }
 
         public int Width { get; private set; }
@@ -25,6 +28,7 @@ namespace NinePointRotationCalibration.Halcon
         public Size Size { get { return new Size(Width, Height); } }
         /// <summary>Bitmap 转换为灰度 HImage 的耗时（毫秒）。</summary>
         public double ConversionElapsedMilliseconds { get; private set; }
+        internal long CacheId { get; private set; }
 
         internal HImage Image
         {
@@ -42,13 +46,13 @@ namespace NinePointRotationCalibration.Halcon
             Stopwatch watch = Stopwatch.StartNew();
             HImage image = HalconImageConverter.ToGrayHImage(source);
             watch.Stop();
-            return new HalconGrayImage(image, source.Width, source.Height, watch.Elapsed.TotalMilliseconds);
+            return new HalconGrayImage(image, source.Width, source.Height, watch.Elapsed.TotalMilliseconds, Interlocked.Increment(ref _nextCacheId));
         }
 
         /// <summary>Acquire an independently disposable reference to the same read-only pixels.</summary>
         public HalconGrayImage Share()
         {
-            return new HalconGrayImage(Image.CopyObj(1, 1), Width, Height, 0);
+            return new HalconGrayImage(Image.CopyObj(1, 1), Width, Height, 0, CacheId);
         }
 
         /// <summary>释放底层 HALCON 图像句柄。</summary>

@@ -108,17 +108,50 @@ namespace NinePointRotationCalibration.WinForms.Adapters
             {
                 foreach (Core.TemplateMaskShape mask in template.MaskRegions)
                 {
-                    if (mask == null || mask.Region == null || mask.Region.Kind != Core.RegionKind.Freehand)
+                    if (mask == null || mask.Region == null)
                     {
                         continue;
                     }
 
-                    state.MaskStrokes.Add(new MaskStroke
+                    bool isErase = mask.Operation == Core.MaskOperation.Exclude;
+                    if (mask.Region.Kind == Core.RegionKind.Freehand)
                     {
-                        IsErase = mask.Operation == Core.MaskOperation.Exclude,
-                        Radius = Math.Max(1.0, mask.Region.Radius),
-                        Points = ToUiPoints(mask.Region.Points)
-                    });
+                        state.MaskStrokes.Add(new MaskStroke
+                        {
+                            Kind = MaskShapeKind.Brush,
+                            IsErase = isErase,
+                            Radius = Math.Max(1.0, mask.Region.Radius),
+                            Points = ToUiPoints(mask.Region.Points)
+                        });
+                    }
+                    else if (mask.Region.Kind == Core.RegionKind.Rectangle1 || mask.Region.Kind == Core.RegionKind.Rectangle2)
+                    {
+                        state.MaskStrokes.Add(new MaskStroke
+                        {
+                            Kind = MaskShapeKind.Rectangle,
+                            IsErase = isErase,
+                            Rectangle = FromCoreRegion(mask.Region)
+                        });
+                    }
+                    else if (mask.Region.Kind == Core.RegionKind.Circle)
+                    {
+                        state.MaskStrokes.Add(new MaskStroke
+                        {
+                            Kind = MaskShapeKind.Circle,
+                            IsErase = isErase,
+                            Center = new ImageCoordinate(mask.Region.CenterRow, mask.Region.CenterColumn),
+                            Radius = Math.Max(1.0, mask.Region.Radius)
+                        });
+                    }
+                    else if (mask.Region.Kind == Core.RegionKind.Polygon)
+                    {
+                        state.MaskStrokes.Add(new MaskStroke
+                        {
+                            Kind = MaskShapeKind.Polygon,
+                            IsErase = isErase,
+                            Points = ToUiPoints(mask.Region.Points)
+                        });
+                    }
                 }
             }
 
@@ -245,27 +278,65 @@ namespace NinePointRotationCalibration.WinForms.Adapters
             template.MatchParameters.TimeoutMilliseconds = parameters.TimeoutMilliseconds;
             template.MatchParameters.ContourPointSpacingPixels = parameters.ContourPointSpacingPixels;
 
-            // 保留画笔编辑器无法修改的非手绘结构化掩膜区域
-            List<Core.TemplateMaskShape> retainedMasks = (template.MaskRegions ?? new List<Core.TemplateMaskShape>())
-                .Where(item => item != null && item.Region != null && item.Region.Kind != Core.RegionKind.Freehand)
-                .Select(item => item.DeepClone())
-                .ToList();
-            template.MaskRegions = retainedMasks;
+            // 将画笔与结构化掩膜（矩形/圆形/多边形）严格按用户操作顺序写入 MaskRegions，保证交错擦除与恢复的顺序语义一致
+            template.MaskRegions = new List<Core.TemplateMaskShape>();
             template.EraseStrokes = new List<Core.TemplateEraseStroke>();
 
             foreach (MaskStroke stroke in state.MaskStrokes ?? new List<MaskStroke>())
             {
-                if (stroke == null || stroke.Points == null || stroke.Points.Count == 0)
+                if (stroke == null || !stroke.IsValid)
                 {
                     continue;
                 }
 
-                template.EraseStrokes.Add(new Core.TemplateEraseStroke
+                Core.MaskOperation op = stroke.IsErase ? Core.MaskOperation.Exclude : Core.MaskOperation.Include;
+                if (stroke.Kind == MaskShapeKind.Rectangle)
                 {
-                    Operation = stroke.IsErase ? Core.MaskOperation.Exclude : Core.MaskOperation.Include,
-                    Radius = Math.Max(1.0, stroke.Radius),
-                    Points = ToCorePoints(stroke.Points)
-                });
+                    template.MaskRegions.Add(new Core.TemplateMaskShape
+                    {
+                        Operation = op,
+                        Region = ToCoreRegion(stroke.Rectangle)
+                    });
+                }
+                else if (stroke.Kind == MaskShapeKind.Circle)
+                {
+                    template.MaskRegions.Add(new Core.TemplateMaskShape
+                    {
+                        Operation = op,
+                        Region = new Core.RegionDefinition
+                        {
+                            Kind = Core.RegionKind.Circle,
+                            CenterRow = stroke.Center.Row,
+                            CenterColumn = stroke.Center.Column,
+                            Radius = Math.Max(1.0, stroke.Radius)
+                        }
+                    });
+                }
+                else if (stroke.Kind == MaskShapeKind.Polygon)
+                {
+                    template.MaskRegions.Add(new Core.TemplateMaskShape
+                    {
+                        Operation = op,
+                        Region = new Core.RegionDefinition
+                        {
+                            Kind = Core.RegionKind.Polygon,
+                            Points = ToCorePoints(stroke.Points)
+                        }
+                    });
+                }
+                else
+                {
+                    template.MaskRegions.Add(new Core.TemplateMaskShape
+                    {
+                        Operation = op,
+                        Region = new Core.RegionDefinition
+                        {
+                            Kind = Core.RegionKind.Freehand,
+                            Radius = Math.Max(1.0, stroke.Radius),
+                            Points = ToCorePoints(stroke.Points)
+                        }
+                    });
+                }
             }
 
             return template;

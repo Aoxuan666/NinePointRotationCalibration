@@ -165,7 +165,6 @@ namespace NinePointRotationCalibration.Halcon
                         output,
                         grayImage.Width,
                         grayImage.Height))
-                    using (HImage reduced = grayImage.Image.ReduceDomain(effectiveRegion))
                     {
                         double area;
                         double domainRow;
@@ -191,7 +190,26 @@ namespace NinePointRotationCalibration.Halcon
                         string previewMessage;
                         if (output.ModelType == TemplateModelType.Shape)
                         {
-                            contours = InspectShapeContours(reduced, output.ShapeParameters, out previewMessage);
+                            int cropRow, cropCol, cropW, cropH;
+                            HalconRegionBuilder.GetRegionBoundingBox(
+                                effectiveRegion,
+                                grayImage.Width,
+                                grayImage.Height,
+                                8,
+                                out cropRow,
+                                out cropCol,
+                                out cropW,
+                                out cropH);
+                            using (HImage cropped = grayImage.Image.CropPart(cropRow, cropCol, cropW, cropH))
+                            using (HRegion localRegion = effectiveRegion.MoveRegion(-cropRow, -cropCol))
+                            using (HImage reduced = cropped.ReduceDomain(localRegion))
+                            {
+                                contours = InspectShapeContours(reduced, output.ShapeParameters, out previewMessage);
+                                if (cropRow != 0 || cropCol != 0)
+                                {
+                                    contours = OffsetContours(contours, cropRow, cropCol);
+                                }
+                            }
                         }
                         else if (output.ModelType == TemplateModelType.Ncc)
                         {
@@ -589,7 +607,7 @@ namespace NinePointRotationCalibration.Halcon
                 return new HTuple(parameters.Contrast);
             }
 
-            AdaptiveTemplateThresholds resolved = HalconAutoThresholdResolver.Resolve(reduced, parameters, metric);
+            AdaptiveTemplateThresholds resolved = HalconAutoThresholdResolver.Resolve(reduced, parameters, metric, forPreview);
             parameters.Contrast = resolved.ContrastHigh;
             parameters.MinContrast = Math.Min(resolved.MinContrast, resolved.ContrastHigh);
             statusMessage = string.Format(
@@ -800,6 +818,22 @@ namespace NinePointRotationCalibration.Halcon
             {
                 return ToRelative(HalconRegionBuilder.ExtractRegionContours(effectiveRegion), definition.ModelReference);
             }
+        }
+
+        private static List<List<ImagePoint>> OffsetContours(IList<List<ImagePoint>> contours, int rowOffset, int columnOffset)
+        {
+            List<List<ImagePoint>> shifted = new List<List<ImagePoint>>(contours.Count);
+            foreach (List<ImagePoint> segment in contours)
+            {
+                if (segment == null || segment.Count == 0) continue;
+                List<ImagePoint> copy = new List<ImagePoint>(segment.Count);
+                for (int i = 0; i < segment.Count; i++)
+                {
+                    copy.Add(new ImagePoint(segment[i].Row + rowOffset, segment[i].Column + columnOffset));
+                }
+                shifted.Add(copy);
+            }
+            return shifted;
         }
 
         private static List<List<ImagePoint>> ToRelative(IList<List<ImagePoint>> absolute, ImagePose reference)

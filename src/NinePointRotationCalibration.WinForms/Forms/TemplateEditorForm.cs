@@ -33,11 +33,13 @@ namespace NinePointRotationCalibration.WinForms.Forms
         private readonly ToolStripButton _addDetectionRoiButton;
         private readonly ToolStripButton _deleteRoiButton;
         private readonly ToolStripButton _selectToolButton;
-        private readonly ToolStripButton _templateToolButton;
-        private readonly ToolStripButton _searchToolButton;
-        private readonly ToolStripButton _detectionToolButton;
+        private readonly ToolStripButton _moveAnchorToolButton;
+        private readonly ToolStripButton _maskRectToolButton;
+        private readonly ToolStripButton _maskCircleToolButton;
+        private readonly ToolStripButton _maskPolygonToolButton;
         private readonly ToolStripButton _eraseToolButton;
         private readonly ToolStripButton _restoreToolButton;
+        private readonly NumericUpDown _toolbarBrushRadiusInput;
         private readonly System.Windows.Forms.Timer _autoPreviewTimer;
         private readonly TabControl _parameterTabs;
         private readonly CheckBox _teachAdvancedToggle;
@@ -94,6 +96,8 @@ namespace NinePointRotationCalibration.WinForms.Forms
         private PreviewImageHolder _previewImageHolder;
         private TemplateEditorState _state;
         private TemplateEditorState _originalState;
+        private List<List<ImageCoordinate>> _unmaskedBaseContours = new List<List<ImageCoordinate>>();
+        private RotatedRectangle _unmaskedBaseRoi;
         private CancellationTokenSource _operationCancellation;
         private CancellationTokenSource _autoPreviewCancellation;
         private bool _autoPreviewRunning;
@@ -142,22 +146,36 @@ namespace NinePointRotationCalibration.WinForms.Forms
             BackColor = Color.FromArgb(244, 246, 248);
 
             _canvas = new CalibrationCanvas { Dock = DockStyle.Fill };
-            _autoPreviewTimer = new System.Windows.Forms.Timer { Interval = 25 };
+            _autoPreviewTimer = new System.Windows.Forms.Timer { Interval = 40 };
             _autoPreviewTimer.Tick += AutoPreviewTimer_Tick;
 
             _undoButton = CreateToolButton("撤销", "撤销上一步模板编辑", UndoEdit);
             _redoButton = CreateToolButton("重做", "重做刚才撤销的模板编辑", RedoEdit);
             _maskVisibleButton = CreateToolButton("掩膜", "显示或隐藏掩膜叠加", ToggleMaskVisibility, true);
-            _addTemplateRoiButton = CreateToolButton("+ 模板ROI", "快速添加模板 ROI 并自动提取特征", (sender, args) => AddOrSelectRoi(CanvasRoiTarget.Template));
-            _addSearchRoiButton = CreateToolButton("+ 搜索ROI", "添加或选中搜索 ROI", (sender, args) => AddOrSelectRoi(CanvasRoiTarget.Search));
-            _addDetectionRoiButton = CreateToolButton("+ 检测ROI", "添加或选中检测 ROI", (sender, args) => AddOrSelectRoi(CanvasRoiTarget.Detection));
-            _deleteRoiButton = CreateToolButton("删除ROI", "删除当前选中的 ROI (Delete)", (sender, args) => DeleteSelectedRoi());
+            _addTemplateRoiButton = CreateToolButton("模板", "添加或选中模板 ROI（自动提取特征）", (sender, args) => AddOrSelectRoi(CanvasRoiTarget.Template), false);
+            _addSearchRoiButton = CreateToolButton("搜索", "添加或选中搜索 ROI", (sender, args) => AddOrSelectRoi(CanvasRoiTarget.Search), false);
+            _addDetectionRoiButton = CreateToolButton("检测", "添加或选中检测 ROI", (sender, args) => AddOrSelectRoi(CanvasRoiTarget.Detection), false);
+            _deleteRoiButton = CreateToolButton("删除", "删除当前选中的 ROI (Delete)", (sender, args) => DeleteSelectedRoi());
             _selectToolButton = CreateToolButton("选择", "选择、移动、缩放或旋转 ROI", (sender, args) => SelectTool(CanvasEditTool.Select), true);
-            _templateToolButton = CreateToolButton("框选模板", "在图上拖动框选创建模板 ROI", (sender, args) => SelectTool(CanvasEditTool.DrawTemplateRoi), true);
-            _searchToolButton = CreateToolButton("框选搜索", "在图上拖动框选创建搜索 ROI", (sender, args) => SelectTool(CanvasEditTool.DrawSearchRoi), true);
-            _detectionToolButton = CreateToolButton("框选检测", "在图上拖动框选创建检测 ROI", (sender, args) => SelectTool(CanvasEditTool.DrawDetectionRoi), true);
+            _moveAnchorToolButton = CreateToolButton("移动中心", "点击或拖动移动模板基准中心（支持方向键微调）", (sender, args) => ActivateMoveAnchorTool(), true);
+            _maskRectToolButton = CreateToolButton("矩形掩膜", "拖动框选矩形屏蔽区域", (sender, args) => SelectTool(CanvasEditTool.MaskRectangle), true);
+            _maskCircleToolButton = CreateToolButton("圆形掩膜", "从圆心拖动绘制圆形屏蔽区域", (sender, args) => SelectTool(CanvasEditTool.MaskCircle), true);
+            _maskPolygonToolButton = CreateToolButton("多边形掩膜", "依次点击顶点绘制多边形屏蔽区域（双击/右键/点击起点闭合，Esc取消）", (sender, args) => SelectTool(CanvasEditTool.MaskPolygon), true);
             _eraseToolButton = CreateToolButton("擦除", "使用画笔从模板有效域中排除区域", (sender, args) => SelectTool(CanvasEditTool.EraseMask), true);
             _restoreToolButton = CreateToolButton("恢复", "使用画笔恢复已擦除的模板区域", (sender, args) => SelectTool(CanvasEditTool.RestoreMask), true);
+            _toolbarBrushRadiusInput = new NumericUpDown
+            {
+                Minimum = 1,
+                Maximum = 500,
+                Value = 12,
+                Increment = 2,
+                DecimalPlaces = 0,
+                Width = 54,
+                TextAlign = HorizontalAlignment.Right
+            };
+            _addTemplateRoiButton.DisplayStyle = ToolStripItemDisplayStyle.ImageAndText;
+            _addSearchRoiButton.DisplayStyle = ToolStripItemDisplayStyle.ImageAndText;
+            _addDetectionRoiButton.DisplayStyle = ToolStripItemDisplayStyle.ImageAndText;
 
             _modelTypeCombo = CreateCombo(new[] { "Shape", "NCC" });
             _autoThresholdCheck = new CheckBox
@@ -252,7 +270,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
             SetStatus(Service == null
                 ? "尚未注入模板服务；可编辑已有模板，提取/建模/测试暂不可用。"
                 : _state.TemplateRoi == null
-                    ? "默认无 ROI：请点击顶部「+ 模板ROI」或「框选模板」添加后自动显示特征点。"
+                    ? "默认无 ROI：请点击顶部「模板」「搜索」「检测」快速添加或切换 ROI。"
                     : "已加载模板 ROI，拖动或调参时将自动实时刷新特征点。", false);
             Shown += HandleFirstShown;
         }
@@ -439,15 +457,15 @@ namespace NinePointRotationCalibration.WinForms.Forms
             tools.Items.Add(_deleteRoiButton);
             tools.Items.Add(new ToolStripSeparator());
             tools.Items.Add(_selectToolButton);
-            tools.Items.Add(_templateToolButton);
-            tools.Items.Add(_searchToolButton);
-            if (_enableDetectionRoi)
-            {
-                tools.Items.Add(_detectionToolButton);
-            }
+            tools.Items.Add(_moveAnchorToolButton);
             tools.Items.Add(new ToolStripSeparator());
+            tools.Items.Add(_maskRectToolButton);
+            tools.Items.Add(_maskCircleToolButton);
+            tools.Items.Add(_maskPolygonToolButton);
             tools.Items.Add(_eraseToolButton);
             tools.Items.Add(_restoreToolButton);
+            tools.Items.Add(new ToolStripLabel("半径:") { Margin = new Padding(4, 0, 0, 0) });
+            tools.Items.Add(new ToolStripControlHost(_toolbarBrushRadiusInput) { AutoSize = false, Width = 56, Margin = new Padding(0, 1, 4, 1) });
             tools.Items.Add(_maskVisibleButton);
             tools.Items.Add(CreateToolButton("清除掩膜", "清除所有擦除和恢复笔画", ClearMask));
             tools.Items.Add(CreateToolButton("反选掩膜", "反转模板有效域的包含关系", InvertMask));
@@ -600,7 +618,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
             operationLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100.0f));
             Label flowHelp = new Label
             {
-                Text = "推荐流程：+ 模板ROI（或框选模板）→ 自动显示特征 → 微调/掩膜 → 测试匹配或确认。",
+                Text = "推荐流程：点击「模板」添加模板 ROI → 自动显示特征 → 框选/涂抹掩膜或调整「移动中心」→ 测试匹配或确认。",
                 AutoSize = true,
                 ForeColor = Color.DimGray,
                 Padding = new Padding(0, 2, 0, 8)
@@ -621,6 +639,9 @@ namespace NinePointRotationCalibration.WinForms.Forms
             _canvas.RoiChanged += CanvasRoiChanged;
             _canvas.AnchorChanged += CanvasAnchorChanged;
             _canvas.MaskStrokeCreated += CanvasMaskStrokeCreated;
+            _canvas.MaskPreviewChanged += CanvasMaskPreviewChanged;
+            _canvas.BrushRadiusChangedByCanvas += CanvasBrushRadiusChanged;
+            _canvas.MouseUp += CanvasMouseUpForContextMenu;
             _canvas.SelectedRoiChanged += (sender, args) =>
             {
                 UpdateRoiToolSelection();
@@ -658,6 +679,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
             _contourPointSpacingInput.ValueChanged += DisplayParameterChanged;
             _allowPartialCheck.CheckedChanged += RuntimeParameterChanged;
             _brushRadiusInput.ValueChanged += BrushRadiusChanged;
+            _toolbarBrushRadiusInput.ValueChanged += ToolbarBrushRadiusChanged;
 
             _anchorRowInput.ValueChanged += AnchorNumericChanged;
             _anchorColumnInput.ValueChanged += AnchorNumericChanged;
@@ -709,6 +731,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
                     : 3.0);
                 _allowPartialCheck.Checked = parameters.AllowPartialMatch;
                 SetNumeric(_brushRadiusInput, parameters.BrushRadius);
+                SetNumeric(_toolbarBrushRadiusInput, parameters.BrushRadius);
                 SetNumeric(_anchorRowInput, _state.ReferenceAnchor.Row);
                 SetNumeric(_anchorColumnInput, _state.ReferenceAnchor.Column);
                 _anchorLockedCheck.Checked = _state.AnchorLocked;
@@ -729,6 +752,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 _canvas.BrushRadiusImage = parameters.BrushRadius;
                 _canvas.SetMaskStrokes(_state.MaskStrokes);
                 _maskVisibleButton.Checked = _state.MaskVisible;
+                SyncUnmaskedBaseIfApplicable();
                 UpdateEditorOverlay();
                 UpdateModelState();
                 UpdateHistoryButtons();
@@ -752,6 +776,8 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 {
                     _state.ModelContours = new List<List<ImageCoordinate>>();
                     _state.FeaturePoints = new List<ImageCoordinate>();
+                    _unmaskedBaseContours = new List<List<ImageCoordinate>>();
+                    _unmaskedBaseRoi = null;
                     _state.ModelData = null;
                     UpdateEditorOverlay();
                     MarkChanged(true);
@@ -835,8 +861,120 @@ namespace NinePointRotationCalibration.WinForms.Forms
         private void CanvasMaskStrokeCreated(object sender, MaskStrokeEventArgs eventArgs)
         {
             _state.MaskStrokes.Add(eventArgs.Stroke);
+            ApplyInstantMaskFilter(null);
             MarkChanged(true);
             RequestAutoFeaturePreview(false);
+        }
+
+        private void CanvasMaskPreviewChanged(object sender, MaskPreviewEventArgs eventArgs)
+        {
+            if (!CanUpdateUi || _state.TemplateRoi == null) return;
+            if (eventArgs == null)
+            {
+                ApplyInstantMaskFilter(null);
+                return;
+            }
+
+            // 擦除画笔拖动过程中增量隐藏当前画笔段覆盖的特征点（微秒级 0 延迟）
+            if (eventArgs.IsIncrementalEraseSegment && !_state.MaskInverted &&
+                eventArgs.ActiveMask != null && _canvas.EditorOverlay != null &&
+                _canvas.EditorOverlay.Points != null && _canvas.EditorOverlay.Points.Count > 0)
+            {
+                double radius = eventArgs.ActiveMask.Radius;
+                double minRow = Math.Min(eventArgs.SegmentStart.Row, eventArgs.SegmentEnd.Row) - radius;
+                double maxRow = Math.Max(eventArgs.SegmentStart.Row, eventArgs.SegmentEnd.Row) + radius;
+                double minCol = Math.Min(eventArgs.SegmentStart.Column, eventArgs.SegmentEnd.Column) - radius;
+                double maxCol = Math.Max(eventArgs.SegmentStart.Column, eventArgs.SegmentEnd.Column) + radius;
+                List<CanvasPointOverlay> points = _canvas.EditorOverlay.Points;
+                int write = 0;
+                for (int i = 0; i < points.Count; i++)
+                {
+                    CanvasPointOverlay item = points[i];
+                    ImageCoordinate p = item.Position;
+                    if (p.Row >= minRow && p.Row <= maxRow && p.Column >= minCol && p.Column <= maxCol &&
+                        MaskGeometry.IsPointNearSegment(p, eventArgs.SegmentStart, eventArgs.SegmentEnd, radius))
+                    {
+                        continue;
+                    }
+                    points[write++] = item;
+                }
+                if (write < points.Count)
+                {
+                    points.RemoveRange(write, points.Count - write);
+                }
+                return;
+            }
+
+            ApplyInstantMaskFilter(eventArgs.ActiveMask);
+        }
+
+        private void ApplyInstantMaskFilter(MaskStroke activePreview)
+        {
+            if (_state.TemplateRoi == null) return;
+            IEnumerable<List<ImageCoordinate>> sourceContours = GetMaskFilterSourceContours();
+            if (sourceContours == null) return;
+
+            CanvasRuntimeOverlay overlay = new CanvasRuntimeOverlay();
+            bool hasMasks = _state.MaskInverted ||
+                            (_state.MaskStrokes != null && _state.MaskStrokes.Count > 0) ||
+                            (activePreview != null && activePreview.IsValid);
+            foreach (List<ImageCoordinate> contour in sourceContours)
+            {
+                if (contour == null) continue;
+                for (int i = 0; i < contour.Count; i++)
+                {
+                    ImageCoordinate point = contour[i];
+                    if (!IsFinite(point.Row) || !IsFinite(point.Column)) continue;
+                    if (hasMasks && MaskGeometry.IsPointExcluded(point, _state.MaskStrokes, _state.MaskInverted, activePreview))
+                    {
+                        continue;
+                    }
+                    AddPreviewPoint(overlay, point, Color.Cyan);
+                }
+            }
+            _canvas.EditorOverlay = overlay;
+        }
+
+        private IEnumerable<List<ImageCoordinate>> GetMaskFilterSourceContours()
+        {
+            if (_unmaskedBaseContours != null && _unmaskedBaseContours.Count > 0 &&
+                SameRoiGeometry(_unmaskedBaseRoi, _state.TemplateRoi))
+            {
+                return _unmaskedBaseContours;
+            }
+            if (_state.ModelContours != null && _state.ModelContours.Any(item => item != null && item.Count > 0))
+            {
+                return _state.ModelContours;
+            }
+            return _state.FeaturePoints != null && _state.FeaturePoints.Count > 0
+                ? new[] { _state.FeaturePoints }
+                : null;
+        }
+
+        private void SyncUnmaskedBaseIfApplicable()
+        {
+            bool noMasks = !_state.MaskInverted && (_state.MaskStrokes == null || _state.MaskStrokes.Count == 0);
+            if (!noMasks) return;
+            if (_state.ModelContours != null && _state.ModelContours.Any(item => item != null && item.Count > 0))
+            {
+                _unmaskedBaseContours = _state.ModelContours.Where(c => c != null).Select(c => new List<ImageCoordinate>(c)).ToList();
+                _unmaskedBaseRoi = _state.TemplateRoi == null ? null : _state.TemplateRoi.DeepClone();
+            }
+            else if (_state.FeaturePoints != null && _state.FeaturePoints.Count > 0)
+            {
+                _unmaskedBaseContours = new List<List<ImageCoordinate>> { new List<ImageCoordinate>(_state.FeaturePoints) };
+                _unmaskedBaseRoi = _state.TemplateRoi == null ? null : _state.TemplateRoi.DeepClone();
+            }
+        }
+
+        private static bool SameRoiGeometry(RotatedRectangle a, RotatedRectangle b)
+        {
+            if (a == null || b == null) return false;
+            return Math.Abs(a.CenterRow - b.CenterRow) < 0.01 &&
+                   Math.Abs(a.CenterColumn - b.CenterColumn) < 0.01 &&
+                   Math.Abs(a.HalfWidth - b.HalfWidth) < 0.01 &&
+                   Math.Abs(a.HalfHeight - b.HalfHeight) < 0.01 &&
+                   Math.Abs(a.AngleDegrees - b.AngleDegrees) < 0.01;
         }
 
         private void StructuralParameterChanged(object sender, EventArgs eventArgs)
@@ -912,6 +1050,70 @@ namespace NinePointRotationCalibration.WinForms.Forms
 
             _state.Parameters.BrushRadius = (double)_brushRadiusInput.Value;
             _canvas.BrushRadiusImage = _state.Parameters.BrushRadius;
+            bool prev = _loadingControls;
+            _loadingControls = true;
+            try { SetNumeric(_toolbarBrushRadiusInput, _state.Parameters.BrushRadius); }
+            finally { _loadingControls = prev; }
+        }
+
+        private void ToolbarBrushRadiusChanged(object sender, EventArgs eventArgs)
+        {
+            if (_loadingControls) return;
+            _state.Parameters.BrushRadius = (double)_toolbarBrushRadiusInput.Value;
+            _canvas.BrushRadiusImage = _state.Parameters.BrushRadius;
+            bool prev = _loadingControls;
+            _loadingControls = true;
+            try { SetNumeric(_brushRadiusInput, _state.Parameters.BrushRadius); }
+            finally { _loadingControls = prev; }
+        }
+
+        private void CanvasBrushRadiusChanged(object sender, EventArgs eventArgs)
+        {
+            _state.Parameters.BrushRadius = _canvas.BrushRadiusImage;
+            bool prev = _loadingControls;
+            _loadingControls = true;
+            try
+            {
+                SetNumeric(_brushRadiusInput, _state.Parameters.BrushRadius);
+                SetNumeric(_toolbarBrushRadiusInput, _state.Parameters.BrushRadius);
+            }
+            finally { _loadingControls = prev; }
+        }
+
+        private void CanvasMouseUpForContextMenu(object sender, MouseEventArgs e)
+        {
+            if (e.Button != MouseButtons.Right || _busy || _canvas.Tool == CanvasEditTool.MaskPolygon)
+            {
+                return;
+            }
+
+            int hitIndex = _canvas.HitTestMaskIndex(e.Location);
+            if (hitIndex < 0 || _state.MaskStrokes == null || hitIndex >= _state.MaskStrokes.Count)
+            {
+                return;
+            }
+
+            ContextMenuStrip menu = new ContextMenuStrip();
+            ToolStripMenuItem deleteOne = new ToolStripMenuItem("删除此掩膜区域");
+            deleteOne.Click += (s, args) =>
+            {
+                if (hitIndex >= 0 && hitIndex < _state.MaskStrokes.Count)
+                {
+                    PushUndoState();
+                    _state.MaskStrokes.RemoveAt(hitIndex);
+                    _canvas.SetMaskStrokes(_state.MaskStrokes);
+                    ApplyInstantMaskFilter(null);
+                    MarkChanged(true);
+                    RequestAutoFeaturePreview(false);
+                    SetStatus("已删除选中掩膜区域。", false);
+                }
+            };
+            ToolStripMenuItem clearAll = new ToolStripMenuItem("清除全部掩膜");
+            clearAll.Click += (s, args) => ClearMask(this, EventArgs.Empty);
+            menu.Items.Add(deleteOne);
+            menu.Items.Add(clearAll);
+            menu.Closed += (s, args) => menu.Dispose();
+            menu.Show(_canvas, e.Location);
         }
 
         private void DisplayParameterChanged(object sender, EventArgs eventArgs)
@@ -1334,7 +1536,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
             _autoPreviewPending = false;
             _autoPreviewRunning = true;
             ReadParametersFromControls();
-            TemplateEditorState snapshot = _state.DeepClone();
+            TemplateEditorState snapshot = CreatePreviewSnapshot();
             int generation = _autoPreviewGeneration;
 
             if (_autoPreviewCancellation != null)
@@ -1347,6 +1549,27 @@ namespace NinePointRotationCalibration.WinForms.Forms
             CancellationToken token = _autoPreviewCancellation.Token;
 
             RunAutoFeaturePreviewAsync(snapshot, generation, token);
+        }
+
+        /// <summary>创建用于后台特征预览的轻量快照，跳过体积庞大的二进制 ModelData 与既有特征点复制。</summary>
+        private TemplateEditorState CreatePreviewSnapshot()
+        {
+            return new TemplateEditorState
+            {
+                TemplateRoi = _state.TemplateRoi == null ? null : _state.TemplateRoi.DeepClone(),
+                SearchRoi = _state.SearchRoi == null ? null : _state.SearchRoi.DeepClone(),
+                DetectionRoi = _state.DetectionRoi == null ? null : _state.DetectionRoi.DeepClone(),
+                ReferenceAnchor = _state.ReferenceAnchor,
+                AnchorLocked = _state.AnchorLocked,
+                MaskInverted = _state.MaskInverted,
+                Parameters = _state.Parameters == null ? new TemplateEditorParameters() : _state.Parameters.DeepClone(),
+                ReferenceImageWidth = _state.ReferenceImageWidth,
+                ReferenceImageHeight = _state.ReferenceImageHeight,
+                MaskStrokes = (_state.MaskStrokes ?? new List<MaskStroke>())
+                    .Where(item => item != null)
+                    .Select(item => item.DeepClone())
+                    .ToList()
+            };
         }
 
         private async void RunAutoFeaturePreviewAsync(
@@ -1442,6 +1665,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
             {
                 SyncResolvedThresholdsQuietly(result.RecommendedParameters);
             }
+            SyncUnmaskedBaseIfApplicable();
             UpdateEditorOverlay();
         }
 
@@ -1631,12 +1855,27 @@ namespace NinePointRotationCalibration.WinForms.Forms
             }
         }
 
+        private void ActivateMoveAnchorTool()
+        {
+            if (_state.AnchorLocked)
+            {
+                SetStatus("基准中心已锁定，请先在右侧「基准中心」页取消勾选“锁定基准中心”。", true);
+                _parameterTabs.SelectedIndex = 2;
+                SyncToolButtonCheckedState(_canvas.Tool);
+                return;
+            }
+
+            SelectTool(CanvasEditTool.MoveAnchor);
+            SetStatus("移动中心模式：在图上点击或拖动即可移动模板中心，支持方向键微调（Shift+方向键 10px）。", false);
+        }
+
         private void SyncToolButtonCheckedState(CanvasEditTool tool)
         {
             _selectToolButton.Checked = tool == CanvasEditTool.Select;
-            _templateToolButton.Checked = tool == CanvasEditTool.DrawTemplateRoi;
-            _searchToolButton.Checked = tool == CanvasEditTool.DrawSearchRoi;
-            _detectionToolButton.Checked = tool == CanvasEditTool.DrawDetectionRoi;
+            _moveAnchorToolButton.Checked = tool == CanvasEditTool.MoveAnchor;
+            _maskRectToolButton.Checked = tool == CanvasEditTool.MaskRectangle;
+            _maskCircleToolButton.Checked = tool == CanvasEditTool.MaskCircle;
+            _maskPolygonToolButton.Checked = tool == CanvasEditTool.MaskPolygon;
             _eraseToolButton.Checked = tool == CanvasEditTool.EraseMask;
             _restoreToolButton.Checked = tool == CanvasEditTool.RestoreMask;
             UpdateRoiToolbarButtons();
@@ -1644,14 +1883,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
 
         private void UpdateRoiToolSelection()
         {
-            if (_canvas.Tool != CanvasEditTool.Select)
-            {
-                return;
-            }
-
-            _templateToolButton.Checked = false;
-            _searchToolButton.Checked = false;
-            _detectionToolButton.Checked = false;
+            UpdateRoiToolbarButtons();
         }
 
         private void AddOrSelectRoi(CanvasRoiTarget target)
@@ -1719,6 +1951,21 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 return;
             }
 
+            CanvasRoiTarget selected = _canvas.SelectedRoi;
+            if (selected == CanvasRoiTarget.None || GetStateRoi(selected) == null)
+            {
+                SetStatus("请先选中一个 ROI 再执行删除。", false);
+                return;
+            }
+
+            bool locked = (selected == CanvasRoiTarget.Template && _state.TemplateRoiLocked) ||
+                          (selected == CanvasRoiTarget.Search && _state.SearchRoiLocked);
+            if (locked)
+            {
+                SetStatus("当前选中的 ROI 已锁定，请先在参数页取消锁定后再删除。", true);
+                return;
+            }
+
             if (_canvas.DeleteSelectedRoi())
             {
                 SetStatus("已删除选中 ROI。", false);
@@ -1774,14 +2021,67 @@ namespace NinePointRotationCalibration.WinForms.Forms
 
         private void UpdateRoiToolbarButtons()
         {
-            _addTemplateRoiButton.Text = _state.TemplateRoi == null ? "+ 模板ROI" : "选中模板";
-            _addSearchRoiButton.Text = _state.SearchRoi == null ? "+ 搜索ROI" : "选中搜索";
-            _addDetectionRoiButton.Text = _state.DetectionRoi == null ? "+ 检测ROI" : "选中检测";
-
+            bool hasTemplate = _state.TemplateRoi != null;
+            bool hasSearch = _state.SearchRoi != null;
+            bool hasDetection = _enableDetectionRoi && _state.DetectionRoi != null;
             CanvasRoiTarget selected = _canvas.SelectedRoi;
+            bool inSelectMode = _canvas.Tool == CanvasEditTool.Select;
+
+            _addTemplateRoiButton.Text = "模板";
+            _addTemplateRoiButton.Checked = inSelectMode && selected == CanvasRoiTarget.Template && hasTemplate;
+            _addTemplateRoiButton.ToolTipText = hasTemplate ? "点击选中模板 ROI（已添加）" : "点击添加模板 ROI 并自动提取特征";
+            UpdateRoiButtonIcon(_addTemplateRoiButton, Color.Gold, hasTemplate);
+
+            _addSearchRoiButton.Text = "搜索";
+            _addSearchRoiButton.Checked = inSelectMode && selected == CanvasRoiTarget.Search && hasSearch;
+            _addSearchRoiButton.ToolTipText = hasSearch ? "点击选中搜索 ROI（已添加）" : "点击添加搜索 ROI";
+            UpdateRoiButtonIcon(_addSearchRoiButton, Color.DeepSkyBlue, hasSearch);
+
+            _addDetectionRoiButton.Text = "检测";
+            _addDetectionRoiButton.Checked = inSelectMode && selected == CanvasRoiTarget.Detection && hasDetection;
+            _addDetectionRoiButton.ToolTipText = hasDetection ? "点击选中检测 ROI（已添加）" : "点击添加检测 ROI";
+            UpdateRoiButtonIcon(_addDetectionRoiButton, Color.LimeGreen, hasDetection);
+
             bool locked = (selected == CanvasRoiTarget.Template && _state.TemplateRoiLocked) ||
                           (selected == CanvasRoiTarget.Search && _state.SearchRoiLocked);
             _deleteRoiButton.Enabled = !_busy && selected != CanvasRoiTarget.None && GetStateRoi(selected) != null && !locked;
+        }
+
+        private static void UpdateRoiButtonIcon(ToolStripButton button, Color color, bool exists)
+        {
+            string tag = (exists ? "1:" : "0:") + color.ToArgb();
+            if (Equals(button.Tag, tag)) return;
+            Image previous = button.Image;
+            Bitmap icon = new Bitmap(14, 14);
+            using (Graphics g = Graphics.FromImage(icon))
+            {
+                g.Clear(Color.Transparent);
+                if (exists)
+                {
+                    using (Brush fill = new SolidBrush(Color.FromArgb(220, color)))
+                    using (Pen pen = new Pen(Color.FromArgb(200, 30, 30, 30), 1.0f))
+                    {
+                        g.FillRectangle(fill, 2, 2, 10, 10);
+                        g.DrawRectangle(pen, 2, 2, 10, 10);
+                    }
+                }
+                else
+                {
+                    using (Pen pen = new Pen(color, 1.5f))
+                    {
+                        pen.DashStyle = System.Drawing.Drawing2D.DashStyle.Dot;
+                        g.DrawRectangle(pen, 1, 1, 11, 11);
+                    }
+                    using (Pen plus = new Pen(Color.FromArgb(220, 60, 60, 60), 1.5f))
+                    {
+                        g.DrawLine(plus, 4, 7, 10, 7);
+                        g.DrawLine(plus, 7, 4, 7, 10);
+                    }
+                }
+            }
+            button.Image = icon;
+            button.Tag = tag;
+            if (previous != null) previous.Dispose();
         }
 
         private void SetReferenceAnchorInternal(ImageCoordinate anchor)
@@ -1847,16 +2147,18 @@ namespace NinePointRotationCalibration.WinForms.Forms
             PushUndoState();
             _state.MaskStrokes.Clear();
             _canvas.SetMaskStrokes(_state.MaskStrokes);
+            ApplyInstantMaskFilter(null);
             MarkChanged(true);
-            RequestAutoFeaturePreview(true);
+            RequestAutoFeaturePreview(false);
         }
 
         private void InvertMask(object sender, EventArgs eventArgs)
         {
             PushUndoState();
             _state.MaskInverted = !_state.MaskInverted;
+            ApplyInstantMaskFilter(null);
             MarkChanged(true);
-            RequestAutoFeaturePreview(true);
+            RequestAutoFeaturePreview(false);
             SetStatus(_state.MaskInverted ? "掩膜已反选。" : "掩膜已恢复正常包含关系。", false);
         }
 
@@ -1989,7 +2291,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
         {
             if (_state.TemplateRoi == null)
             {
-                _modelStateLabel.Text = "未添加模板 ROI（请点击「+ 模板ROI」或「框选模板」）";
+                _modelStateLabel.Text = "未添加模板 ROI（请点击顶部「模板」按钮添加）";
                 _modelStateLabel.ForeColor = Color.White;
                 _modelStateLabel.BackColor = Color.FromArgb(100, 116, 139);
             }
@@ -2166,7 +2468,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
         {
             if (_state.TemplateRoi == null || _state.TemplateRoi.HalfWidth < 2.0 || _state.TemplateRoi.HalfHeight < 2.0)
             {
-                message = "请先点击「+ 模板ROI」或「框选模板」设置有效的模板 ROI。";
+                message = "请先点击顶部「模板」按钮设置有效的模板 ROI。";
                 return false;
             }
 

@@ -172,6 +172,8 @@ namespace NinePointRotationCalibration.Station.Tests
             Run("No default image loads on startup, config folder imports uniformly, and test detection runs cleanly", TestNoDefaultImageAndUnifiedConfigFolderAndResilientInspection);
             RunAsync("Local debug log persists detailed UTF-8 BOM traces for runtime, TCP, and inspection", TestLocalDebugLoggingEndToEndAsync);
             RunAsync("Template auto-threshold defaults and camera live acquisition window work smoothly", TestTemplateDefaultAutoThresholdAndCameraLiveWindowAsync);
+            Run("Mask region drawing, instant UI filtering, and cached HALCON preview work smoothly", TestTemplateEditorMaskRegionsAndFastPreview);
+            Run("Template anchor movement and nested overlapping ROI selection work cleanly", TestAnchorMovementAndNestedOverlappingRoiSelection);
 
             Console.WriteLine();
             Console.WriteLine("Passed: {0}; Failed: {1}", _passed, _failed);
@@ -2634,6 +2636,247 @@ namespace NinePointRotationCalibration.Station.Tests
             return buffer;
         }
 
+        private static void TestTemplateEditorMaskRegionsAndFastPreview()
+        {
+            // 1. 验证结构化掩膜（矩形/圆形/多边形/画笔）在 CoreUiMapper 往返中的顺序一致性
+            UiTemplateEditorState uiState = new UiTemplateEditorState
+            {
+                TemplateRoi = new UiRotatedRectangle(120, 120, 80, 80, 0),
+                SearchRoi = new UiRotatedRectangle(120, 120, 110, 110, 0),
+                MaskStrokes = new List<NinePointRotationCalibration.WinForms.Models.MaskStroke>
+                {
+                    new NinePointRotationCalibration.WinForms.Models.MaskStroke
+                    {
+                        Kind = NinePointRotationCalibration.WinForms.Models.MaskShapeKind.Rectangle,
+                        IsErase = true,
+                        Rectangle = new UiRotatedRectangle(100, 100, 20, 15, 0)
+                    },
+                    new NinePointRotationCalibration.WinForms.Models.MaskStroke
+                    {
+                        Kind = NinePointRotationCalibration.WinForms.Models.MaskShapeKind.Circle,
+                        IsErase = true,
+                        Center = new UiImageCoordinate(140, 140),
+                        Radius = 12
+                    },
+                    new NinePointRotationCalibration.WinForms.Models.MaskStroke
+                    {
+                        Kind = NinePointRotationCalibration.WinForms.Models.MaskShapeKind.Polygon,
+                        IsErase = true,
+                        Points = new List<UiImageCoordinate>
+                        {
+                            new UiImageCoordinate(80, 130),
+                            new UiImageCoordinate(80, 160),
+                            new UiImageCoordinate(105, 145)
+                        }
+                    },
+                    new NinePointRotationCalibration.WinForms.Models.MaskStroke
+                    {
+                        Kind = NinePointRotationCalibration.WinForms.Models.MaskShapeKind.Brush,
+                        IsErase = false,
+                        Radius = 6,
+                        Points = new List<UiImageCoordinate> { new UiImageCoordinate(100, 100) }
+                    }
+                }
+            };
+            TemplateDefinition mapped = UiCoreUiMapper.ToCoreTemplate(uiState, null, 240, 240);
+            True(mapped.MaskRegions.Count == 4, "all four ordered mask items must map into MaskRegions");
+            True(mapped.MaskRegions[0].Region.Kind == RegionKind.Rectangle2 &&
+                 mapped.MaskRegions[1].Region.Kind == RegionKind.Circle &&
+                 mapped.MaskRegions[2].Region.Kind == RegionKind.Polygon &&
+                 mapped.MaskRegions[3].Region.Kind == RegionKind.Freehand &&
+                 mapped.MaskRegions[3].Operation == MaskOperation.Include,
+                "mask kinds and chronological order must be preserved");
+            UiTemplateEditorState roundTrip = UiCoreUiMapper.FromCoreTemplate(mapped);
+            True(roundTrip.MaskStrokes.Count == 4 &&
+                 roundTrip.MaskStrokes[0].Kind == NinePointRotationCalibration.WinForms.Models.MaskShapeKind.Rectangle &&
+                 roundTrip.MaskStrokes[1].Kind == NinePointRotationCalibration.WinForms.Models.MaskShapeKind.Circle &&
+                 roundTrip.MaskStrokes[2].Kind == NinePointRotationCalibration.WinForms.Models.MaskShapeKind.Polygon &&
+                 roundTrip.MaskStrokes[3].Kind == NinePointRotationCalibration.WinForms.Models.MaskShapeKind.Brush &&
+                 !roundTrip.MaskStrokes[3].IsErase,
+                "CoreUiMapper must round-trip all mask region shapes and brush restore");
+
+            // 2. 验证 XldTemplateMatchingEngine 掩膜边缘缓存预览：先提取基础轮廓，再加矩形掩膜过滤掉被覆盖区域的点
+            using (Bitmap img = new Bitmap(360, 280, PixelFormat.Format24bppRgb))
+            {
+                using (Graphics g = Graphics.FromImage(img))
+                {
+                    g.Clear(Color.FromArgb(30, 30, 30));
+                    using (Brush b = new SolidBrush(Color.FromArgb(220, 220, 220)))
+                    {
+                        g.FillRectangle(b, 95, 75, 170, 130);
+                    }
+                    using (Brush hole = new SolidBrush(Color.FromArgb(40, 40, 40)))
+                    {
+                        g.FillRectangle(hole, 115, 95, 45, 90);
+                        g.FillEllipse(hole, 195, 100, 50, 80);
+                    }
+                }
+                using (HalconGrayImage gray = HalconGrayImage.FromBitmap(img))
+                using (XldTemplateMatchingEngine engine = new XldTemplateMatchingEngine())
+                {
+                    TemplateDefinition def = new TemplateDefinition
+                    {
+                        ModelType = TemplateModelType.Shape,
+                        TemplateRoi = new RegionDefinition { Kind = RegionKind.Rectangle2, CenterRow = 140, CenterColumn = 180, Length1 = 110, Length2 = 85, PhiRadians = 0 }
+                    };
+                    var basePreview = engine.PreviewFeatures(gray, def);
+                    True(basePreview.Success && basePreview.ContourSegments.Count > 0, "base XLD preview must succeed");
+                    int basePoints = basePreview.ContourSegments.Sum(s => s.Count);
+
+                    def.MaskRegions.Add(new TemplateMaskShape
+                    {
+                        Operation = MaskOperation.Exclude,
+                        Region = new RegionDefinition { Kind = RegionKind.Rectangle2, CenterRow = 140, CenterColumn = 235, Length1 = 60, Length2 = 90, PhiRadians = 0 }
+                    });
+                    var maskedPreview = engine.PreviewFeatures(gray, def);
+                    True(maskedPreview.Success && maskedPreview.ContourSegments.Count > 0, "masked cached preview must succeed: " + maskedPreview.Message);
+                    int maskedPoints = maskedPreview.ContourSegments.Sum(s => s.Count);
+                    True(maskedPoints < basePoints, "excluding half the ROI via rectangle mask must remove covered feature points");
+                    True(maskedPreview.ContourSegments.SelectMany(s => s).All(p => p.Column < 178.0),
+                        "no feature points should remain inside the excluded rectangle mask");
+                }
+            }
+
+            // 3. 验证画布直接绘制矩形/圆形/多边形掩膜与 UI 0ms 即时隐藏特征点
+            using (Bitmap img = new Bitmap(200, 200))
+            {
+                UiTemplateEditorState editorState = new UiTemplateEditorState
+                {
+                    TemplateRoi = new UiRotatedRectangle(100, 100, 80, 80, 0),
+                    ModelContours = new List<List<UiImageCoordinate>>
+                    {
+                        new List<UiImageCoordinate>
+                        {
+                            new UiImageCoordinate(60, 60),
+                            new UiImageCoordinate(100, 100),
+                            new UiImageCoordinate(140, 140)
+                        }
+                    }
+                };
+                using (UiTemplateEditorForm form = new UiTemplateEditorForm(img, editorState))
+                {
+                    UiCalibrationCanvas canvas = GetPrivateField<UiCalibrationCanvas>(form, "_canvas");
+                    canvas.Size = new Size(300, 300);
+                    canvas.CreateControl();
+                    canvas.FitImage();
+                    True(canvas.EditorOverlay.Points.Count == 3, "initial overlay must show 3 feature points");
+
+                    MethodInfo mouseDown = typeof(UiCalibrationCanvas).GetMethod("OnMouseDown", BindingFlags.Instance | BindingFlags.NonPublic);
+                    MethodInfo mouseMove = typeof(UiCalibrationCanvas).GetMethod("OnMouseMove", BindingFlags.Instance | BindingFlags.NonPublic);
+                    MethodInfo mouseUp = typeof(UiCalibrationCanvas).GetMethod("OnMouseUp", BindingFlags.Instance | BindingFlags.NonPublic);
+
+                    // 绘制矩形掩膜覆盖 (100, 100)
+                    canvas.Tool = NinePointRotationCalibration.WinForms.Models.CanvasEditTool.MaskRectangle;
+                    PointF p1 = canvas.ImageToClient(new UiImageCoordinate(85, 85));
+                    PointF p2 = canvas.ImageToClient(new UiImageCoordinate(115, 115));
+                    mouseDown.Invoke(canvas, new object[] { new MouseEventArgs(MouseButtons.Left, 1, (int)p1.X, (int)p1.Y, 0) });
+                    mouseMove.Invoke(canvas, new object[] { new MouseEventArgs(MouseButtons.Left, 0, (int)p2.X, (int)p2.Y, 0) });
+                    True(canvas.EditorOverlay.Points.Count == 2, "dragging rectangle mask must immediately hide covered feature point at 0ms");
+                    mouseUp.Invoke(canvas, new object[] { new MouseEventArgs(MouseButtons.Left, 1, (int)p2.X, (int)p2.Y, 0) });
+                    True(form.CurrentState.MaskStrokes.Count == 1 &&
+                         form.CurrentState.MaskStrokes[0].Kind == NinePointRotationCalibration.WinForms.Models.MaskShapeKind.Rectangle,
+                        "releasing rectangle mask must commit rectangle mask to state");
+
+                    // 绘制圆形掩膜覆盖 (140, 140)
+                    canvas.Tool = NinePointRotationCalibration.WinForms.Models.CanvasEditTool.MaskCircle;
+                    PointF c0 = canvas.ImageToClient(new UiImageCoordinate(140, 140));
+                    PointF c1 = canvas.ImageToClient(new UiImageCoordinate(140, 155));
+                    mouseDown.Invoke(canvas, new object[] { new MouseEventArgs(MouseButtons.Left, 1, (int)c0.X, (int)c0.Y, 0) });
+                    mouseMove.Invoke(canvas, new object[] { new MouseEventArgs(MouseButtons.Left, 0, (int)c1.X, (int)c1.Y, 0) });
+                    mouseUp.Invoke(canvas, new object[] { new MouseEventArgs(MouseButtons.Left, 1, (int)c1.X, (int)c1.Y, 0) });
+                    True(form.CurrentState.MaskStrokes.Count == 2 &&
+                         form.CurrentState.MaskStrokes[1].Kind == NinePointRotationCalibration.WinForms.Models.MaskShapeKind.Circle &&
+                         canvas.EditorOverlay.Points.Count == 1,
+                        "circle mask must commit and leave only uncovered point (60, 60)");
+
+                    // 绘制多边形掩膜并右键闭合覆盖 (60, 60)
+                    canvas.Tool = NinePointRotationCalibration.WinForms.Models.CanvasEditTool.MaskPolygon;
+                    PointF v1 = canvas.ImageToClient(new UiImageCoordinate(45, 45));
+                    PointF v2 = canvas.ImageToClient(new UiImageCoordinate(45, 75));
+                    PointF v3 = canvas.ImageToClient(new UiImageCoordinate(75, 60));
+                    mouseDown.Invoke(canvas, new object[] { new MouseEventArgs(MouseButtons.Left, 1, (int)v1.X, (int)v1.Y, 0) });
+                    mouseDown.Invoke(canvas, new object[] { new MouseEventArgs(MouseButtons.Left, 1, (int)v2.X, (int)v2.Y, 0) });
+                    mouseDown.Invoke(canvas, new object[] { new MouseEventArgs(MouseButtons.Left, 1, (int)v3.X, (int)v3.Y, 0) });
+                    mouseDown.Invoke(canvas, new object[] { new MouseEventArgs(MouseButtons.Right, 1, (int)v3.X, (int)v3.Y, 0) });
+                    True(form.CurrentState.MaskStrokes.Count == 3 &&
+                         form.CurrentState.MaskStrokes[2].Kind == NinePointRotationCalibration.WinForms.Models.MaskShapeKind.Polygon &&
+                         canvas.EditorOverlay.Points.Count == 0,
+                        "right-clicking polygon mask must commit polygon and hide remaining point");
+                }
+            }
+        }
+
+        private static void TestAnchorMovementAndNestedOverlappingRoiSelection()
+        {
+            using (Bitmap image = new Bitmap(200, 200))
+            using (UiCalibrationCanvas canvas = new UiCalibrationCanvas())
+            {
+                canvas.Size = new Size(400, 400);
+                canvas.CreateControl();
+                canvas.SetImage(image);
+                canvas.SearchRoi = new UiRotatedRectangle(100, 100, 95, 95, 0);
+                canvas.TemplateRoi = new UiRotatedRectangle(100, 100, 25, 25, 0);
+                canvas.ReferenceAnchor = new UiImageCoordinate(100, 100);
+                canvas.SelectedRoi = UiCanvasRoiTarget.Search;
+
+                MethodInfo mouseDown = typeof(UiCalibrationCanvas).GetMethod("OnMouseDown", BindingFlags.Instance | BindingFlags.NonPublic);
+                MethodInfo mouseMove = typeof(UiCalibrationCanvas).GetMethod("OnMouseMove", BindingFlags.Instance | BindingFlags.NonPublic);
+                MethodInfo mouseUp = typeof(UiCalibrationCanvas).GetMethod("OnMouseUp", BindingFlags.Instance | BindingFlags.NonPublic);
+                MethodInfo keyDown = typeof(UiCalibrationCanvas).GetMethod("OnKeyDown", BindingFlags.Instance | BindingFlags.NonPublic);
+
+                // 1. 全图大搜索 ROI 已选中时，点击内部小模板 ROI 必须直接命中并选中内层模板 ROI
+                PointF innerPt = canvas.ImageToClient(new UiImageCoordinate(100, 115));
+                mouseDown.Invoke(canvas, new object[] { new MouseEventArgs(MouseButtons.Left, 1, (int)innerPt.X, (int)innerPt.Y, 0) });
+                mouseMove.Invoke(canvas, new object[] { new MouseEventArgs(MouseButtons.Left, 0, (int)innerPt.X + 10, (int)innerPt.Y, 0) });
+                mouseUp.Invoke(canvas, new object[] { new MouseEventArgs(MouseButtons.Left, 1, (int)innerPt.X + 10, (int)innerPt.Y, 0) });
+                True(canvas.SelectedRoi == UiCanvasRoiTarget.Template,
+                    "clicking inside smaller template ROI while large search ROI is selected must select template ROI");
+                True(canvas.TemplateRoi.CenterColumn > 100.5,
+                    "dragging inner template ROI must move template ROI");
+                Near(100.0, canvas.SearchRoi.CenterColumn, 0.01,
+                    "dragging inner template ROI must not move enclosing search ROI");
+                // 2. 未锁定中心时，移动模板 ROI 应带动模板中心同步平移
+                Near(canvas.TemplateRoi.CenterColumn, canvas.ReferenceAnchor.Column, 0.01,
+                    "unlocked reference anchor must follow translated template ROI");
+
+                // 3. 锁定中心后，移动模板 ROI 不得改变中心坐标
+                double lockedCol = canvas.ReferenceAnchor.Column;
+                canvas.AnchorLocked = true;
+                PointF tplPt = canvas.ImageToClient(new UiImageCoordinate(canvas.TemplateRoi.CenterRow, canvas.TemplateRoi.CenterColumn + 12));
+                mouseDown.Invoke(canvas, new object[] { new MouseEventArgs(MouseButtons.Left, 1, (int)tplPt.X, (int)tplPt.Y, 0) });
+                mouseMove.Invoke(canvas, new object[] { new MouseEventArgs(MouseButtons.Left, 0, (int)tplPt.X + 10, (int)tplPt.Y, 0) });
+                mouseUp.Invoke(canvas, new object[] { new MouseEventArgs(MouseButtons.Left, 1, (int)tplPt.X + 10, (int)tplPt.Y, 0) });
+                Near(lockedCol, canvas.ReferenceAnchor.Column, 0.01,
+                    "locked reference anchor must remain stationary when template ROI moves");
+
+                // 4. 移动中心工具模式：点击并拖动基准中心无跳变，且方向键可微调中心
+                canvas.AnchorLocked = false;
+                canvas.Tool = NinePointRotationCalibration.WinForms.Models.CanvasEditTool.MoveAnchor;
+                PointF targetAnchor = canvas.ImageToClient(new UiImageCoordinate(70, 80));
+                mouseDown.Invoke(canvas, new object[] { new MouseEventArgs(MouseButtons.Left, 1, (int)targetAnchor.X, (int)targetAnchor.Y, 0) });
+                mouseUp.Invoke(canvas, new object[] { new MouseEventArgs(MouseButtons.Left, 1, (int)targetAnchor.X, (int)targetAnchor.Y, 0) });
+                Near(70.0, canvas.ReferenceAnchor.Row, 1.5, "MoveAnchor click must place anchor at clicked row");
+                Near(80.0, canvas.ReferenceAnchor.Column, 1.5, "MoveAnchor click must place anchor at clicked column");
+                double rowBeforeKey = canvas.ReferenceAnchor.Row;
+                keyDown.Invoke(canvas, new object[] { new KeyEventArgs(Keys.Down | Keys.Shift) });
+                Near(rowBeforeKey + 10.0, canvas.ReferenceAnchor.Row, 0.01,
+                    "Shift+Down must nudge anchor by 10 px");
+
+                // 5. Select 模式下点中中心后，方向键微调中心而非移动 ROI
+                canvas.Tool = NinePointRotationCalibration.WinForms.Models.CanvasEditTool.Select;
+                canvas.SelectedRoi = UiCanvasRoiTarget.Template;
+                double tplRowBefore = canvas.TemplateRoi.CenterRow;
+                PointF anchorClient = canvas.ImageToClient(canvas.ReferenceAnchor);
+                mouseDown.Invoke(canvas, new object[] { new MouseEventArgs(MouseButtons.Left, 1, (int)anchorClient.X, (int)anchorClient.Y, 0) });
+                mouseUp.Invoke(canvas, new object[] { new MouseEventArgs(MouseButtons.Left, 1, (int)anchorClient.X, (int)anchorClient.Y, 0) });
+                True(canvas.IsAnchorSelected, "clicking anchor in Select mode must select anchor");
+                double colBeforeKey = canvas.ReferenceAnchor.Column;
+                keyDown.Invoke(canvas, new object[] { new KeyEventArgs(Keys.Right) });
+                Near(colBeforeKey + 1.0, canvas.ReferenceAnchor.Column, 0.01, "Right arrow must nudge selected anchor by 1 px");
+                Near(tplRowBefore, canvas.TemplateRoi.CenterRow, 0.01, "nudging selected anchor must not move template ROI");
+            }
+        }
+
         private static StationRuntime CreateRuntime(string optionsPath, StationOptions options)
         {
             ConstructorInfo constructor = typeof(StationRuntime).GetConstructor(
@@ -3171,19 +3414,20 @@ namespace NinePointRotationCalibration.Station.Tests
                         "new template editor must start without default template, search, or detection ROI");
                     True(canvas.EditorOverlay.Points.Count == 0,
                         "empty editor must not render stale feature points before ROI is added");
-                    True(addTemplateButton.Text == "+ 模板ROI" &&
-                         addSearchButton.Text == "+ 搜索ROI" &&
-                         addDetectionButton.Text == "+ 检测ROI",
-                        "toolbar must display explicit + ROI buttons before ROIs exist");
+                    True(addTemplateButton.Text == "模板" &&
+                         addSearchButton.Text == "搜索" &&
+                         addDetectionButton.Text == "检测" &&
+                         deleteButton.Text == "删除",
+                        "toolbar must display clean 模板/搜索/检测/删除 ROI buttons");
 
-                    // 2. 点击 + 模板ROI 后自动选中模板并触发实时特征提取，无需手动点击提取按钮
+                    // 2. 点击 模板 按钮后自动选中模板并触发实时特征提取，无需手动点击提取按钮
                     addTemplateButton.PerformClick();
                     True(PumpUntil(() => canvas.EditorOverlay.Points.Count > 0 && service.ExtractCallCount >= 1, 8000),
                         "adding template ROI must automatically extract and display feature points");
                     True(canvas.TemplateRoi != null && canvas.SearchRoi == null,
                         "adding template ROI must keep search ROI unset until added or confirmed");
-                    True(addTemplateButton.Text == "选中模板",
-                        "template button text must switch to selection label once ROI exists");
+                    True(addTemplateButton.Checked && !addSearchButton.Checked && !addDetectionButton.Checked,
+                        "template button must be highlighted as selected once template ROI is added");
 
                     int extractCountAfterAdd = service.ExtractCallCount;
                     double meanColumnBeforeDrag = canvas.EditorOverlay.Points.Average(point => point.Position.Column);
