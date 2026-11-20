@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
-using System.Runtime.InteropServices;
 
 namespace NinePointRotationCalibration.Station.Services
 {
@@ -12,7 +11,6 @@ namespace NinePointRotationCalibration.Station.Services
     /// </summary>
     internal static class ExternalRuntimeLoader
     {
-        private const uint LoadLibrarySearchDefaultDirs = 0x00001000;
         private static readonly string[] RelativeProbeDirs =
         {
             "libs",
@@ -23,12 +21,6 @@ namespace NinePointRotationCalibration.Station.Services
 
         private static bool _initialized;
         private static string[] _probeDirectories = new string[0];
-
-        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-        private static extern bool SetDefaultDllDirectories(uint directoryFlags);
-
-        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-        private static extern IntPtr AddDllDirectory(string newDirectory);
 
         /// <summary>初始化外部库解析器与原生 DLL/GenTL 搜索目录（必须在任何 HALCON/相机类型加载前调用）。</summary>
         public static void Initialize()
@@ -47,24 +39,24 @@ namespace NinePointRotationCalibration.Station.Services
                 }
             }
 
+            // 若目标机已安装 HALCON，保留其原生与托管目录作为兜底搜索路径
+            string halconRoot = Environment.GetEnvironmentVariable("HALCONROOT");
+            if (!string.IsNullOrWhiteSpace(halconRoot))
+            {
+                string halconDotNetDir = Path.Combine(halconRoot, "bin", "dotnet35");
+                if (Directory.Exists(halconDotNetDir)) dirs.Add(halconDotNetDir);
+                string halconNativeDir = Path.Combine(halconRoot, "bin", "x64-win64");
+                if (Directory.Exists(halconNativeDir)) dirs.Add(halconNativeDir);
+            }
+
             _probeDirectories = dirs.ToArray();
             AppDomain.CurrentDomain.AssemblyResolve += OnAssemblyResolve;
 
             if (_probeDirectories.Length == 0) return;
 
-            try
-            {
-                SetDefaultDllDirectories(LoadLibrarySearchDefaultDirs);
-                for (int i = 0; i < _probeDirectories.Length; i++)
-                {
-                    AddDllDirectory(_probeDirectories[i]);
-                }
-            }
-            catch
-            {
-                // 旧版系统或受限环境下退回仅使用进程 PATH 注入
-            }
-
+            // 注意：不能调用 SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS)，
+            // 否则会禁用系统 PATH 搜索，导致系统已安装的 halcon.dll / 相机驱动原生库无法加载。
+            // 仅通过进程级 PATH 与 GENICAM_GENTL64_PATH 前置注入，既优先查找 libs\ 又完整兼容系统环境。
             PrependEnvironmentPath("PATH", _probeDirectories);
             string dahuaDir = Path.Combine(baseDir, "libs", "dahua");
             if (Directory.Exists(dahuaDir))

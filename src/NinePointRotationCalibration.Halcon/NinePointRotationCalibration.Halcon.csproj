@@ -14,7 +14,8 @@
     <PlatformTarget>x64</PlatformTarget>
     <Prefer32Bit>false</Prefer32Bit>
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
-    <HalconDotNetPath Condition="'$(HalconDotNetPath)' == ''">$(MSBuildThisFileDirectory)..\..\lib\halcondotnet.dll</HalconDotNetPath>
+    <HalconDotNetPath Condition="'$(HalconDotNetPath)' == '' And Exists('$(MSBuildThisFileDirectory)..\..\lib\halcondotnet.dll')">$(MSBuildThisFileDirectory)..\..\lib\halcondotnet.dll</HalconDotNetPath>
+    <HalconDotNetPath Condition="'$(HalconDotNetPath)' == '' And '$(HALCONROOT)' != '' And Exists('$(HALCONROOT)\bin\dotnet35\halcondotnet.dll')">$(HALCONROOT)\bin\dotnet35\halcondotnet.dll</HalconDotNetPath>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
     <DebugSymbols>true</DebugSymbols>
