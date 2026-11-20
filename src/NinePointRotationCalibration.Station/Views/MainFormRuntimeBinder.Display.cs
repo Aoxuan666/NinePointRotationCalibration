@@ -201,49 +201,49 @@ namespace NinePointRotationCalibration.Station.Views
             }
 
             Bitmap source = null;
-            List<DetectionRoi> regions;
-            List<ViewportContourOverlay> matchedContours;
-            List<int> boardIndices;
-            int selectedBoardIndex;
-            long generation;
-            lock (_displaySync)
-            {
-                generation = _displayGeneration;
-                if (_lockedDisplayImage != null) source = new Bitmap(_lockedDisplayImage);
-                bool current = _lastInspectionOverlayGeneration == generation;
-                regions = current
-                    ? _lastDetectionRegions.Select(CloneDetectionRoi).ToList()
-                    : new List<DetectionRoi>();
-                matchedContours = current
-                    ? CloneContourList(_lastMatchedBoardContours)
-                    : new List<ViewportContourOverlay>();
-                boardIndices = current
-                    ? new List<int>(_lastInspectionBoardIndices)
-                    : new List<int>();
-                selectedBoardIndex = _selectedInspectionBoardIndex;
-            }
-
-            if (source == null)
-            {
-                lock (_binaryPreviewSync)
-                    if (ReferenceEquals(_binaryPreviewCancellation, cancellation))
-                        _binaryPreviewCancellation = null;
-                cancellation.Dispose();
-                _view.EffectViewport.ClearImage();
-                _view.EffectViewport.ClearOverlays();
-                _view.SetEffectViewportInformation(_displayMode == DisplayMode.LivePreview ? "实时预览中" : "等待拍照或导入图像");
-                _view.SetOperationStatus("效果图预览需要已拍摄或已导入的图像", false, true);
-                return;
-            }
-
             try
             {
-                // 连续拖动/微调参数时先进行 25ms 合并窗口防抖，不向 Task.Delay 传 CancellationToken 以避免调试器首次概率异常中断
+                // 先执行 25ms 防抖合并，再从锁定帧克隆位图，避免连续滚轮调参期间在 UI 线程反复复制高分辨率原图
                 if (debounce)
                 {
                     await Task.Delay(25).ConfigureAwait(true);
                     if (cancellation.IsCancellationRequested || _disposed || !_view.IsDetectionDualViewActive)
                         return;
+                }
+
+                LockedFrameGrayCache grayCache = null;
+                List<DetectionRoi> regions;
+                List<ViewportContourOverlay> matchedContours;
+                List<int> boardIndices;
+                int selectedBoardIndex;
+                long generation;
+                bool isLiveMode;
+                lock (_displaySync)
+                {
+                    generation = _displayGeneration;
+                    isLiveMode = _displayMode == DisplayMode.LivePreview;
+                    if (_lockedDisplayImage != null) source = new Bitmap(_lockedDisplayImage);
+                    grayCache = _lockedGray;
+                    bool hasOverlay = _lastInspectionOverlayGeneration == generation;
+                    regions = hasOverlay
+                        ? _lastDetectionRegions.Select(CloneDetectionRoi).ToList()
+                        : new List<DetectionRoi>();
+                    matchedContours = hasOverlay
+                        ? CloneContourList(_lastMatchedBoardContours)
+                        : new List<ViewportContourOverlay>();
+                    boardIndices = hasOverlay
+                        ? new List<int>(_lastInspectionBoardIndices)
+                        : new List<int>();
+                    selectedBoardIndex = _selectedInspectionBoardIndex;
+                }
+
+                if (source == null)
+                {
+                    _view.EffectViewport.ClearImage();
+                    _view.EffectViewport.ClearOverlays();
+                    _view.SetEffectViewportInformation(isLiveMode ? "实时预览中" : "等待拍照或导入图像");
+                    _view.SetOperationStatus("效果图预览需要已拍摄或已导入的图像", false, true);
+                    return;
                 }
 
                 DetectionProfile profile = ReadDetectionProfileFromView();
@@ -275,7 +275,7 @@ namespace NinePointRotationCalibration.Station.Views
                     _view.SetOperationStatus("正在定位检测 ROI...", true, false);
                     int maximumMatches = expectedCount + 1;
                     TemplateMatchCollectionResult matchResult = await Task
-                        .Run(() => _runtime.LocatePositioningForPreview(source, maximumMatches))
+                        .Run(() => _runtime.LocatePositioningForPreview(source, grayCache, maximumMatches))
                         .ConfigureAwait(true);
                     if (cancellation.IsCancellationRequested || _disposed || !_view.IsDetectionDualViewActive)
                         return;
@@ -324,6 +324,7 @@ namespace NinePointRotationCalibration.Station.Views
                 EffectPreviewPayload preview = await Task.Run(
                     () => BuildEffectPreview(
                         source,
+                        grayCache,
                         regions,
                         boardIndices,
                         matchedContours,
@@ -409,6 +410,7 @@ namespace NinePointRotationCalibration.Station.Views
 
         private EffectPreviewPayload BuildEffectPreview(
             Bitmap source,
+            LockedFrameGrayCache grayCache,
             IList<DetectionRoi> regions,
             IList<int> boardIndices,
             IList<ViewportContourOverlay> matchedContours,
@@ -420,15 +422,16 @@ namespace NinePointRotationCalibration.Station.Views
             if (cancellationToken.IsCancellationRequested) return null;
 
             EffectPreviewPayload payload = new EffectPreviewPayload();
-            Bitmap combined = new Bitmap(source);
+            Bitmap combined = CloneToFastPArgb(source);
             payload.Image = combined;
+            List<BlobAnalysisResult> analyses = null;
             try
             {
                 IList<DetectionRoi> targetList = regions ?? new List<DetectionRoi>();
                 bool hasExplicitRegions = targetList.Count > 0;
-                IEnumerable<DetectionRoi> targets = hasExplicitRegions
-                    ? (IEnumerable<DetectionRoi>)targetList
-                    : new[]
+                IList<DetectionRoi> targets = hasExplicitRegions
+                    ? targetList
+                    : new List<DetectionRoi>
                     {
                         new DetectionRoi
                         {
@@ -444,35 +447,45 @@ namespace NinePointRotationCalibration.Station.Views
                     payload.EffectContours.AddRange(CloneContourList(matchedContours));
                 }
 
-                using (Graphics graphics = Graphics.FromImage(combined))
+                // 全链路单次灰度图复用 + 批量 ROI 分析：无论板数多少均仅转换 0~1 次图像，彻底消除逐板重复转换千万像素导致的卡顿
+                using (HalconGrayImage gray = grayCache == null
+                    ? HalconGrayImage.FromBitmap(source)
+                    : grayCache.Acquire(source))
                 {
-                    graphics.CompositingMode = CompositingMode.SourceCopy;
-                    graphics.InterpolationMode = InterpolationMode.NearestNeighbor;
-                    graphics.PixelOffsetMode = PixelOffsetMode.Half;
+                    analyses = _binaryAnalyzer.AnalyzeRoisDetailedNoThrow(
+                        gray, targets, profile, binaryEnabled, cancellationToken);
+                }
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    payload.Dispose();
+                    return null;
+                }
 
-                    int index = 0;
-                    foreach (DetectionRoi roi in targets)
+                Graphics graphics = binaryEnabled ? Graphics.FromImage(combined) : null;
+                try
+                {
+                    if (graphics != null)
+                    {
+                        graphics.CompositingMode = CompositingMode.SourceCopy;
+                        graphics.InterpolationMode = InterpolationMode.NearestNeighbor;
+                        graphics.PixelOffsetMode = PixelOffsetMode.Half;
+                    }
+
+                    for (int index = 0; index < targets.Count; index++)
                     {
                         if (cancellationToken.IsCancellationRequested)
                         {
                             payload.Dispose();
                             return null;
                         }
+                        DetectionRoi roi = targets[index];
+                        BlobAnalysisResult analysis = analyses != null && index < analyses.Count
+                            ? analyses[index]
+                            : null;
                         bool roiHasDefect = false;
-                        List<BlobAnalysisResult> analyses = _binaryAnalyzer.AnalyzeRoisDetailedNoThrow(
-                            source, new[] { roi }, profile, binaryEnabled, cancellationToken);
-                        if (cancellationToken.IsCancellationRequested)
+                        if (analysis != null)
                         {
-                            foreach (BlobAnalysisResult item in analyses)
-                            {
-                                if (item != null) item.Dispose();
-                            }
-                            payload.Dispose();
-                            return null;
-                        }
-                        using (BlobAnalysisResult analysis = analyses.Count > 0 ? analyses[0] : new BlobAnalysisResult { Roi = roi })
-                        {
-                            if (binaryEnabled &&
+                            if (graphics != null &&
                                 analysis.BinaryImage != null &&
                                 analysis.ImageBounds.Width > 0 &&
                                 analysis.ImageBounds.Height > 0)
@@ -542,9 +555,11 @@ namespace NinePointRotationCalibration.Station.Views
                                 LineWidth = selected ? 3.0F : 2.0F
                             });
                         }
-
-                        index++;
                     }
+                }
+                finally
+                {
+                    if (graphics != null) graphics.Dispose();
                 }
                 return payload;
             }
@@ -555,6 +570,27 @@ namespace NinePointRotationCalibration.Station.Views
                 if (cancellationToken.IsCancellationRequested) return null;
                 return new EffectPreviewPayload { ErrorMessage = exception.Message };
             }
+            finally
+            {
+                if (analyses != null)
+                {
+                    for (int i = 0; i < analyses.Count; i++)
+                    {
+                        if (analyses[i] != null) analyses[i].Dispose();
+                    }
+                }
+            }
+        }
+
+        private static Bitmap CloneToFastPArgb(Bitmap source)
+        {
+            Bitmap copy = new Bitmap(Math.Max(1, source.Width), Math.Max(1, source.Height), PixelFormat.Format32bppPArgb);
+            using (Graphics g = Graphics.FromImage(copy))
+            {
+                g.CompositingMode = CompositingMode.SourceCopy;
+                g.DrawImageUnscaled(source, 0, 0);
+            }
+            return copy;
         }
 
         private static GraphicsPath CreateRoiClipPath(DetectionRoi roi)
@@ -864,7 +900,7 @@ namespace NinePointRotationCalibration.Station.Views
             string modelHash = template == null ? string.Empty : (template.ModelHash ?? string.Empty);
             return string.Format(
                 CultureInfo.InvariantCulture,
-                "{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}|{8}|{9}|{10:0.####}|{11:0.####}|{12:0.####}|{13}|{14}|{15}|{16}",
+                "{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}|{8}|{9}|{10:0.####}|{11:0.####}|{12:0.####}|{13}|{14}|{15}|{16}|{17}",
                 generation,
                 overlayGeneration,
                 regionCount,
@@ -880,6 +916,7 @@ namespace NinePointRotationCalibration.Station.Views
                 safe.RectangleFillThreshold,
                 safe.RectangleFilterEnabled ? 1 : 0,
                 safe.FillHoles ? 1 : 0,
+                safe.FillDarkHoles ? 1 : 0,
                 safe.MorphologyRadius,
                 templateRevision + ":" + modelHash);
         }

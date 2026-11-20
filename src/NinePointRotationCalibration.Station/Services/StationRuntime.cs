@@ -1061,7 +1061,13 @@ namespace NinePointRotationCalibration.Station.Services
         /// <summary>供检测页实时效果图在后台定位检测 ROI 使用，不占用独占工作流门锁，且取消或失败时不向调用方抛异常。</summary>
         public TemplateMatchCollectionResult LocatePositioningForPreview(Bitmap image, int maximumMatches)
         {
-            if (_disposed || image == null) return null;
+            return LocatePositioningForPreview(image, null, maximumMatches);
+        }
+
+        /// <summary>复用当前锁定帧灰度缓存定位检测 ROI，避免检测页首次预览重复转换整幅高分辨率图像。</summary>
+        internal TemplateMatchCollectionResult LocatePositioningForPreview(Bitmap image, LockedFrameGrayCache frameCache, int maximumMatches)
+        {
+            if (_disposed || (image == null && frameCache == null)) return null;
 
             CalibrationJob job = GetPositioningJobSnapshot();
             if (job == null || job.Template == null || !job.Template.HasUsableModel)
@@ -1076,7 +1082,12 @@ namespace NinePointRotationCalibration.Station.Services
 
             try
             {
-                return _sdk.LocateAll(image, job, true);
+                using (HalconGrayImage gray = frameCache == null ? null : frameCache.Acquire(image))
+                {
+                    return gray != null
+                        ? _sdk.LocateAll(image, gray, job.Template, true)
+                        : _sdk.LocateAll(image, job, true);
+                }
             }
             catch (Exception exception)
             {
@@ -2121,6 +2132,7 @@ namespace NinePointRotationCalibration.Station.Services
                 RectangleFilterEnabled = source.RectangleFilterEnabled,
                 RectangleFillThreshold = source.RectangleFillThreshold,
                 FillHoles = source.FillHoles,
+                FillDarkHoles = source.FillDarkHoles,
                 MorphologyRadius = source.MorphologyRadius,
                 FollowTemplateTransform = source.FollowTemplateTransform,
                 TemplateMatchingEnabled = source.TemplateMatchingEnabled

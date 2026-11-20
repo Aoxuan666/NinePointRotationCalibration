@@ -736,6 +736,8 @@ namespace NinePointRotationCalibration.Station.Views
             profile.RectangleFilterEnabled = _view.RectangleFilterInput.Checked;
             profile.RectangleFillThreshold = ReadNumeric("nudRectangularity");
             profile.FillHoles = FindControl<CheckBox>("chkFillHoles").Checked;
+            CheckBox fillDarkHoles = FindControl<CheckBox>("chkFillDarkHoles");
+            profile.FillDarkHoles = fillDarkHoles == null || fillDarkHoles.Checked;
             profile.MorphologyRadius = Convert.ToInt32(
                 ReadNumeric("nudMorphologyRadius"), CultureInfo.InvariantCulture);
             profile.FollowTemplateTransform = FindControl<CheckBox>("chkRoiAffineWithTemplate").Checked;
@@ -756,7 +758,15 @@ namespace NinePointRotationCalibration.Station.Views
             FindControl<CheckBox>("chkDarkForeground").Checked = profile.DetectDarkForeground;
             FindControl<NumericUpDown>("nudBrightThreshold").Enabled = !profile.AutoThreshold;
             _view.RectangleFilterInput.Checked = profile.RectangleFilterEnabled;
-            FindControl<CheckBox>("chkFillHoles").Checked = profile.FillHoles;
+            CheckBox fillHoles = FindControl<CheckBox>("chkFillHoles");
+            fillHoles.Checked = profile.FillHoles;
+            fillHoles.Enabled = !profile.DetectDarkForeground;
+            CheckBox fillDarkHoles = FindControl<CheckBox>("chkFillDarkHoles");
+            if (fillDarkHoles != null)
+            {
+                fillDarkHoles.Checked = profile.FillDarkHoles;
+                fillDarkHoles.Enabled = profile.DetectDarkForeground;
+            }
             FindControl<CheckBox>("chkRoiAffineWithTemplate").Checked = profile.FollowTemplateTransform;
             _view.TemplateMatchingInput.Checked = profile.TemplateMatchingEnabled;
         }

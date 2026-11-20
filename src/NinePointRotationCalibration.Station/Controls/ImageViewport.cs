@@ -87,6 +87,8 @@ namespace NinePointRotationCalibration.Station.Controls
         private readonly List<ViewportContourOverlay> _contours = new List<ViewportContourOverlay>();
 
         private Bitmap _displayedImage;
+        private Bitmap _staticPreview;
+        private Bitmap _staticPreviewSource;
         private bool _displayedIsPooled;
         private Bitmap _pendingImage;
         private bool _pendingIsPooled;
@@ -299,6 +301,7 @@ namespace NinePointRotationCalibration.Station.Controls
                 _displayedImage = null;
                 _displayedIsPooled = false;
             }
+            DisposeStaticPreview();
             if (pending != null) pending.Dispose();
             if (reusable != null) reusable.Dispose();
             if (previous != null) previous.Dispose();
@@ -449,27 +452,48 @@ namespace NinePointRotationCalibration.Station.Controls
                 PointF origin;
                 if (!TryGetTransform(out scale, out origin)) return;
 
+                // 对千万像素静态检测/调试图在缩小时自动复用最长边 1600px 的 32bppPArgb 预降采样缓存，
+                // 保证缩放、平移与多板轮廓叠加流畅不卡顿，且不影响高帧率池化实时流。
+                Bitmap drawSource = image;
+                if (!_displayedIsPooled && Math.Max(image.Width, image.Height) > 1600)
+                {
+                    EnsureStaticPreview(image);
+                    if (_staticPreview != null)
+                    {
+                        float previewRatio = _staticPreview.Width / (float)image.Width;
+                        if (scale <= previewRatio * 1.02f)
+                        {
+                            drawSource = _staticPreview;
+                        }
+                    }
+                }
+
+                float scaleX = drawSource.Width / (float)image.Width;
+                float scaleY = drawSource.Height / (float)image.Height;
+                float effScaleX = scale / scaleX;
+                float effScaleY = scale / scaleY;
+
                 // 仅裁取当前视口可见的源图子区域并保持稳定的双线性/最近邻插值与 Half 像素偏移，
                 // 彻底消除缩放、平移以及高倍率放大时 GDI+ 坐标舍入与 Low 插值引起的图像抖动。
-                int srcLeft = Math.Max(0, (int)Math.Floor((-origin.X) / scale) - 1);
-                int srcTop = Math.Max(0, (int)Math.Floor((-origin.Y) / scale) - 1);
-                int srcRight = Math.Min(image.Width, (int)Math.Ceiling((ClientSize.Width - origin.X) / scale) + 1);
-                int srcBottom = Math.Min(image.Height, (int)Math.Ceiling((ClientSize.Height - origin.Y) / scale) + 1);
+                int srcLeft = Math.Max(0, (int)Math.Floor((-origin.X) / effScaleX) - 1);
+                int srcTop = Math.Max(0, (int)Math.Floor((-origin.Y) / effScaleY) - 1);
+                int srcRight = Math.Min(drawSource.Width, (int)Math.Ceiling((ClientSize.Width - origin.X) / effScaleX) + 1);
+                int srcBottom = Math.Min(drawSource.Height, (int)Math.Ceiling((ClientSize.Height - origin.Y) / effScaleY) + 1);
                 if (srcRight > srcLeft && srcBottom > srcTop)
                 {
                     RectangleF srcRect = new RectangleF(srcLeft, srcTop, srcRight - srcLeft, srcBottom - srcTop);
                     RectangleF dstRect = new RectangleF(
-                        origin.X + (srcLeft * scale),
-                        origin.Y + (srcTop * scale),
-                        (srcRight - srcLeft) * scale,
-                        (srcBottom - srcTop) * scale);
+                        origin.X + (srcLeft * effScaleX),
+                        origin.Y + (srcTop * effScaleY),
+                        (srcRight - srcLeft) * effScaleX,
+                        (srcBottom - srcTop) * effScaleY);
 
                     e.Graphics.InterpolationMode = scale >= 2.0f
                         ? InterpolationMode.NearestNeighbor
                         : InterpolationMode.Bilinear;
                     e.Graphics.PixelOffsetMode = PixelOffsetMode.Half;
                     e.Graphics.CompositingMode = CompositingMode.SourceCopy;
-                    e.Graphics.DrawImage(image, dstRect, srcRect, GraphicsUnit.Pixel);
+                    e.Graphics.DrawImage(drawSource, dstRect, srcRect, GraphicsUnit.Pixel);
                     e.Graphics.CompositingMode = CompositingMode.SourceOver;
                 }
 
@@ -593,12 +617,51 @@ namespace NinePointRotationCalibration.Station.Controls
                     _displayedIsPooled = false;
                     _presentScheduled = false;
                 }
+                DisposeStaticPreview();
                 if (pending != null) pending.Dispose();
                 if (reusable != null) reusable.Dispose();
                 if (displayed != null) displayed.Dispose();
             }
 
             base.Dispose(disposing);
+        }
+
+        private void EnsureStaticPreview(Bitmap source)
+        {
+            if (ReferenceEquals(_staticPreviewSource, source) && _staticPreview != null) return;
+            DisposeStaticPreview();
+            const int maximumDimension = 1600;
+            int maxDim = Math.Max(source.Width, source.Height);
+            if (maxDim <= maximumDimension) return;
+            double ratio = (double)maximumDimension / maxDim;
+            int w = Math.Max(1, (int)Math.Round(source.Width * ratio));
+            int h = Math.Max(1, (int)Math.Round(source.Height * ratio));
+            Bitmap preview = new Bitmap(w, h, PixelFormat.Format32bppPArgb);
+            using (Graphics g = Graphics.FromImage(preview))
+            {
+                g.CompositingMode = CompositingMode.SourceCopy;
+                g.CompositingQuality = CompositingQuality.HighSpeed;
+                g.SmoothingMode = SmoothingMode.None;
+                g.PixelOffsetMode = PixelOffsetMode.Half;
+                g.InterpolationMode = InterpolationMode.Bilinear;
+                g.DrawImage(
+                    source,
+                    new Rectangle(0, 0, w, h),
+                    new Rectangle(0, 0, source.Width, source.Height),
+                    GraphicsUnit.Pixel);
+            }
+            _staticPreview = preview;
+            _staticPreviewSource = source;
+        }
+
+        private void DisposeStaticPreview()
+        {
+            _staticPreviewSource = null;
+            if (_staticPreview != null)
+            {
+                _staticPreview.Dispose();
+                _staticPreview = null;
+            }
         }
 
         private static Bitmap CloneToDisplayFormat(Bitmap source)
@@ -839,6 +902,7 @@ namespace NinePointRotationCalibration.Station.Controls
                         }
                     }
                 }
+                DisposeStaticPreview();
                 if (toDispose != null) toDispose.Dispose();
                 RaiseImageAvailabilityChanged(true);
                 if (previousSize != next.Size) FitImage();
@@ -890,15 +954,29 @@ namespace NinePointRotationCalibration.Station.Controls
                 contours = new List<ViewportContourOverlay>(_contours);
             }
 
-            graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            graphics.SmoothingMode = _isPanning ? SmoothingMode.None : SmoothingMode.AntiAlias;
             foreach (ViewportRoiOverlay roi in rois)
             {
                 DrawRoi(graphics, roi, scale, origin);
             }
 
-            foreach (ViewportContourOverlay contour in contours)
+            if (contours.Count > 0)
             {
-                DrawContour(graphics, contour, scale, origin);
+                // 按颜色与线宽复用 Pen/Brush，避免多板检测产生数百条轮廓时每帧重复创建销毁数百个 GDI+ 句柄
+                Dictionary<long, Pen> penCache = new Dictionary<long, Pen>();
+                Dictionary<int, SolidBrush> brushCache = new Dictionary<int, SolidBrush>();
+                try
+                {
+                    for (int i = 0; i < contours.Count; i++)
+                    {
+                        DrawContour(graphics, contours[i], scale, origin, penCache, brushCache);
+                    }
+                }
+                finally
+                {
+                    foreach (Pen pen in penCache.Values) pen.Dispose();
+                    foreach (SolidBrush brush in brushCache.Values) brush.Dispose();
+                }
             }
 
             foreach (ViewportPointOverlay point in points)
@@ -960,9 +1038,15 @@ namespace NinePointRotationCalibration.Station.Controls
             Graphics graphics,
             ViewportContourOverlay contour,
             float scale,
-            PointF origin)
+            PointF origin,
+            Dictionary<long, Pen> penCache,
+            Dictionary<int, SolidBrush> brushCache)
         {
             if (contour == null || contour.Points == null || contour.Points.Count == 0) return;
+
+            float maxX = ClientSize.Width + 8.0f;
+            float maxY = ClientSize.Height + 8.0f;
+            bool anyVisible = false;
 
             // 对超长轮廓按步长抽稀并剔除屏幕距离过近(小于 0.8px)的冗余点，限制单轮廓最多绘制约 5000 点
             List<PointF> display = new List<PointF>(Math.Min(contour.Points.Count, 5000));
@@ -972,6 +1056,10 @@ namespace NinePointRotationCalibration.Station.Controls
             for (int index = 0; index < contour.Points.Count; index += stride)
             {
                 PointF next = Transform(contour.Points[index], scale, origin);
+                if (!anyVisible && next.X >= -8.0f && next.X <= maxX && next.Y >= -8.0f && next.Y <= maxY)
+                {
+                    anyVisible = true;
+                }
                 if (hasPrevious)
                 {
                     float dx = next.X - previous.X;
@@ -982,22 +1070,33 @@ namespace NinePointRotationCalibration.Station.Controls
                 previous = next;
                 hasPrevious = true;
             }
+            if (!anyVisible) return;
 
+            int argb = contour.Color.ToArgb();
+            SolidBrush brush;
+            if (!brushCache.TryGetValue(argb, out brush))
+            {
+                brush = new SolidBrush(contour.Color);
+                brushCache[argb] = brush;
+            }
             if (display.Count == 1)
             {
-                using (SolidBrush brush = new SolidBrush(contour.Color))
-                    graphics.FillEllipse(brush, display[0].X - 1.5f, display[0].Y - 1.5f, 3.0f, 3.0f);
+                graphics.FillEllipse(brush, display[0].X - 1.5f, display[0].Y - 1.5f, 3.0f, 3.0f);
                 return;
             }
             if (display.Count < 2) return;
 
-            using (Pen pen = new Pen(contour.Color, Math.Max(1.0f, contour.LineWidth)))
-            using (SolidBrush brush = new SolidBrush(contour.Color))
+            float lineWidth = Math.Max(1.0f, contour.LineWidth);
+            long penKey = (((long)argb) << 20) | (uint)(int)Math.Round(lineWidth * 100.0f);
+            Pen pen;
+            if (!penCache.TryGetValue(penKey, out pen))
             {
-                graphics.DrawLines(pen, display.ToArray());
-                if (!string.IsNullOrWhiteSpace(contour.Label))
-                    graphics.DrawString(contour.Label, Font, brush, display[0].X + 4.0f, display[0].Y + 4.0f);
+                pen = new Pen(contour.Color, lineWidth);
+                penCache[penKey] = pen;
             }
+            graphics.DrawLines(pen, display.ToArray());
+            if (!string.IsNullOrWhiteSpace(contour.Label))
+                graphics.DrawString(contour.Label, Font, brush, display[0].X + 4.0f, display[0].Y + 4.0f);
         }
 
         private static PointF Transform(PointF imagePoint, float scale, PointF origin)

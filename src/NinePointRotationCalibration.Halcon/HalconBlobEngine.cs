@@ -2,7 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
+using System.Drawing.Imaging;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Threading;
 using HalconDotNet;
 
@@ -23,6 +25,12 @@ namespace NinePointRotationCalibration.Halcon
     /// <summary>Blob 分割、形态学与形状过滤参数。</summary>
     public sealed class HalconBlobParameters
     {
+        public HalconBlobParameters()
+        {
+            FillHoles = true;
+            FillDarkHoles = true;
+        }
+
         public bool AutoThreshold { get; set; }
         public bool DetectDarkForeground { get; set; }
         public int Threshold { get; set; }
@@ -31,6 +39,8 @@ namespace NinePointRotationCalibration.Halcon
         public bool RectangleFilterEnabled { get; set; }
         public double RectangleFillThreshold { get; set; }
         public bool FillHoles { get; set; }
+        /// <summary>检测暗目标（黑色叉/黑点）时是否填充黑色目标内部空洞。</summary>
+        public bool FillDarkHoles { get; set; }
         public int MorphologyRadius { get; set; }
     }
 
@@ -227,7 +237,10 @@ namespace NinePointRotationCalibration.Halcon
                 if (CancellationRequested(cancellationToken, throwOnCancellation))
                     return null;
                 Stopwatch fillWatch = Stopwatch.StartNew();
-                filled = parameters.FillHoles ? morphed.FillUp() : new HRegion(morphed);
+                bool shouldFillHoles = parameters.DetectDarkForeground
+                    ? parameters.FillDarkHoles
+                    : parameters.FillHoles;
+                filled = shouldFillHoles ? morphed.FillUp() : new HRegion(morphed);
                 fillWatch.Stop();
                 result.HoleFillElapsedMilliseconds = fillWatch.Elapsed.TotalMilliseconds;
 
@@ -317,31 +330,88 @@ namespace NinePointRotationCalibration.Halcon
             Rectangle bounds,
             bool detectDarkForeground)
         {
-            using (HImage black = new HImage())
+            // 直接按 HALCON 区域行程（Runs）写入 8bpp 灰度位图，省去临时 HImage 构造、PaintRegion 与千万级字节中间数组分配
+            int width = Math.Max(1, bounds.Width);
+            int height = Math.Max(1, bounds.Height);
+            byte bgByte = detectDarkForeground ? (byte)255 : (byte)0;
+            byte fgByte = detectDarkForeground ? (byte)0 : (byte)255;
+
+            Bitmap bitmap = new Bitmap(width, height, PixelFormat.Format8bppIndexed);
+            ColorPalette palette = bitmap.Palette;
+            for (int index = 0; index < palette.Entries.Length; index++)
+                palette.Entries[index] = Color.FromArgb(index, index, index);
+            bitmap.Palette = palette;
+
+            byte[] bgRow = new byte[width];
+            byte[] fgRow = new byte[width];
+            if (bgByte != 0)
+                for (int i = 0; i < width; i++) bgRow[i] = bgByte;
+            if (fgByte != 0)
+                for (int i = 0; i < width; i++) fgRow[i] = fgByte;
+
+            BitmapData data = null;
+            HTuple runRows = null;
+            HTuple colBegins = null;
+            HTuple colEnds = null;
+            try
             {
-                black.GenImageConst("byte", bounds.Width, bounds.Height);
-                HImage background = null;
-                HImage painted = null;
-                try
+                data = bitmap.LockBits(
+                    new Rectangle(0, 0, width, height),
+                    ImageLockMode.WriteOnly,
+                    PixelFormat.Format8bppIndexed);
+                int stride = Math.Abs(data.Stride);
+                for (int y = 0; y < height; y++)
                 {
-                    background = detectDarkForeground
-                        ? black.ScaleImage(0.0, 255.0)
-                        : black.CopyImage();
-                    // 将整图坐标下的前景区域平移到 ROI 局部裁剪坐标系后再填充绘制二值图。
-                    using (HRegion local = foreground.MoveRegion(-bounds.Top, -bounds.Left))
+                    IntPtr rowPtr = data.Stride >= 0
+                        ? IntPtr.Add(data.Scan0, y * data.Stride)
+                        : IntPtr.Add(data.Scan0, (height - 1 - y) * stride);
+                    Marshal.Copy(bgRow, 0, rowPtr, width);
+                }
+
+                foreground.GetRegionRuns(out runRows, out colBegins, out colEnds);
+                int count = Math.Min(runRows.Length, Math.Min(colBegins.Length, colEnds.Length));
+                if (count > 0)
+                {
+                    int[] rowsArr = runRows.ToIArr();
+                    int[] beginArr = colBegins.ToIArr();
+                    int[] endArr = colEnds.ToIArr();
+                    int top = bounds.Top;
+                    int left = bounds.Left;
+                    for (int i = 0; i < count; i++)
                     {
-                        painted = local.PaintRegion(
-                            background,
-                            detectDarkForeground ? 0.0 : 255.0,
-                            "fill");
+                        int localY = rowsArr[i] - top;
+                        if (localY < 0 || localY >= height) continue;
+                        int startX = beginArr[i] - left;
+                        int endX = endArr[i] - left;
+                        if (endX < 0 || startX >= width) continue;
+                        if (startX < 0) startX = 0;
+                        if (endX >= width) endX = width - 1;
+                        int len = endX - startX + 1;
+                        if (len <= 0) continue;
+                        IntPtr rowPtr = data.Stride >= 0
+                            ? IntPtr.Add(data.Scan0, localY * data.Stride + startX)
+                            : IntPtr.Add(data.Scan0, (height - 1 - localY) * stride + startX);
+                        Marshal.Copy(fgRow, 0, rowPtr, len);
                     }
-                    return HalconImageConverter.ToGrayBitmap(painted);
                 }
-                finally
+                return bitmap;
+            }
+            catch
+            {
+                if (data != null)
                 {
-                    if (painted != null) painted.Dispose();
-                    if (background != null) background.Dispose();
+                    bitmap.UnlockBits(data);
+                    data = null;
                 }
+                bitmap.Dispose();
+                throw;
+            }
+            finally
+            {
+                if (runRows != null) runRows.Dispose();
+                if (colBegins != null) colBegins.Dispose();
+                if (colEnds != null) colEnds.Dispose();
+                if (data != null) bitmap.UnlockBits(data);
             }
         }
 

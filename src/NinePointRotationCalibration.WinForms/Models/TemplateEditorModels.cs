@@ -262,6 +262,44 @@ namespace NinePointRotationCalibration.WinForms.Models
                 .ToList();
             return clone;
         }
+
+        /// <summary>
+        /// 创建撤销/重做栈使用的轻量快照：复用不可变的模型字节数组与已提交掩膜项引用，
+        /// 跳过数万特征点与轮廓列表的深拷贝，消除高频掩膜涂抹导致的内存膨胀与 GC 卡顿。
+        /// </summary>
+        public TemplateEditorState CloneForUndo()
+        {
+            TemplateEditorState clone = new TemplateEditorState
+            {
+                TemplateRoi = TemplateRoi == null ? null : TemplateRoi.DeepClone(),
+                SearchRoi = SearchRoi == null ? null : SearchRoi.DeepClone(),
+                DetectionRoi = DetectionRoi == null ? null : DetectionRoi.DeepClone(),
+                ReferenceAnchor = ReferenceAnchor,
+                AnchorLocked = AnchorLocked,
+                TemplateRoiLocked = TemplateRoiLocked,
+                SearchRoiLocked = SearchRoiLocked,
+                MaskVisible = MaskVisible,
+                MaskInverted = MaskInverted,
+                Parameters = Parameters == null ? new TemplateEditorParameters() : Parameters.DeepClone(),
+                ModelData = ModelData,
+                ModelFormat = ModelFormat,
+                ModelHash = ModelHash,
+                DomainCenter = DomainCenter,
+                ModelReferencePosition = ModelReferencePosition,
+                ModelReferenceAngleDegrees = ModelReferenceAngleDegrees,
+                ReferenceImageWidth = ReferenceImageWidth,
+                ReferenceImageHeight = ReferenceImageHeight,
+                HalconVersion = HalconVersion,
+                Revision = Revision,
+                ModelDirty = ModelDirty,
+                FeaturePoints = new List<ImageCoordinate>(),
+                ModelContours = new List<List<ImageCoordinate>>(),
+                MaskStrokes = MaskStrokes == null
+                    ? new List<MaskStroke>()
+                    : new List<MaskStroke>(MaskStrokes)
+            };
+            return clone;
+        }
     }
 
     /// <summary>

@@ -33,6 +33,7 @@ namespace NinePointRotationCalibration.Station.Views
         private readonly HashSet<Task> _runningTasks = new HashSet<Task>();
 
         private CancellationTokenSource _previewCancellation;
+        private HalconGrayImage _cachedGrayImage;
         private TemplateMatchCollectionResult _cachedMatches;
         private DetectionProfile _appliedProfile;
         private int _previewGeneration;
@@ -49,7 +50,7 @@ namespace NinePointRotationCalibration.Station.Views
         {
             if (sourceImage == null) throw new ArgumentNullException(nameof(sourceImage));
 
-            _sourceImage = CloneTo24Bpp(sourceImage);
+            _sourceImage = CloneToFastPArgb(sourceImage);
             _positioningJob = positioningJob == null ? null : positioningJob.DeepClone();
             _maximumMatches = Math.Max(0, maximumMatches);
             _appliedProfile = CloneProfile(profile);
@@ -95,6 +96,7 @@ namespace NinePointRotationCalibration.Station.Views
             nudRectangularity.ValueChanged += ParameterControl_Changed;
             nudMorphologyRadius.ValueChanged += ParameterControl_Changed;
             chkFillHoles.CheckedChanged += ParameterControl_Changed;
+            chkFillDarkHoles.CheckedChanged += ParameterControl_Changed;
             chkAutoThreshold.CheckedChanged += ParameterControl_Changed;
             chkDarkForeground.CheckedChanged += ParameterControl_Changed;
             foreach (NumericUpDown input in new[]
@@ -323,10 +325,13 @@ namespace NinePointRotationCalibration.Station.Views
                 List<TemplateMatchResult> matches = new List<TemplateMatchResult>();
                 try
                 {
+                    // 调试期间源图恒定不变，仅首次转换一次 HALCON 灰度图并复用，使后续每次调参达到 0ms 图像转换开销
+                    HalconGrayImage gray = EnsureCachedGrayImage();
+                    if (cancellationToken.IsCancellationRequested) return null;
                     if (profile.TemplateMatchingEnabled)
                     {
                         string locateError;
-                        TemplateMatchCollectionResult located = EnsureTemplateMatches(cancellationToken, out locateError);
+                        TemplateMatchCollectionResult located = EnsureTemplateMatches(gray, cancellationToken, out locateError);
                         if (cancellationToken.IsCancellationRequested) return null;
                         if (!string.IsNullOrWhiteSpace(locateError))
                         {
@@ -354,7 +359,7 @@ namespace NinePointRotationCalibration.Station.Views
                                 match,
                                 profile)).ToList();
                         analyses.AddRange(_blobAnalyzer.AnalyzeRoisDetailedNoThrow(
-                            _sourceImage,
+                            gray,
                             rois,
                             profile,
                             true,
@@ -366,7 +371,7 @@ namespace NinePointRotationCalibration.Station.Views
                             ? null
                             : _positioningJob.Template;
                         analyses.Add(_blobAnalyzer.AnalyzeDirectDetailedNoThrow(
-                            _sourceImage,
+                            gray,
                             template,
                             profile,
                             true,
@@ -396,7 +401,17 @@ namespace NinePointRotationCalibration.Station.Views
             }
         }
 
+        private HalconGrayImage EnsureCachedGrayImage()
+        {
+            if (_cachedGrayImage == null)
+            {
+                _cachedGrayImage = HalconGrayImage.FromBitmap(_sourceImage);
+            }
+            return _cachedGrayImage;
+        }
+
         private TemplateMatchCollectionResult EnsureTemplateMatches(
+            HalconGrayImage gray,
             CancellationToken cancellationToken,
             out string errorMessage)
         {
@@ -413,7 +428,7 @@ namespace NinePointRotationCalibration.Station.Views
             if (locateJob.Template.MatchParameters != null)
                 locateJob.Template.MatchParameters.NumMatches = _maximumMatches;
 
-            TemplateMatchCollectionResult result = _sdk.LocateAll(_sourceImage, locateJob, false);
+            TemplateMatchCollectionResult result = _sdk.LocateAll(_sourceImage, gray, locateJob.Template, false);
             if (result == null || !result.Success)
             {
                 errorMessage = result == null || string.IsNullOrWhiteSpace(result.Message)
@@ -734,6 +749,7 @@ namespace NinePointRotationCalibration.Station.Views
                 chkFollowTemplateTransform.Checked = value.FollowTemplateTransform;
                 chkRectangleFilter.Checked = value.RectangleFilterEnabled;
                 chkFillHoles.Checked = value.FillHoles;
+                chkFillDarkHoles.Checked = value.FillDarkHoles;
                 chkAutoThreshold.Checked = value.AutoThreshold;
                 chkDarkForeground.Checked = value.DetectDarkForeground;
                 SetNumericValue(nudBrightThreshold, value.BrightThreshold);
@@ -771,6 +787,7 @@ namespace NinePointRotationCalibration.Station.Views
                 RectangleFilterEnabled = chkRectangleFilter.Checked,
                 RectangleFillThreshold = Decimal.ToDouble(nudRectangularity.Value),
                 FillHoles = chkFillHoles.Checked,
+                FillDarkHoles = chkFillDarkHoles.Checked,
                 MorphologyRadius = Decimal.ToInt32(nudMorphologyRadius.Value)
             };
             return true;
@@ -781,6 +798,8 @@ namespace NinePointRotationCalibration.Station.Views
             chkFollowTemplateTransform.Enabled = chkTemplateMatchingEnabled.Checked;
             nudRectangularity.Enabled = chkRectangleFilter.Checked;
             nudBrightThreshold.Enabled = !chkAutoThreshold.Checked;
+            chkFillHoles.Enabled = !chkDarkForeground.Checked;
+            chkFillDarkHoles.Enabled = chkDarkForeground.Checked;
             string polarity = chkDarkForeground.Checked ? "白底黑点" : "黑底白点";
             lblModeStatus.Text = (chkTemplateMatchingEnabled.Checked
                 ? "模板匹配 + 检测 ROI"
@@ -870,14 +889,17 @@ namespace NinePointRotationCalibration.Station.Views
             control.Value = converted;
         }
 
-        private static Bitmap CloneTo24Bpp(Bitmap source)
+        private static Bitmap CloneToFastPArgb(Bitmap source)
         {
             Bitmap result = new Bitmap(
                 Math.Max(1, source.Width),
                 Math.Max(1, source.Height),
-                PixelFormat.Format24bppRgb);
+                PixelFormat.Format32bppPArgb);
             using (Graphics graphics = Graphics.FromImage(result))
+            {
+                graphics.CompositingMode = CompositingMode.SourceCopy;
                 graphics.DrawImageUnscaled(source, 0, 0);
+            }
             return result;
         }
 
@@ -897,6 +919,7 @@ namespace NinePointRotationCalibration.Station.Views
                 RectangleFilterEnabled = value.RectangleFilterEnabled,
                 RectangleFillThreshold = value.RectangleFillThreshold,
                 FillHoles = value.FillHoles,
+                FillDarkHoles = value.FillDarkHoles,
                 MorphologyRadius = value.MorphologyRadius
             };
         }
@@ -942,6 +965,11 @@ namespace NinePointRotationCalibration.Station.Views
         private void DisposeAnalysisResources()
         {
             if (Interlocked.Exchange(ref _resourcesDisposed, 1) != 0) return;
+            if (_cachedGrayImage != null)
+            {
+                _cachedGrayImage.Dispose();
+                _cachedGrayImage = null;
+            }
             _sdk.Dispose();
             _sourceImage.Dispose();
             _analysisGate.Dispose();

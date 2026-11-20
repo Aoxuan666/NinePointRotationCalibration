@@ -38,6 +38,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
         private readonly Button _invertMaskButton;
         private readonly Button _clearMaskButton;
         private readonly System.Windows.Forms.Timer _autoPreviewTimer;
+        private readonly System.Windows.Forms.Timer _maskSyncTimer;
         private readonly TabControl _parameterTabs;
         private readonly CheckBox _teachAdvancedToggle;
         private readonly CheckBox _matchAdvancedToggle;
@@ -96,6 +97,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
         private List<List<ImageCoordinate>> _unmaskedBaseContours = new List<List<ImageCoordinate>>();
         private RotatedRectangle _unmaskedBaseRoi;
         private List<ImageCoordinate> _committedVisiblePoints = new List<ImageCoordinate>();
+        private readonly List<CanvasPointOverlay> _overlayPointPool = new List<CanvasPointOverlay>();
         private int _lastMaskPreviewFilterTick;
         private CancellationTokenSource _operationCancellation;
         private CancellationTokenSource _autoPreviewCancellation;
@@ -147,12 +149,14 @@ namespace NinePointRotationCalibration.WinForms.Forms
             _canvas = new CalibrationCanvas { Dock = DockStyle.Fill };
             _autoPreviewTimer = new System.Windows.Forms.Timer { Interval = 40 };
             _autoPreviewTimer.Tick += AutoPreviewTimer_Tick;
+            _maskSyncTimer = new System.Windows.Forms.Timer { Interval = 350 };
+            _maskSyncTimer.Tick += MaskSyncTimer_Tick;
 
             _undoButton = CreateToolButton("撤销", "撤销上一步模板编辑", UndoEdit);
             _redoButton = CreateToolButton("重做", "重做刚才撤销的模板编辑", RedoEdit);
-            _addTemplateRoiButton = CreatePanelToggleButton("模板", (sender, args) => AddOrSelectRoi(CanvasRoiTarget.Template));
-            _addSearchRoiButton = CreatePanelToggleButton("搜索", (sender, args) => AddOrSelectRoi(CanvasRoiTarget.Search));
-            _addDetectionRoiButton = CreatePanelToggleButton("检测", (sender, args) => AddOrSelectRoi(CanvasRoiTarget.Detection));
+            _addTemplateRoiButton = CreatePanelToggleButton("添加模板ROI", (sender, args) => AddOrSelectRoi(CanvasRoiTarget.Template));
+            _addSearchRoiButton = CreatePanelToggleButton("添加搜索ROI", (sender, args) => AddOrSelectRoi(CanvasRoiTarget.Search));
+            _addDetectionRoiButton = CreatePanelToggleButton("添加检测ROI", (sender, args) => AddOrSelectRoi(CanvasRoiTarget.Detection));
             _moveAnchorToolButton = CreatePanelToggleButton("移动中心", (sender, args) => ActivateMoveAnchorTool());
             _deleteRoiButton = CreatePanelToggleButton("删除", (sender, args) => DeleteSelectedRoi());
             _deleteRoiButton.ForeColor = Color.Firebrick;
@@ -262,7 +266,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
             SetStatus(Service == null
                 ? "尚未注入模板服务；可编辑已有模板，提取/建模/测试暂不可用。"
                 : _state.TemplateRoi == null
-                    ? "默认无 ROI：请点击右侧「模板」「搜索」「检测」按钮添加或切换 ROI。"
+                    ? "默认无 ROI：请点击右侧「添加模板ROI」「添加搜索ROI」「添加检测ROI」按钮添加或切换 ROI。"
                     : "已加载模板 ROI，拖动或调参时将自动实时刷新特征点。", false);
             Shown += HandleFirstShown;
         }
@@ -351,6 +355,8 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 CancelAutoPreview();
                 _autoPreviewTimer.Stop();
                 _autoPreviewTimer.Dispose();
+                _maskSyncTimer.Stop();
+                _maskSyncTimer.Dispose();
 
                 if (_previewImageHolder != null)
                 {
@@ -384,6 +390,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
         {
             _closing = true;
             _autoPreviewTimer.Stop();
+            _maskSyncTimer.Stop();
             CancelAutoPreview();
             if (_busy && eventArgs.CloseReason == CloseReason.UserClosing)
             {
@@ -728,7 +735,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
             operationLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100.0f));
             Label flowHelp = new Label
             {
-                Text = "推荐流程：点击「模板」添加模板 ROI → 自动显示特征 → 框选/涂抹掩膜或调整「移动中心」→ 测试匹配或确认。",
+                Text = "推荐流程：点击「添加模板ROI」→ 自动显示特征 → 框选/涂抹掩膜或调整「移动中心」→ 测试匹配或确认。",
                 AutoSize = true,
                 ForeColor = Color.DimGray,
                 Padding = new Padding(0, 2, 0, 8)
@@ -970,10 +977,52 @@ namespace NinePointRotationCalibration.WinForms.Forms
 
         private void CanvasMaskStrokeCreated(object sender, MaskStrokeEventArgs eventArgs)
         {
-            _state.MaskStrokes.Add(eventArgs.Stroke);
-            ApplyInstantMaskFilter(null);
+            MaskStroke stroke = eventArgs.Stroke;
+            _state.MaskStrokes.Add(stroke);
+            // 新增擦除掩膜且未反选时，直接对当前已可见特征点做 O(P_vis) 单块增量剔除，
+            // 无论历史累计多少画笔/区域掩膜均保持 <1ms 恒定耗时，彻底消除掩膜越多越卡的问题。
+            if (stroke != null && stroke.IsValid && stroke.IsErase && !_state.MaskInverted &&
+                _committedVisiblePoints != null && _committedVisiblePoints.Count > 0)
+            {
+                ApplyIncrementalEraseMask(stroke);
+            }
+            else
+            {
+                ApplyInstantMaskFilter(null);
+            }
             MarkChanged(true);
-            RequestAutoFeaturePreview(false);
+            ScheduleDebouncedMaskSync();
+        }
+
+        private void ApplyIncrementalEraseMask(MaskStroke eraseMask)
+        {
+            double minRow, maxRow, minCol, maxCol;
+            if (!eraseMask.TryGetBounds(out minRow, out maxRow, out minCol, out maxCol))
+            {
+                return;
+            }
+
+            CanvasRuntimeOverlay overlay = _canvas.EditorOverlay ?? new CanvasRuntimeOverlay();
+            List<CanvasPointOverlay> overlayPoints = overlay.Points;
+            overlayPoints.Clear();
+            int write = 0;
+            for (int i = 0; i < _committedVisiblePoints.Count; i++)
+            {
+                ImageCoordinate pt = _committedVisiblePoints[i];
+                if (pt.Row >= minRow && pt.Row <= maxRow && pt.Column >= minCol && pt.Column <= maxCol &&
+                    MaskGeometry.IsPointInsideMask(pt, eraseMask))
+                {
+                    continue;
+                }
+                _committedVisiblePoints[write] = pt;
+                overlayPoints.Add(AcquireOverlayPoint(write, pt, Color.Lime));
+                write++;
+            }
+            if (write < _committedVisiblePoints.Count)
+            {
+                _committedVisiblePoints.RemoveRange(write, _committedVisiblePoints.Count - write);
+            }
+            _canvas.Invalidate();
         }
 
         private void CanvasMaskPreviewChanged(object sender, MaskPreviewEventArgs eventArgs)
@@ -1015,14 +1064,17 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 return;
             }
 
-            // 矩形/圆形区域掩膜拖拽期间：按 33ms 节流并仅用单块 activeMask 过滤已提交可见点集，
-            // 避免每帧 mousemove 重复遍历历史掩膜栈，确保区域掩膜拖拽完全流畅不卡顿。
+            // 矩形/圆形/多边形区域掩膜预览期间：按 33ms 节流并仅用单块 activeMask 过滤已提交可见点集，
+            // 原地复用点对象池避免堆分配，确保多掩膜叠加拖拽零卡顿。
             if (eventArgs.ActiveMask != null &&
-                (eventArgs.ActiveMask.Kind == MaskShapeKind.Rectangle || eventArgs.ActiveMask.Kind == MaskShapeKind.Circle) &&
+                (eventArgs.ActiveMask.Kind == MaskShapeKind.Rectangle ||
+                 eventArgs.ActiveMask.Kind == MaskShapeKind.Circle ||
+                 eventArgs.ActiveMask.Kind == MaskShapeKind.Polygon) &&
                 !_state.MaskInverted && _committedVisiblePoints != null && _committedVisiblePoints.Count > 0)
             {
                 int now = Environment.TickCount;
-                if (unchecked(now - _lastMaskPreviewFilterTick) < 33)
+                if (eventArgs.ActiveMask.Kind != MaskShapeKind.Polygon &&
+                    unchecked(now - _lastMaskPreviewFilterTick) < 33)
                 {
                     return;
                 }
@@ -1031,42 +1083,46 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 return;
             }
 
+            // 恢复画笔或反选掩膜拖动期间同样按 33ms 节流，防止高频 mousemove 堆积 UI 线程
+            if (eventArgs.ActiveMask != null && eventArgs.ActiveMask.Kind == MaskShapeKind.Brush)
+            {
+                int now = Environment.TickCount;
+                if (unchecked(now - _lastMaskPreviewFilterTick) < 33)
+                {
+                    return;
+                }
+                _lastMaskPreviewFilterTick = now;
+            }
+
             ApplyInstantMaskFilter(eventArgs.ActiveMask);
         }
 
         private void FilterCommittedPointsBySingleMask(MaskStroke activeMask)
         {
-            CanvasRuntimeOverlay overlay = new CanvasRuntimeOverlay();
-            if (activeMask.Kind == MaskShapeKind.Rectangle && activeMask.Rectangle != null)
+            double minRow, maxRow, minCol, maxCol;
+            if (activeMask == null || !activeMask.TryGetBounds(out minRow, out maxRow, out minCol, out maxCol))
             {
-                RectangleF bounds = activeMask.Rectangle.GetAxisAlignedBounds();
-                for (int i = 0; i < _committedVisiblePoints.Count; i++)
-                {
-                    ImageCoordinate pt = _committedVisiblePoints[i];
-                    if (pt.Column >= bounds.Left && pt.Column <= bounds.Right &&
-                        pt.Row >= bounds.Top && pt.Row <= bounds.Bottom &&
-                        activeMask.Rectangle.Contains(pt))
-                    {
-                        continue;
-                    }
-                    AddPreviewPoint(overlay, pt, Color.Lime);
-                }
+                return;
             }
-            else if (activeMask.Kind == MaskShapeKind.Circle)
+
+            CanvasRuntimeOverlay overlay = _canvas.EditorOverlay ?? new CanvasRuntimeOverlay();
+            List<CanvasPointOverlay> overlayPoints = overlay.Points;
+            overlayPoints.Clear();
+            int poolIndex = 0;
+            for (int i = 0; i < _committedVisiblePoints.Count; i++)
             {
-                double cr = activeMask.Center.Row;
-                double cc = activeMask.Center.Column;
-                double r2 = activeMask.Radius * activeMask.Radius;
-                for (int i = 0; i < _committedVisiblePoints.Count; i++)
+                ImageCoordinate pt = _committedVisiblePoints[i];
+                if (pt.Row >= minRow && pt.Row <= maxRow && pt.Column >= minCol && pt.Column <= maxCol &&
+                    MaskGeometry.IsPointInsideMask(pt, activeMask))
                 {
-                    ImageCoordinate pt = _committedVisiblePoints[i];
-                    double dr = pt.Row - cr;
-                    double dc = pt.Column - cc;
-                    if ((dr * dr) + (dc * dc) <= r2) continue;
-                    AddPreviewPoint(overlay, pt, Color.Lime);
+                    continue;
                 }
+                overlayPoints.Add(AcquireOverlayPoint(poolIndex++, pt, Color.Lime));
             }
-            _canvas.EditorOverlay = overlay;
+            if (!ReferenceEquals(_canvas.EditorOverlay, overlay))
+            {
+                _canvas.EditorOverlay = overlay;
+            }
         }
 
         private void ApplyInstantMaskFilter(MaskStroke activePreview)
@@ -1075,11 +1131,14 @@ namespace NinePointRotationCalibration.WinForms.Forms
             IEnumerable<List<ImageCoordinate>> sourceContours = GetMaskFilterSourceContours();
             if (sourceContours == null) return;
 
-            CanvasRuntimeOverlay overlay = new CanvasRuntimeOverlay();
+            CanvasRuntimeOverlay overlay = _canvas.EditorOverlay ?? new CanvasRuntimeOverlay();
+            List<CanvasPointOverlay> overlayPoints = overlay.Points;
+            overlayPoints.Clear();
             bool hasMasks = _state.MaskInverted ||
                             (_state.MaskStrokes != null && _state.MaskStrokes.Count > 0) ||
                             (activePreview != null && activePreview.IsValid);
             List<ImageCoordinate> committed = activePreview == null ? new List<ImageCoordinate>() : null;
+            int poolIndex = 0;
             foreach (List<ImageCoordinate> contour in sourceContours)
             {
                 if (contour == null) continue;
@@ -1092,14 +1151,36 @@ namespace NinePointRotationCalibration.WinForms.Forms
                         continue;
                     }
                     if (committed != null) committed.Add(point);
-                    AddPreviewPoint(overlay, point, Color.Lime);
+                    overlayPoints.Add(AcquireOverlayPoint(poolIndex++, point, Color.Lime));
                 }
             }
             if (committed != null)
             {
                 _committedVisiblePoints = committed;
             }
-            _canvas.EditorOverlay = overlay;
+            if (!ReferenceEquals(_canvas.EditorOverlay, overlay))
+            {
+                _canvas.EditorOverlay = overlay;
+            }
+            else
+            {
+                _canvas.Invalidate();
+            }
+        }
+
+        private CanvasPointOverlay AcquireOverlayPoint(int index, ImageCoordinate position, Color color)
+        {
+            while (_overlayPointPool.Count <= index)
+            {
+                _overlayPointPool.Add(new CanvasPointOverlay { RadiusPixels = 1.5f, Color = color });
+            }
+            CanvasPointOverlay item = _overlayPointPool[index];
+            item.Position = position;
+            item.Color = color;
+            item.Label = null;
+            item.IsSelected = false;
+            item.RadiusPixels = 1.5f;
+            return item;
         }
 
         private IEnumerable<List<ImageCoordinate>> GetMaskFilterSourceContours()
@@ -1294,7 +1375,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
                     _canvas.SetMaskStrokes(_state.MaskStrokes);
                     ApplyInstantMaskFilter(null);
                     MarkChanged(true);
-                    RequestAutoFeaturePreview(false);
+                    ScheduleDebouncedMaskSync();
                     SetStatus("已删除选中掩膜区域。", false);
                 }
             };
@@ -1690,6 +1771,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
             _autoPreviewGeneration++;
             if (immediate)
             {
+                _maskSyncTimer.Stop();
                 _autoPreviewTimer.Stop();
                 StartNextAutoPreview();
                 return;
@@ -1700,6 +1782,30 @@ namespace NinePointRotationCalibration.WinForms.Forms
             {
                 _autoPreviewTimer.Start();
             }
+        }
+
+        /// <summary>
+        /// 掩膜编辑结束后的停手防抖同步：连续涂抹/框选多个掩膜期间不抢占后台 HALCON 线程，
+        /// 等用户停手 350ms 后再统一同步一次最终特征点真值。
+        /// </summary>
+        private void ScheduleDebouncedMaskSync()
+        {
+            if (!CanUpdateUi || _busy || _loadingControls || Service == null)
+            {
+                return;
+            }
+
+            _autoPreviewGeneration++;
+            _autoPreviewTimer.Stop();
+            _maskSyncTimer.Stop();
+            _maskSyncTimer.Start();
+        }
+
+        private void MaskSyncTimer_Tick(object sender, EventArgs eventArgs)
+        {
+            _maskSyncTimer.Stop();
+            if (_canvas.IsInteracting) return;
+            StartNextAutoPreview();
         }
 
         private void AutoPreviewTimer_Tick(object sender, EventArgs eventArgs)
@@ -1785,6 +1891,11 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 {
                     return;
                 }
+                // 后台预览返回时若用户已开始新一轮拖拽/掩膜，丢弃过期结果避免覆盖实时预览并造成画面跳顿
+                if (generation != _autoPreviewGeneration || _canvas.IsInteracting)
+                {
+                    return;
+                }
 
                 if (result != null && result.Success)
                 {
@@ -1834,6 +1945,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
             _autoPreviewGeneration++;
             _autoPreviewPending = false;
             _autoPreviewTimer.Stop();
+            _maskSyncTimer.Stop();
             if (_autoPreviewCancellation != null && !_autoPreviewCancellation.IsCancellationRequested)
             {
                 try { _autoPreviewCancellation.Cancel(); }
@@ -2244,17 +2356,14 @@ namespace NinePointRotationCalibration.WinForms.Forms
             bool inSelectMode = _canvas.Tool == CanvasEditTool.Select;
             Color activeBlue = Color.FromArgb(37, 99, 235);
 
-            _addTemplateRoiButton.Text = "模板";
+            _addTemplateRoiButton.Text = "添加模板ROI";
             StyleToggleButton(_addTemplateRoiButton, inSelectMode && selected == CanvasRoiTarget.Template && hasTemplate, activeBlue);
-            UpdateRoiButtonIcon(_addTemplateRoiButton, Color.Gold, hasTemplate);
 
-            _addSearchRoiButton.Text = "搜索";
+            _addSearchRoiButton.Text = "添加搜索ROI";
             StyleToggleButton(_addSearchRoiButton, inSelectMode && selected == CanvasRoiTarget.Search && hasSearch, activeBlue);
-            UpdateRoiButtonIcon(_addSearchRoiButton, Color.DeepSkyBlue, hasSearch);
 
-            _addDetectionRoiButton.Text = "检测";
+            _addDetectionRoiButton.Text = "添加检测ROI";
             StyleToggleButton(_addDetectionRoiButton, inSelectMode && selected == CanvasRoiTarget.Detection && hasDetection, activeBlue);
-            UpdateRoiButtonIcon(_addDetectionRoiButton, Color.Cyan, hasDetection);
 
             bool locked = (selected == CanvasRoiTarget.Template && _state.TemplateRoiLocked) ||
                           (selected == CanvasRoiTarget.Search && _state.SearchRoiLocked);
@@ -2266,43 +2375,6 @@ namespace NinePointRotationCalibration.WinForms.Forms
             button.BackColor = active ? accent : Color.White;
             button.ForeColor = active ? Color.White : Color.FromArgb(30, 41, 59);
             button.FlatAppearance.BorderColor = active ? accent : Color.FromArgb(203, 213, 225);
-        }
-
-        private static void UpdateRoiButtonIcon(Button button, Color color, bool exists)
-        {
-            string tag = (exists ? "1:" : "0:") + color.ToArgb();
-            if (Equals(button.Tag, tag)) return;
-            Image previous = button.Image;
-            Bitmap icon = new Bitmap(14, 14);
-            using (Graphics g = Graphics.FromImage(icon))
-            {
-                g.Clear(Color.Transparent);
-                if (exists)
-                {
-                    using (Brush fill = new SolidBrush(Color.FromArgb(220, color)))
-                    using (Pen pen = new Pen(Color.FromArgb(200, 30, 30, 30), 1.0f))
-                    {
-                        g.FillRectangle(fill, 2, 2, 10, 10);
-                        g.DrawRectangle(pen, 2, 2, 10, 10);
-                    }
-                }
-                else
-                {
-                    using (Pen pen = new Pen(color, 1.5f))
-                    {
-                        pen.DashStyle = System.Drawing.Drawing2D.DashStyle.Dot;
-                        g.DrawRectangle(pen, 1, 1, 11, 11);
-                    }
-                    using (Pen plus = new Pen(Color.FromArgb(220, 60, 60, 60), 1.5f))
-                    {
-                        g.DrawLine(plus, 4, 7, 10, 7);
-                        g.DrawLine(plus, 7, 4, 7, 10);
-                    }
-                }
-            }
-            button.Image = icon;
-            button.Tag = tag;
-            if (previous != null) previous.Dispose();
         }
 
         private void SetReferenceAnchorInternal(ImageCoordinate anchor)
@@ -2370,7 +2442,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
             _canvas.SetMaskStrokes(_state.MaskStrokes);
             ApplyInstantMaskFilter(null);
             MarkChanged(true);
-            RequestAutoFeaturePreview(false);
+            ScheduleDebouncedMaskSync();
         }
 
         private void InvertMask(object sender, EventArgs eventArgs)
@@ -2379,7 +2451,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
             _state.MaskInverted = !_state.MaskInverted;
             ApplyInstantMaskFilter(null);
             MarkChanged(true);
-            RequestAutoFeaturePreview(false);
+            ScheduleDebouncedMaskSync();
             SetStatus(_state.MaskInverted ? "掩膜已反选。" : "掩膜已恢复正常包含关系。", false);
         }
 
@@ -2421,8 +2493,8 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 return;
             }
 
-            // 保留最近 HistoryLimit(30) 步历史；产生新编辑分支时清空重做栈
-            _undoStack.Push(_state.DeepClone());
+            // 保留最近 HistoryLimit(30) 步轻量快照（复用不可变 ModelData 与已提交掩膜项，不深拷贝万级特征点）
+            _undoStack.Push(_state.CloneForUndo());
             while (_undoStack.Count > HistoryLimit)
             {
                 TemplateEditorState[] items = _undoStack.ToArray();
@@ -2443,13 +2515,21 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 return;
             }
 
-            _redoStack.Push(_state.DeepClone());
+            _redoStack.Push(_state.CloneForUndo());
             _state = _undoStack.Pop();
             LoadStateToControls(false);
             RaiseEditorStateChanged();
-            if (_state.TemplateRoi != null && !HasAnyOverlayFeatures(_state))
+            if (_state.TemplateRoi != null)
             {
-                RequestAutoFeaturePreview(true);
+                if (_unmaskedBaseContours != null && _unmaskedBaseContours.Count > 0 && SameRoiGeometry(_unmaskedBaseRoi, _state.TemplateRoi))
+                {
+                    ApplyInstantMaskFilter(null);
+                    ScheduleDebouncedMaskSync();
+                }
+                else if (!HasAnyOverlayFeatures(_state))
+                {
+                    RequestAutoFeaturePreview(true);
+                }
             }
         }
 
@@ -2460,13 +2540,21 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 return;
             }
 
-            _undoStack.Push(_state.DeepClone());
+            _undoStack.Push(_state.CloneForUndo());
             _state = _redoStack.Pop();
             LoadStateToControls(false);
             RaiseEditorStateChanged();
-            if (_state.TemplateRoi != null && !HasAnyOverlayFeatures(_state))
+            if (_state.TemplateRoi != null)
             {
-                RequestAutoFeaturePreview(true);
+                if (_unmaskedBaseContours != null && _unmaskedBaseContours.Count > 0 && SameRoiGeometry(_unmaskedBaseRoi, _state.TemplateRoi))
+                {
+                    ApplyInstantMaskFilter(null);
+                    ScheduleDebouncedMaskSync();
+                }
+                else if (!HasAnyOverlayFeatures(_state))
+                {
+                    RequestAutoFeaturePreview(true);
+                }
             }
         }
 
@@ -2518,7 +2606,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
         {
             if (_state.TemplateRoi == null)
             {
-                _modelStateLabel.Text = "未添加模板 ROI（请点击顶部「模板」按钮添加）";
+                _modelStateLabel.Text = "未添加模板 ROI（请点击「添加模板ROI」按钮添加）";
                 _modelStateLabel.ForeColor = Color.White;
                 _modelStateLabel.BackColor = Color.FromArgb(100, 116, 139);
             }
@@ -2695,7 +2783,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
         {
             if (_state.TemplateRoi == null || _state.TemplateRoi.HalfWidth < 2.0 || _state.TemplateRoi.HalfHeight < 2.0)
             {
-                message = "请先点击顶部「模板」按钮设置有效的模板 ROI。";
+                message = "请先点击「添加模板ROI」按钮设置有效的模板 ROI。";
                 return false;
             }
 
@@ -3080,10 +3168,9 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 FlatStyle = FlatStyle.Flat,
                 BackColor = Color.White,
                 ForeColor = Color.FromArgb(30, 41, 59),
-                ImageAlign = ContentAlignment.MiddleLeft,
                 TextAlign = ContentAlignment.MiddleCenter,
-                TextImageRelation = TextImageRelation.ImageBeforeText,
                 Margin = new Padding(2, 2, 2, 2),
+                Padding = Padding.Empty,
                 Cursor = Cursors.Hand
             };
             button.FlatAppearance.BorderColor = Color.FromArgb(203, 213, 225);

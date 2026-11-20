@@ -51,6 +51,15 @@ namespace NinePointRotationCalibration.WinForms.Models
     [Serializable]
     public sealed class MaskStroke
     {
+        [NonSerialized]
+        private bool _boundsValid;
+        [NonSerialized]
+        private int _boundsPointCount;
+        [NonSerialized]
+        private double _boundsRadius;
+        [NonSerialized]
+        private double _minRow, _maxRow, _minCol, _maxCol;
+
         public MaskStroke()
         {
             Kind = MaskShapeKind.Brush;
@@ -99,6 +108,81 @@ namespace NinePointRotationCalibration.WinForms.Models
         }
 
         /// <summary>
+        /// 获取当前掩膜项的轴对齐外接框（图像坐标）；对已提交笔画按点数量缓存，避免高频命中判断重复扫描。
+        /// </summary>
+        public bool TryGetBounds(out double minRow, out double maxRow, out double minCol, out double maxCol)
+        {
+            if (!IsValid)
+            {
+                minRow = maxRow = minCol = maxCol = 0.0;
+                return false;
+            }
+
+            if (Kind == MaskShapeKind.Rectangle)
+            {
+                RectangleF b = Rectangle.GetAxisAlignedBounds();
+                minRow = b.Top;
+                maxRow = b.Bottom;
+                minCol = b.Left;
+                maxCol = b.Right;
+                return true;
+            }
+
+            if (Kind == MaskShapeKind.Circle)
+            {
+                double r = Math.Max(0.0, Radius);
+                minRow = Center.Row - r;
+                maxRow = Center.Row + r;
+                minCol = Center.Column - r;
+                maxCol = Center.Column + r;
+                return true;
+            }
+
+            int count = Points == null ? 0 : Points.Count;
+            double pad = Kind == MaskShapeKind.Brush ? Math.Max(0.0, Radius) : 0.0;
+            if (_boundsValid && _boundsPointCount == count && _boundsRadius == pad)
+            {
+                minRow = _minRow;
+                maxRow = _maxRow;
+                minCol = _minCol;
+                maxCol = _maxCol;
+                return true;
+            }
+
+            double rMin = double.MaxValue;
+            double rMax = double.MinValue;
+            double cMin = double.MaxValue;
+            double cMax = double.MinValue;
+            for (int i = 0; i < count; i++)
+            {
+                ImageCoordinate p = Points[i];
+                if (p.Row < rMin) rMin = p.Row;
+                if (p.Row > rMax) rMax = p.Row;
+                if (p.Column < cMin) cMin = p.Column;
+                if (p.Column > cMax) cMax = p.Column;
+            }
+
+            _minRow = rMin - pad;
+            _maxRow = rMax + pad;
+            _minCol = cMin - pad;
+            _maxCol = cMax + pad;
+            _boundsPointCount = count;
+            _boundsRadius = pad;
+            _boundsValid = true;
+
+            minRow = _minRow;
+            maxRow = _maxRow;
+            minCol = _minCol;
+            maxCol = _maxCol;
+            return true;
+        }
+
+        public void InvalidateBounds()
+        {
+            _boundsValid = false;
+        }
+
+        /// <summary>
         /// 创建掩膜项的深拷贝。
         /// </summary>
         public MaskStroke DeepClone()
@@ -126,30 +210,42 @@ namespace NinePointRotationCalibration.WinForms.Models
             bool inverted,
             MaskStroke activePreview = null)
         {
-            bool included = true;
+            // 按从新到旧逆序判断：最后一个覆盖该点的掩膜即决定最终包含/排除状态，命中立即早退
+            if (activePreview != null && activePreview.IsValid && IsPointInsideMask(point, activePreview))
+            {
+                bool includedByPreview = !activePreview.IsErase;
+                return inverted ? includedByPreview : !includedByPreview;
+            }
+
             if (masks != null)
             {
-                for (int i = 0; i < masks.Count; i++)
+                for (int i = masks.Count - 1; i >= 0; i--)
                 {
                     MaskStroke mask = masks[i];
                     if (mask != null && mask.IsValid && IsPointInsideMask(point, mask))
                     {
-                        included = !mask.IsErase;
+                        bool included = !mask.IsErase;
+                        return inverted ? included : !included;
                     }
                 }
             }
 
-            if (activePreview != null && activePreview.IsValid && IsPointInsideMask(point, activePreview))
-            {
-                included = !activePreview.IsErase;
-            }
-
-            return inverted ? included : !included;
+            return inverted;
         }
 
         public static bool IsPointInsideMask(ImageCoordinate point, MaskStroke mask)
         {
             if (mask == null) return false;
+            double minRow, maxRow, minCol, maxCol;
+            if (!mask.TryGetBounds(out minRow, out maxRow, out minCol, out maxCol))
+            {
+                return false;
+            }
+            if (point.Row < minRow || point.Row > maxRow || point.Column < minCol || point.Column > maxCol)
+            {
+                return false;
+            }
+
             switch (mask.Kind)
             {
                 case MaskShapeKind.Rectangle:
@@ -197,16 +293,26 @@ namespace NinePointRotationCalibration.WinForms.Models
         private static bool IsPointInBrush(ImageCoordinate point, IList<ImageCoordinate> points, double radius)
         {
             if (points == null || points.Count == 0 || radius <= 0.0) return false;
+            double r2 = radius * radius;
             if (points.Count == 1)
             {
                 double dr = point.Row - points[0].Row;
                 double dc = point.Column - points[0].Column;
-                return (dr * dr) + (dc * dc) <= radius * radius;
+                return (dr * dr) + (dc * dc) <= r2;
             }
 
             for (int i = 1; i < points.Count; i++)
             {
-                if (IsPointNearSegment(point, points[i - 1], points[i], radius))
+                ImageCoordinate a = points[i - 1];
+                ImageCoordinate b = points[i];
+                double sMinRow = (a.Row < b.Row ? a.Row : b.Row) - radius;
+                double sMaxRow = (a.Row > b.Row ? a.Row : b.Row) + radius;
+                if (point.Row < sMinRow || point.Row > sMaxRow) continue;
+                double sMinCol = (a.Column < b.Column ? a.Column : b.Column) - radius;
+                double sMaxCol = (a.Column > b.Column ? a.Column : b.Column) + radius;
+                if (point.Column < sMinCol || point.Column > sMaxCol) continue;
+
+                if (IsPointNearSegment(point, a, b, radius))
                 {
                     return true;
                 }

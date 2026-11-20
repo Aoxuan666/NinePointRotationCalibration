@@ -418,8 +418,32 @@ namespace NinePointRotationCalibration.Station.Views
                 result.ActualCount,
                 result.Success && result.Pass,
                 result.HasManualMarks);
-                // 若当前处于检测双视图，检测结果同步后立即在 UI 线程触发检测效果图刷新（保证 async 延续回到 UI 线程）
-                if (_view.IsDetectionDualViewActive) TriggerEffectPreviewOnUi(false);
+                // 若当前处于检测双视图：开启局部二值时才在后台按缓存灰度图生成二值贴图；
+                // 未开启局部二值时直接复用上方已绘制完成的原图与轮廓叠加，避免检测完后再重复跑一次整帧 Blob。
+                if (_view.IsDetectionDualViewActive)
+                {
+                    if (IsBinaryPreviewEnabled())
+                    {
+                        TriggerEffectPreviewOnUi(false);
+                    }
+                    else
+                    {
+                        DetectionProfile currentProfile = ReadDetectionProfileFromView();
+                        string infoText = BuildEffectInfoText(currentProfile, false, contours.Count);
+                        _view.SetEffectViewportInformation(infoText);
+                        long gen;
+                        int regCount;
+                        lock (_displaySync)
+                        {
+                            gen = _displayGeneration;
+                            regCount = _lastDetectionRegions.Count;
+                        }
+                        _renderedEffectGeneration = gen;
+                        _renderedEffectKey = BuildEffectPreviewKey(
+                            gen, gen, regCount, currentProfile, false, result.ExpectedCount, _runtime.GetPositioningJobSnapshot());
+                        _renderedEffectInfoText = infoText;
+                    }
+                }
             }
             catch (Exception exception)
             {

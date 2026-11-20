@@ -28,6 +28,7 @@ namespace NinePointRotationCalibration.Station.Models
             RectangleFilterEnabled = true;
             RectangleFillThreshold = 0.92;
             FillHoles = true;
+            FillDarkHoles = true;
             MorphologyRadius = 1;
             FollowTemplateTransform = true;
             TemplateMatchingEnabled = true;
@@ -47,6 +48,8 @@ namespace NinePointRotationCalibration.Station.Models
         public bool RectangleFilterEnabled { get; set; }
         public double RectangleFillThreshold { get; set; }
         public bool FillHoles { get; set; }
+        /// <summary>检测黑色目标（白底黑点/黑叉）时是否填充黑色目标内部空洞。</summary>
+        public bool FillDarkHoles { get; set; }
         public int MorphologyRadius { get; set; }
 
         // 旧版检测配置文件缺少新增开关字段，在反序列化前先预置安全的生产默认值。
@@ -57,6 +60,7 @@ namespace NinePointRotationCalibration.Station.Models
             AutoThreshold = true;
             DetectDarkForeground = false;
             FillHoles = true;
+            FillDarkHoles = true;
             MorphologyRadius = 1;
         }
     }

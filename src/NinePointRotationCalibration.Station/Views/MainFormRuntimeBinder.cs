@@ -430,6 +430,16 @@ namespace NinePointRotationCalibration.Station.Views
                             FindControl<NumericUpDown>("nudBrightThreshold").Enabled =
                                 !FindControl<CheckBox>("chkAutoThreshold").Checked;
                         }
+                        else if (e.Source != null && string.Equals(
+                            e.Source.Name,
+                            "chkDarkForeground",
+                            StringComparison.OrdinalIgnoreCase))
+                        {
+                            bool darkFg = FindControl<CheckBox>("chkDarkForeground").Checked;
+                            FindControl<CheckBox>("chkFillHoles").Enabled = !darkFg;
+                            CheckBox darkHole = FindControl<CheckBox>("chkFillDarkHoles");
+                            if (darkHole != null) darkHole.Enabled = darkFg;
+                        }
                         if (_view.IsDetectionDualViewActive) ScheduleBinaryPreview(true);
                         return;
                     case "detection.rowSelected":

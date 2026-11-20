@@ -20,6 +20,7 @@ namespace NinePointRotationCalibration.Station.Views
         private NumericUpDown nudRectangularity;
         private NumericUpDown nudMorphologyRadius;
         private CheckBox chkFillHoles;
+        private CheckBox chkFillDarkHoles;
         private CheckBox chkAutoThreshold;
         private CheckBox chkDarkForeground;
         private Label lblModeStatus;
@@ -156,20 +157,23 @@ namespace NinePointRotationCalibration.Station.Views
             AddField(thresholdFields, 1, "最小面积", nudMinimumBlobArea);
             AddField(thresholdFields, 2, "最大面积", nudMaximumBlobArea);
             AddField(thresholdFields, 3, "矩形度阈值", nudRectangularity);
-            AddField(thresholdFields, 4, "白孔去除半径", nudMorphologyRadius);
+            AddField(thresholdFields, 4, "噪点去除半径", nudMorphologyRadius);
             chkRectangleFilter = CreateCheckBox("chkRectangleFilter", "启用矩形标签过滤");
             thresholdFields.Controls.Add(chkRectangleFilter, 0, 5);
             thresholdFields.SetColumnSpan(chkRectangleFilter, 2);
-            chkFillHoles = CreateCheckBox("chkFillHoles", "填充保留白目标内部黑洞");
+            chkFillHoles = CreateCheckBox("chkFillHoles", "填充白色空洞（白目标）");
             thresholdFields.Controls.Add(chkFillHoles, 0, 6);
             thresholdFields.SetColumnSpan(chkFillHoles, 2);
+            chkFillDarkHoles = CreateCheckBox("chkFillDarkHoles", "填充黑色空洞（黑目标）");
+            thresholdFields.Controls.Add(chkFillDarkHoles, 0, 7);
+            thresholdFields.SetColumnSpan(chkFillDarkHoles, 2);
             chkAutoThreshold = CreateCheckBox("chkAutoThreshold", "检测 ROI 内自动阈值");
-            thresholdFields.Controls.Add(chkAutoThreshold, 0, 7);
+            thresholdFields.Controls.Add(chkAutoThreshold, 0, 8);
             thresholdFields.SetColumnSpan(chkAutoThreshold, 2);
             chkDarkForeground = CreateCheckBox(
                 "chkDarkForeground",
                 "白底黑点（检测暗目标）");
-            thresholdFields.Controls.Add(chkDarkForeground, 0, 8);
+            thresholdFields.Controls.Add(chkDarkForeground, 0, 9);
             thresholdFields.SetColumnSpan(chkDarkForeground, 2);
             thresholdGroup.Controls.Add(thresholdFields);
 

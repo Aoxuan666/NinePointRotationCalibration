@@ -39,6 +39,18 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
                 includeBinary, cancellationToken);
         }
 
+        /// <summary>复用已转换的灰度图，跳过模板定位直接对整幅图像执行详细 Blob 分析。</summary>
+        public BlobAnalysisResult AnalyzeDirectDetailed(HalconGrayImage gray, TemplateDefinition template,
+            DetectionProfile profile, bool includeBinary, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (gray == null) return new BlobAnalysisResult();
+            DetectionRoi roi = CreateFullImageRoi(gray.Size);
+            List<BlobAnalysisResult> results = AnalyzeRoisDetailed(
+                gray, new[] { roi }, profile, includeBinary, cancellationToken);
+            return results.Count == 0 ? new BlobAnalysisResult { Roi = roi } : results[0];
+        }
+
         /// <summary>取消时不抛异常的整图 Blob 分析，供实时调试预览使用。</summary>
         public BlobAnalysisResult AnalyzeDirectDetailedNoThrow(Bitmap source,
             TemplateDefinition template, DetectionProfile profile, bool includeBinary,
@@ -47,6 +59,18 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
             DetectionRoi roi = CreateFullImageRoi(source);
             List<BlobAnalysisResult> results = AnalyzeRoisDetailedNoThrow(
                 source, new[] { roi }, profile, includeBinary, cancellationToken);
+            return results.Count == 0 ? new BlobAnalysisResult { Roi = roi } : results[0];
+        }
+
+        /// <summary>复用已转换灰度图的取消不抛异常整图 Blob 分析，供实时调试预览零图转使用。</summary>
+        public BlobAnalysisResult AnalyzeDirectDetailedNoThrow(HalconGrayImage gray,
+            TemplateDefinition template, DetectionProfile profile, bool includeBinary,
+            CancellationToken cancellationToken)
+        {
+            if (gray == null) return new BlobAnalysisResult();
+            DetectionRoi roi = CreateFullImageRoi(gray.Size);
+            List<BlobAnalysisResult> results = AnalyzeRoisDetailedNoThrow(
+                gray, new[] { roi }, profile, includeBinary, cancellationToken);
             return results.Count == 0 ? new BlobAnalysisResult { Roi = roi } : results[0];
         }
 
@@ -86,6 +110,15 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
         {
             return AnalyzeRoisDetailedCore(null, gray, rois, profile, includeBinary,
                 cancellationToken, true);
+        }
+
+        /// <summary>预览/调试路径：复用已转换的灰度图批量分析各 ROI，取消时直接返回空结果而不抛异常。</summary>
+        public List<BlobAnalysisResult> AnalyzeRoisDetailedNoThrow(HalconGrayImage gray,
+            IList<DetectionRoi> rois, DetectionProfile profile, bool includeBinary,
+            CancellationToken cancellationToken)
+        {
+            return AnalyzeRoisDetailedCore(null, gray, rois, profile, includeBinary,
+                cancellationToken, false);
         }
 
         private List<BlobAnalysisResult> AnalyzeRoisDetailedCore(Bitmap source,
@@ -134,6 +167,7 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
                 RectangleFilterEnabled = profile.RectangleFilterEnabled,
                 RectangleFillThreshold = profile.RectangleFillThreshold,
                 FillHoles = profile.FillHoles,
+                FillDarkHoles = profile.FillDarkHoles,
                 MorphologyRadius = profile.MorphologyRadius
             };
 
@@ -322,13 +356,19 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
         private static DetectionRoi CreateFullImageRoi(Bitmap source)
         {
             if (source == null || source.Width <= 0 || source.Height <= 0) return null;
+            return CreateFullImageRoi(source.Size);
+        }
+
+        private static DetectionRoi CreateFullImageRoi(Size size)
+        {
+            if (size.Width <= 0 || size.Height <= 0) return null;
             return new DetectionRoi
             {
-                ReferenceCenterRow = source.Height / 2.0,
-                ReferenceCenterColumn = source.Width / 2.0,
+                ReferenceCenterRow = size.Height / 2.0,
+                ReferenceCenterColumn = size.Width / 2.0,
                 PhiDegrees = 0.0,
-                HalfWidth = source.Width / 2.0,
-                HalfHeight = source.Height / 2.0
+                HalfWidth = size.Width / 2.0,
+                HalfHeight = size.Height / 2.0
             };
         }
 

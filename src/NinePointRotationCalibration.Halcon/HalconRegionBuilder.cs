@@ -35,70 +35,46 @@ namespace NinePointRotationCalibration.Halcon
                     current = new HRegion(templateDomain);
                 }
 
+                int roiR1, roiC1, roiR2, roiC2;
+                templateDomain.SmallestRectangle1(out roiR1, out roiC1, out roiR2, out roiC2);
+
+                // 将所有掩膜（结构化区域 + 画笔）按先后顺序收集，并对连续同极性（连续擦除或连续恢复）做批量合并，
+                // 同时将连续同半径画笔合并为单次 DilationCircle，把 N 笔串行膨胀/差集耗时降低一个数量级。
+                List<MaskEntry> entries = new List<MaskEntry>();
                 if (definition.MaskRegions != null)
                 {
-                    foreach (TemplateMaskShape mask in definition.MaskRegions)
+                    for (int i = 0; i < definition.MaskRegions.Count; i++)
                     {
-                        if (mask == null || mask.Region == null)
-                        {
-                            continue;
-                        }
-
-                        using (HRegion maskRegion = BuildRegion(mask.Region, "Template mask"))
-                        using (HRegion clippedMask = maskRegion.Intersection(imageBounds))
-                        {
-                            HRegion next;
-                            if (mask.Operation == MaskOperation.Include)
-                            {
-                                // 恢复区域时与主模板域求交，保证掩膜不会扩展到主 ROI 外部。
-                                using (HRegion restored = current.Union2(clippedMask))
-                                {
-                                    next = restored.Intersection(templateDomain);
-                                }
-                            }
-                            else if (mask.Operation == MaskOperation.Exclude)
-                            {
-                                next = current.Difference(clippedMask);
-                            }
-                            else
-                            {
-                                throw new ArgumentOutOfRangeException("Mask operation", "Unsupported mask operation: " + mask.Operation + ".");
-                            }
-
-                            Replace(ref current, next);
-                        }
+                        TemplateMaskShape mask = definition.MaskRegions[i];
+                        if (mask == null || mask.Region == null) continue;
+                        entries.Add(new MaskEntry(mask.Operation, mask.Region, null, 0.0));
+                    }
+                }
+                if (definition.EraseStrokes != null)
+                {
+                    for (int i = 0; i < definition.EraseStrokes.Count; i++)
+                    {
+                        TemplateEraseStroke stroke = definition.EraseStrokes[i];
+                        if (stroke == null || stroke.Points == null || stroke.Points.Count == 0) continue;
+                        entries.Add(new MaskEntry(stroke.Operation, null, stroke.Points, stroke.Radius));
                     }
                 }
 
-                if (definition.EraseStrokes != null)
+                int idx = 0;
+                while (idx < entries.Count)
                 {
-                    foreach (TemplateEraseStroke stroke in definition.EraseStrokes)
+                    MaskOperation op = entries[idx].Operation;
+                    if (op != MaskOperation.Include && op != MaskOperation.Exclude)
                     {
-                        if (stroke == null || stroke.Points == null || stroke.Points.Count == 0)
-                        {
-                            continue;
-                        }
-
-                        using (HRegion strokeRegion = BuildStroke(stroke.Points, stroke.Radius, "Erase stroke"))
-                        using (HRegion clippedStroke = strokeRegion.Intersection(imageBounds))
-                        {
-                            if (stroke.Operation == MaskOperation.Include)
-                            {
-                                using (HRegion restored = current.Union2(clippedStroke))
-                                {
-                                    Replace(ref current, restored.Intersection(templateDomain));
-                                }
-                            }
-                            else if (stroke.Operation == MaskOperation.Exclude)
-                            {
-                                Replace(ref current, current.Difference(clippedStroke));
-                            }
-                            else
-                            {
-                                throw new ArgumentOutOfRangeException("Stroke operation", "Unsupported stroke operation: " + stroke.Operation + ".");
-                            }
-                        }
+                        throw new ArgumentOutOfRangeException("Mask operation", "Unsupported mask operation: " + op + ".");
                     }
+                    int batchEnd = idx + 1;
+                    while (batchEnd < entries.Count && entries[batchEnd].Operation == op)
+                    {
+                        batchEnd++;
+                    }
+                    ApplyMaskBatch(ref current, templateDomain, imageBounds, entries, idx, batchEnd, op, roiR1, roiC1, roiR2, roiC2);
+                    idx = batchEnd;
                 }
 
                 if (definition.IsMaskInverted)
@@ -116,6 +92,183 @@ namespace NinePointRotationCalibration.Halcon
                 if (current != null) current.Dispose();
                 if (templateDomain != null) templateDomain.Dispose();
                 if (imageBounds != null) imageBounds.Dispose();
+            }
+        }
+
+        private struct MaskEntry
+        {
+            public MaskEntry(MaskOperation op, RegionDefinition region, IList<ImagePoint> strokePoints, double strokeRadius)
+            {
+                Operation = op;
+                Region = region;
+                StrokePoints = strokePoints;
+                StrokeRadius = strokeRadius;
+            }
+
+            public MaskOperation Operation;
+            public RegionDefinition Region;
+            public IList<ImagePoint> StrokePoints;
+            public double StrokeRadius;
+        }
+
+        private static void ApplyMaskBatch(
+            ref HRegion current,
+            HRegion templateDomain,
+            HRegion imageBounds,
+            List<MaskEntry> entries,
+            int startIndex,
+            int endIndex,
+            MaskOperation operation,
+            int roiR1,
+            int roiC1,
+            int roiR2,
+            int roiC2)
+        {
+            HRegion accumulated = null;
+            Dictionary<int, List<IList<ImagePoint>>> brushGroups = null;
+            Dictionary<int, double> brushRadii = null;
+            try
+            {
+                for (int i = startIndex; i < endIndex; i++)
+                {
+                    MaskEntry entry = entries[i];
+                    IList<ImagePoint> brushPoints = entry.StrokePoints;
+                    double brushRadius = entry.StrokeRadius;
+                    if (entry.Region != null && entry.Region.Kind == RegionKind.Freehand && entry.Region.Radius > 0.0)
+                    {
+                        brushPoints = entry.Region.Points;
+                        brushRadius = entry.Region.Radius;
+                    }
+
+                    if (brushPoints != null)
+                    {
+                        if (brushPoints.Count == 0) continue;
+                        ValidatePositive(brushRadius, "Mask stroke radius");
+                        ValidatePoints(brushPoints, "Mask stroke");
+                        int radiusKey = (int)Math.Round(brushRadius * 10.0);
+                        if (brushGroups == null)
+                        {
+                            brushGroups = new Dictionary<int, List<IList<ImagePoint>>>();
+                            brushRadii = new Dictionary<int, double>();
+                        }
+                        List<IList<ImagePoint>> list;
+                        if (!brushGroups.TryGetValue(radiusKey, out list))
+                        {
+                            list = new List<IList<ImagePoint>>();
+                            brushGroups[radiusKey] = list;
+                            brushRadii[radiusKey] = brushRadius;
+                        }
+                        list.Add(brushPoints);
+                        continue;
+                    }
+
+                    if (entry.Region == null) continue;
+                    using (HRegion shapeRegion = BuildRegion(entry.Region, "Template mask"))
+                    {
+                        AppendRegion(ref accumulated, shapeRegion);
+                    }
+                }
+
+                if (brushGroups != null)
+                {
+                    foreach (KeyValuePair<int, List<IList<ImagePoint>>> group in brushGroups)
+                    {
+                        double radius = brushRadii[group.Key];
+                        using (HRegion batchedBrush = BuildBatchedStrokes(group.Value, radius, roiR1, roiC1, roiR2, roiC2))
+                        {
+                            if (batchedBrush != null) AppendRegion(ref accumulated, batchedBrush);
+                        }
+                    }
+                }
+
+                if (accumulated == null) return;
+                using (HRegion unioned = accumulated.Union1())
+                using (HRegion clipped = unioned.Intersection(imageBounds))
+                {
+                    if (operation == MaskOperation.Include)
+                    {
+                        // 恢复区域时与主模板域求交，保证掩膜不会扩展到主 ROI 外部。
+                        using (HRegion restored = current.Union2(clipped))
+                        {
+                            Replace(ref current, restored.Intersection(templateDomain));
+                        }
+                    }
+                    else
+                    {
+                        Replace(ref current, current.Difference(clipped));
+                    }
+                }
+            }
+            finally
+            {
+                if (accumulated != null) accumulated.Dispose();
+            }
+        }
+
+        private static void AppendRegion(ref HRegion target, HRegion item)
+        {
+            if (item == null) return;
+            if (target == null)
+            {
+                target = new HRegion(item);
+                return;
+            }
+            Replace(ref target, target.ConcatObj(item));
+        }
+
+        private static HRegion BuildBatchedStrokes(
+            List<IList<ImagePoint>> strokes,
+            double radius,
+            int roiR1,
+            int roiC1,
+            int roiR2,
+            int roiC2)
+        {
+            double pad = radius + 2.0;
+            double minR = roiR1 - pad;
+            double maxR = roiR2 + pad;
+            double minC = roiC1 - pad;
+            double maxC = roiC2 + pad;
+            List<int> r1 = new List<int>();
+            List<int> c1 = new List<int>();
+            List<int> r2 = new List<int>();
+            List<int> c2 = new List<int>();
+            for (int s = 0; s < strokes.Count; s++)
+            {
+                IList<ImagePoint> pts = strokes[s];
+                if (pts == null || pts.Count == 0) continue;
+                if (pts.Count == 1)
+                {
+                    double pr = pts[0].Row;
+                    double pc = pts[0].Column;
+                    if (pr < minR || pr > maxR || pc < minC || pc > maxC) continue;
+                    int ir = (int)Math.Round(pr);
+                    int ic = (int)Math.Round(pc);
+                    r1.Add(ir); c1.Add(ic); r2.Add(ir); c2.Add(ic);
+                    continue;
+                }
+                for (int i = 0; i < pts.Count - 1; i++)
+                {
+                    double aR = pts[i].Row, aC = pts[i].Column;
+                    double bR = pts[i + 1].Row, bC = pts[i + 1].Column;
+                    if ((aR < minR && bR < minR) || (aR > maxR && bR > maxR) ||
+                        (aC < minC && bC < minC) || (aC > maxC && bC > maxC)) continue;
+                    r1.Add((int)Math.Round(aR));
+                    c1.Add((int)Math.Round(aC));
+                    r2.Add((int)Math.Round(bR));
+                    c2.Add((int)Math.Round(bC));
+                }
+            }
+            if (r1.Count == 0) return null;
+            using (HTuple tr1 = new HTuple(r1.ToArray()))
+            using (HTuple tc1 = new HTuple(c1.ToArray()))
+            using (HTuple tr2 = new HTuple(r2.ToArray()))
+            using (HTuple tc2 = new HTuple(c2.ToArray()))
+            using (HRegion lines = new HRegion())
+            {
+                lines.GenRegionLine(tr1, tc1, tr2, tc2);
+                using (HRegion centerline = lines.Union1())
+                    return centerline.DilationCircle(radius);
             }
         }
 

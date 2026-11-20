@@ -171,8 +171,11 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
                 result.Executed = true;
                 if (!useTemplateMatching)
                 {
+                    var directConv = Stopwatch.StartNew();
+                    gray = frameCache == null ? HalconGrayImage.FromBitmap(image) : frameCache.Acquire(image);
+                    result.ImageConversionElapsedMilliseconds += directConv.Elapsed.TotalMilliseconds;
                     using (BlobAnalysisResult analysis = _blobAnalyzer.AnalyzeDirectDetailed(
-                        image,
+                        gray,
                         positioningJob == null ? null : positioningJob.Template,
                         profile,
                         false,
