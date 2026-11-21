@@ -221,6 +221,18 @@ namespace NinePointRotationCalibration.Station.Views
         }
 
         [Browsable(false)]
+        public ComboBox DetectionPolarityInput
+        {
+            get { return cmbDetectionPolarity; }
+        }
+
+        [Browsable(false)]
+        public ComboBox HoleFillModeInput
+        {
+            get { return cmbHoleFillMode; }
+        }
+
+        [Browsable(false)]
         public CheckBox RectangleFilterInput
         {
             get { return chkRectangleFilter; }
@@ -991,7 +1003,7 @@ namespace NinePointRotationCalibration.Station.Views
                 lblDualNozzleSummary.ForeColor = Color.FromArgb(51, 65, 85);
                 lblDualNozzleSummary.Text = string.Format(
                     CultureInfo.InvariantCulture,
-                    "双吸嘴状态：左吸嘴 [{0}] / 右吸嘴 [{1}]（需两侧均完成示教）\r\n工艺模式：吸取时旋转 R 轴对齐来料板角 → 盲摆转回固定示教角 (0°)",
+                    "双吸嘴状态：左吸嘴 [{0}] / 右吸嘴 [{1}]（需两侧均完成示教）\r\n工艺模式：吸取时旋转 R 轴对齐来料板角 → 盲摆转回固定示教 R 角",
                     _leftTeachingValid ? "已示教" : "未示教",
                     _rightTeachingValid ? "已示教" : "未示教");
             }
@@ -1298,6 +1310,13 @@ namespace NinePointRotationCalibration.Station.Views
             imageViewport.ViewChanged += delegate { SyncDualViewportView(imageViewport, effectViewport); };
             effectViewport.ImagePositionChanged += ImageViewport_ImagePositionChanged;
             effectViewport.ViewChanged += delegate { SyncDualViewportView(effectViewport, imageViewport); };
+            if (chkSyncDualViewport != null)
+            {
+                chkSyncDualViewport.CheckedChanged += delegate
+                {
+                    if (chkSyncDualViewport.Checked) SyncDualViewportView(imageViewport, effectViewport);
+                };
+            }
             dgvDetectionResults.SelectionChanged += delegate { RaiseUiAction("detection.rowSelected", dgvDetectionResults); };
             chkCameraEnabled.CheckedChanged += FeatureToggle_CheckedChanged;
             chkCalibrationEnabled.CheckedChanged += FeatureToggle_CheckedChanged;
@@ -1307,7 +1326,7 @@ namespace NinePointRotationCalibration.Station.Views
                 button.Click += CalibrationPointButton_Click;
             }
 
-            // 统一按控件 Tag 路由常规操作按钮、复选框和数值框；标定点按钮单独通过 CalibrationPointRequested 派发
+            // 统一按控件 Tag 路由常规操作按钮、复选框、下拉框和数值框；标定点按钮单独通过 CalibrationPointRequested 派发
             foreach (Control control in FindControls(this))
             {
                 Button button = control as Button;
@@ -1326,12 +1345,37 @@ namespace NinePointRotationCalibration.Station.Views
                     checkBox.CheckedChanged += CommandValue_Changed;
                 }
 
+                ComboBox comboBox = control as ComboBox;
+                actionKey = comboBox == null ? null : comboBox.Tag as string;
+                if (comboBox != null && !string.IsNullOrWhiteSpace(actionKey))
+                {
+                    comboBox.SelectedIndexChanged += CommandValue_Changed;
+                }
+
                 NumericUpDown numeric = control as NumericUpDown;
                 if (numeric != null) numeric.MouseWheel += NumericInput_MouseWheel;
+                if (numeric != null && string.Equals(numeric.Name, "nudCalibrationStepR", StringComparison.Ordinal))
+                {
+                    numeric.ValueChanged += delegate { UpdateCalibrationSpanHint(numeric.Value); };
+                    UpdateCalibrationSpanHint(numeric.Value);
+                }
                 actionKey = numeric == null ? null : numeric.Tag as string;
                 if (numeric != null && !string.IsNullOrWhiteSpace(actionKey))
                     numeric.ValueChanged += CommandValue_Changed;
             }
+        }
+
+        private void UpdateCalibrationSpanHint(decimal stepR)
+        {
+            if (lblCalibrationSpanHint == null || lblCalibrationSpanHint.IsDisposed) return;
+            double totalSpan = Decimal.ToDouble(stepR) * 4.0;
+            bool sufficient = totalSpan >= 20.0 - 1e-6;
+            lblCalibrationSpanHint.ForeColor = sufficient
+                ? TextMutedColor
+                : Color.FromArgb(185, 28, 28);
+            lblCalibrationSpanHint.Text = sufficient
+                ? string.Format(CultureInfo.InvariantCulture, "5/12 原点 · 旋转总跨度 {0:0.#}° (要求≥20°)", totalSpan)
+                : string.Format(CultureInfo.InvariantCulture, "跨度 {0:0.#}° < 20° 最低要求，请增大 R 步距", totalSpan);
         }
 
         private static void NumericInput_MouseWheel(object sender, MouseEventArgs e)
@@ -1372,7 +1416,9 @@ namespace NinePointRotationCalibration.Station.Views
 
         private void SyncDualViewportView(ImageViewport origin, ImageViewport target)
         {
-            if (!_dualViewActive || _syncingViewport || origin == null || target == null || !target.HasImage) return;
+            if (!_dualViewActive || _syncingViewport ||
+                (chkSyncDualViewport != null && !chkSyncDualViewport.Checked) ||
+                origin == null || target == null || !target.HasImage) return;
             _syncingViewport = true;
             try
             {

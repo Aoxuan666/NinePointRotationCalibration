@@ -41,7 +41,7 @@ namespace NinePointRotationCalibration.Station.Models
             TcpMaxMessageBytes = 1024 * 1024;
             MotionTimeoutMilliseconds = 30000;
             CameraProvider = "Dahua";
-            CameraLibraryDirectory = @"D:\ZM336AH\ZM336AH\lib";
+            CameraLibraryDirectory = string.Empty;
             DahuaSdkAssemblyPath = @"C:\Program Files\HuarayTech\MV Viewer\Development\DOTNET DLL\IMV\DOTNET_4.0\x64\MVSDK_Net.dll";
             CameraSerialNumber = string.Empty;
             CameraExposureMicroseconds = 10000;
@@ -52,7 +52,7 @@ namespace NinePointRotationCalibration.Station.Models
             CameraTimeoutMilliseconds = 3000;
             TranslationStepX = 10.0;
             TranslationStepY = 10.0;
-            RotationStepDegrees = 5.0;
+            RotationStepDegrees = 6.0;
             ExpectedBoardCount = 6;
             PreviewIntervalMilliseconds = 33;
             ArchiveImages = false;

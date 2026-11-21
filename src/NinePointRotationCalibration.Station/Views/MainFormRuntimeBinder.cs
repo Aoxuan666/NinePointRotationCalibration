@@ -60,6 +60,7 @@ namespace NinePointRotationCalibration.Station.Views
         private long _inspectionFrameGeneration = -1;
         private bool _disposed;
         private bool _suppressDetectionEvents;
+        private bool _suppressCameraProviderEvents;
         private decimal? _readExposure;
         private int _lastLiveInfoUpdateTick;
 
@@ -156,7 +157,7 @@ namespace NinePointRotationCalibration.Station.Views
                 _view.SetCameraStatus(
                     _runtime.IsCameraConnected ? CameraUiState.Connected : CameraUiState.Disconnected,
                     _runtime.IsCameraConnected ? "已就绪" : string.Empty);
-            bool tcpStarted = _runtime.IsStarted;
+            bool tcpStarted = _runtime.IsTcpListening;
             bool hostConnected = _runtime.IsHostConnected;
             _view.SetTcpStatus(
                 tcpStarted || hostConnected,
@@ -373,6 +374,10 @@ namespace NinePointRotationCalibration.Station.Views
                     case "camera.enumerate":
                         await RunOperationAsync("枚举相机", e.Source, EnumerateCamerasAsync).ConfigureAwait(true);
                         return;
+                    case "camera.providerChanged":
+                        if (_suppressCameraProviderEvents) return;
+                        await RunOperationAsync("切换相机驱动", e.Source, SwitchCameraProviderAsync).ConfigureAwait(true);
+                        return;
                     case "camera.connect":
                         await RunOperationAsync("连接相机", e.Source, ConnectSelectedCameraAsync).ConfigureAwait(true);
                         return;
@@ -438,16 +443,6 @@ namespace NinePointRotationCalibration.Station.Views
                         }
                         else if (e.Source != null && string.Equals(
                             e.Source.Name,
-                            "chkDarkForeground",
-                            StringComparison.OrdinalIgnoreCase))
-                        {
-                            bool darkFg = FindControl<CheckBox>("chkDarkForeground").Checked;
-                            FindControl<CheckBox>("chkFillHoles").Enabled = !darkFg;
-                            CheckBox darkHole = FindControl<CheckBox>("chkFillDarkHoles");
-                            if (darkHole != null) darkHole.Enabled = darkFg;
-                        }
-                        else if (e.Source != null && string.Equals(
-                            e.Source.Name,
                             "chkRectangleFilter",
                             StringComparison.OrdinalIgnoreCase))
                         {
@@ -459,8 +454,9 @@ namespace NinePointRotationCalibration.Station.Views
                             "chkTemplateMatchingEnabled",
                             StringComparison.OrdinalIgnoreCase))
                         {
-                            FindControl<CheckBox>("chkRoiAffineWithTemplate").Enabled =
-                                _view.TemplateMatchingInput.Checked;
+                            bool templateEnabled = _view.TemplateMatchingInput.Checked;
+                            FindControl<CheckBox>("chkRoiAffineWithTemplate").Enabled = templateEnabled;
+                            _view.ExpectedBoardCountInput.Enabled = templateEnabled;
                         }
                         if (_view.IsDetectionDualViewActive) ScheduleBinaryPreview(true);
                         return;
@@ -471,10 +467,10 @@ namespace NinePointRotationCalibration.Station.Views
                         await RunOperationAsync(
                             "启动 TCP 监听",
                             e.Source,
-                            token => _runtime.StartAsync(token)).ConfigureAwait(true);
+                            StartTcpServerFromViewAsync).ConfigureAwait(true);
                         return;
                     case "tcp.stop":
-                        await RunOperationAsync("停止 TCP 监听", e.Source, token => _runtime.StopAsync()).ConfigureAwait(true);
+                        await RunOperationAsync("停止 TCP 监听", e.Source, token => _runtime.StopTcpServerAsync()).ConfigureAwait(true);
                         return;
                     case "teaching.left.capture":
                         await CaptureTeachingAsync(TeachingSide.Left, e.Source).ConfigureAwait(true);
@@ -654,7 +650,15 @@ namespace NinePointRotationCalibration.Station.Views
             bool hikvision = string.Equals(provider, "Hikvision", StringComparison.OrdinalIgnoreCase) ||
                              string.Equals(provider, "MVS", StringComparison.OrdinalIgnoreCase);
             int preferred = dahua ? 0 : hikvision ? 1 : Math.Min(2, input.Items.Count - 1);
-            if (preferred >= 0) input.SelectedIndex = preferred;
+            _suppressCameraProviderEvents = true;
+            try
+            {
+                if (preferred >= 0) input.SelectedIndex = preferred;
+            }
+            finally
+            {
+                _suppressCameraProviderEvents = false;
+            }
         }
 
         private T FindControl<T>(string name) where T : Control

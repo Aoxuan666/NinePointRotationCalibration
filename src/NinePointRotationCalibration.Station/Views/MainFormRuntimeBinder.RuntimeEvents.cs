@@ -45,7 +45,10 @@ namespace NinePointRotationCalibration.Station.Views
                 }
                 else if (string.Equals(e.Component, "host", StringComparison.OrdinalIgnoreCase))
                 {
-                    _view.SetTcpStatus(e.Available || _runtime.IsStarted, e.Available ? "上位机 " + e.Detail : "等待上位机连接");
+                    bool listening = _runtime.IsTcpListening;
+                    _view.SetTcpStatus(
+                        e.Available || listening,
+                        e.Available ? "上位机 " + e.Detail : (listening ? "等待上位机连接" : "已停止"));
                 }
                 else if (string.Equals(e.Component, "tcp", StringComparison.OrdinalIgnoreCase))
                 {
@@ -77,8 +80,11 @@ namespace NinePointRotationCalibration.Station.Views
 
             bool ordinaryDisconnect = string.IsNullOrWhiteSpace(normalized) ||
                                       string.Equals(normalized, "Disconnected", StringComparison.OrdinalIgnoreCase);
+            bool infoDisconnect = ordinaryDisconnect ||
+                                  normalized.StartsWith("已切换驱动", StringComparison.Ordinal) ||
+                                  normalized.StartsWith("等待", StringComparison.Ordinal);
             _view.SetCameraStatus(
-                ordinaryDisconnect ? CameraUiState.Disconnected : CameraUiState.Error,
+                infoDisconnect ? CameraUiState.Disconnected : CameraUiState.Error,
                 ordinaryDisconnect ? string.Empty : normalized);
         }
 

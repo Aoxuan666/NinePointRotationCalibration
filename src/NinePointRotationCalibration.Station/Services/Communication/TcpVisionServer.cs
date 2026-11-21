@@ -84,8 +84,8 @@ namespace NinePointRotationCalibration.Station.Services.Communication
         public const int FrameHeaderSize = 4;
 
         private readonly object _stateSync = new object();
-        private readonly string _bindAddress;
-        private readonly int _port;
+        private string _bindAddress;
+        private int _port;
         private readonly int _maxMessageBytes;
         private readonly ProtocolJsonCodec _codec;
         private readonly SemaphoreSlim _lifecycleGate = new SemaphoreSlim(1, 1);
@@ -168,6 +168,32 @@ namespace NinePointRotationCalibration.Station.Services.Communication
             }
         }
 
+        public string BindAddress
+        {
+            get { lock (_stateSync) return _bindAddress; }
+        }
+
+        public int Port
+        {
+            get { lock (_stateSync) return _port; }
+        }
+
+        /// <summary>更新 TCP 监听地址与端口（需在未监听状态下生效，用于在线修改端口并热重启监听）。</summary>
+        public void UpdateEndpoint(string bindAddress, int port)
+        {
+            if (port < 1 || port > 65535)
+                throw new ArgumentOutOfRangeException(nameof(port), "TCP 监听端口必须在 1 到 65535 之间。");
+            string normalized = string.IsNullOrWhiteSpace(bindAddress) ? "0.0.0.0" : bindAddress.Trim();
+            ResolveBindAddress(normalized);
+            lock (_stateSync)
+            {
+                if (_running)
+                    throw new InvalidOperationException("请先停止当前 TCP 监听再修改监听地址或端口。");
+                _bindAddress = normalized;
+                _port = port;
+            }
+        }
+
         /// <summary>启动 TCP 监听并开始接受上位机连接。</summary>
         public Task StartAsync()
         {
@@ -184,13 +210,17 @@ namespace NinePointRotationCalibration.Station.Services.Communication
             try
             {
                 ThrowIfDisposed();
+                string bindAddress;
+                int port;
                 lock (_stateSync)
                 {
                     if (_running) return;
+                    bindAddress = _bindAddress;
+                    port = _port;
                 }
 
-                IPAddress address = ResolveBindAddress(_bindAddress);
-                TcpListener listener = new TcpListener(address, _port);
+                IPAddress address = ResolveBindAddress(bindAddress);
+                TcpListener listener = new TcpListener(address, port);
                 CancellationTokenSource lifetime = new CancellationTokenSource();
 
                 try

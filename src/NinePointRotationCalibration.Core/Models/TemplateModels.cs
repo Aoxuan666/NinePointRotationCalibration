@@ -155,8 +155,8 @@ namespace NinePointRotationCalibration
         public ShapeModelParameters()
         {
             NumLevels = 5;
-            AngleStartRad = -0.3;
-            AngleExtentRad = 0.6;
+            AngleStartRad = -15.0 * Math.PI / 180.0;
+            AngleExtentRad = 30.0 * Math.PI / 180.0;
             AngleStepRad = 0.0;
             Optimization = "auto";
             Metric = "ignore_local_polarity";
@@ -188,8 +188,8 @@ namespace NinePointRotationCalibration
         private void OnDeserializing(StreamingContext context)
         {
             NumLevels = 5;
-            AngleStartRad = -0.3;
-            AngleExtentRad = 0.6;
+            AngleStartRad = -15.0 * Math.PI / 180.0;
+            AngleExtentRad = 30.0 * Math.PI / 180.0;
             Optimization = "auto";
             Metric = "ignore_local_polarity";
             AutoThreshold = true;
@@ -233,9 +233,9 @@ namespace NinePointRotationCalibration
     {
         public MatchParameters()
         {
-            // 保持运行时搜索角度窗口较窄，避免正常板件偏转引发过大的全角度搜索耗时。
-            AngleStartRad = -5.0 * Math.PI / 180.0;
-            AngleExtentRad = 10.0 * Math.PI / 180.0;
+            // 默认 ±15° 搜索窗口，既覆盖生产来料板件偏转也兼容 9+5 旋转标定角度跨度。
+            AngleStartRad = -15.0 * Math.PI / 180.0;
+            AngleExtentRad = 30.0 * Math.PI / 180.0;
             MinScore = 0.5;
             NumMatches = 1;
             MaxOverlap = 0.3;

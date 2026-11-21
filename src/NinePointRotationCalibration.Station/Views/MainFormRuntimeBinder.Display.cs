@@ -796,11 +796,13 @@ namespace NinePointRotationCalibration.Station.Views
 
         private static string BuildEffectInfoText(DetectionProfile profile, bool binaryEnabled, int blobCount)
         {
+            bool fillEnabled = profile.DetectDarkForeground ? profile.FillDarkHoles : profile.FillHoles;
             return string.Format(
                 CultureInfo.InvariantCulture,
-                "{0}   {1}   {2}   形态学 {3}px   区域 {4}",
+                "{0}   {1}   {2}   {3}   去噪 {4}px   检出 {5}",
                 binaryEnabled ? "局部二值分割（ROI 外保留原图）" : "原图叠加",
                 profile.DetectDarkForeground ? "白底黑点" : "黑底白点",
+                fillEnabled ? "填孔" : "不填孔",
                 profile.AutoThreshold ? "自动阈值" : "阈值 " + profile.BrightThreshold,
                 profile.MorphologyRadius,
                 blobCount);

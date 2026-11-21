@@ -161,6 +161,7 @@ namespace NinePointRotationCalibration.Station.Services
             get { lock (_stateSync) return _started; }
         }
 
+        public bool IsTcpListening { get { return _tcpServer.IsRunning; } }
         public bool IsHostConnected { get { return _tcpServer.IsClientConnected; } }
         public bool IsCameraConnected { get { return _camera.IsConnected; } }
         public bool IsCameraEnabled { get { lock (_stateSync) return _options.CameraEnabled; } }
@@ -286,7 +287,7 @@ namespace NinePointRotationCalibration.Station.Services
                 shouldStop = _started;
                 _started = false;
             }
-            if (!shouldStop) return;
+            if (!shouldStop && !_tcpServer.IsRunning) return;
 
             LocalDebugLog.Write("INFO", "shutdown", "StationRuntime.StopAsync begin.");
             _calibration.CancelAutomatic();
@@ -294,6 +295,82 @@ namespace NinePointRotationCalibration.Station.Services
             await _tcpServer.StopAsync().ConfigureAwait(false);
             OnStateChanged("tcp", false, "Stopped");
             LocalDebugLog.Write("INFO", "shutdown", "StationRuntime.StopAsync completed.");
+        }
+
+        /// <summary>按指定监听地址与端口启动或热重启 TCP 服务端（不中断相机采集）。</summary>
+        public async Task StartTcpServerAsync(string bindAddress, int port, CancellationToken cancellationToken)
+        {
+            ThrowIfDisposed();
+            cancellationToken.ThrowIfCancellationRequested();
+            if (port < 1 || port > 65535)
+                throw new ArgumentOutOfRangeException(nameof(port), "TCP 监听端口必须在 1 到 65535 之间。");
+
+            string normalizedAddress = string.IsNullOrWhiteSpace(bindAddress) ? "0.0.0.0" : bindAddress.Trim();
+            bool needRestart = _tcpServer.IsRunning &&
+                (!string.Equals(_tcpServer.BindAddress, normalizedAddress, StringComparison.OrdinalIgnoreCase) ||
+                 _tcpServer.Port != port);
+
+            if (needRestart)
+            {
+                await _tcpServer.StopAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            if (!_tcpServer.IsRunning)
+            {
+                _tcpServer.UpdateEndpoint(normalizedAddress, port);
+                await _tcpServer.StartAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            StationOptions snapshot;
+            lock (_stateSync)
+            {
+                _started = true;
+                _options.TcpBindAddress = normalizedAddress;
+                _options.TcpPort = port;
+                snapshot = _options.DeepClone();
+            }
+            _jsonStore.Save(_optionsPath, snapshot);
+            LocalDebugLog.Write("INFO", "tcp", "TCP server listening on " + _tcpServer.LocalEndPoint);
+            OnStateChanged("tcp", true, "Listening on " + _tcpServer.LocalEndPoint);
+        }
+
+        /// <summary>仅停止 TCP 监听（保持相机连接与预览状态不变）。</summary>
+        public async Task StopTcpServerAsync()
+        {
+            if (_disposed) return;
+            await _tcpServer.StopAsync().ConfigureAwait(false);
+            OnStateChanged("tcp", false, "Stopped");
+            LocalDebugLog.Write("INFO", "tcp", "TCP server stopped by user.");
+        }
+
+        /// <summary>热切换相机驱动类型（大华 / 海康 / 模拟相机），无需重启程序。</summary>
+        public async Task SwitchCameraProviderAsync(string provider, CancellationToken cancellationToken)
+        {
+            ThrowIfDisposed();
+            string normalized = string.IsNullOrWhiteSpace(provider) ? "Mock" : provider.Trim();
+            StationOptions nextOptions;
+            lock (_stateSync)
+            {
+                if (string.Equals(_options.CameraProvider, normalized, StringComparison.OrdinalIgnoreCase))
+                    return;
+                nextOptions = _options.DeepClone();
+                nextOptions.CameraProvider = normalized;
+                nextOptions.CameraSerialNumber = string.Empty;
+            }
+
+            ICameraDevice nextDevice = CreateCameraDevice(nextOptions);
+            await _camera.ReplaceDeviceAsync(nextDevice, cancellationToken).ConfigureAwait(false);
+            lock (_stateSync)
+            {
+                _options.CameraProvider = normalized;
+                _options.CameraSerialNumber = string.Empty;
+                nextOptions = _options.DeepClone();
+            }
+            _jsonStore.Save(_optionsPath, nextOptions);
+            OnStateChanged("camera", false, string.Equals(normalized, "Mock", StringComparison.OrdinalIgnoreCase)
+                ? "等待手动导入图像"
+                : "已切换驱动：" + normalized);
+            LocalDebugLog.Write("INFO", "camera.provider", "Switched camera provider to '" + normalized + "'.");
         }
 
         public async Task<IReadOnlyList<CameraDescriptor>> EnumerateCamerasAsync(CancellationToken cancellationToken)
@@ -1247,7 +1324,7 @@ namespace NinePointRotationCalibration.Station.Services
             _calibration.UpdateOptions(copy);
             _camera.SetPreviewInterval(copy.PreviewIntervalMilliseconds);
             LocalDebugLog.Write("INFO", "config.options", "Options saved: " + StationLogFormatter.FormatOptions(copy));
-            OnLog("INFO", "Station settings saved. TCP or camera provider changes apply after restart.");
+            OnLog("INFO", "工作站设置已保存。");
         }
 
         private async Task ConnectConfiguredCameraAsync(CancellationToken cancellationToken)

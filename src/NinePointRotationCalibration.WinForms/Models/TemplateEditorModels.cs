@@ -17,10 +17,10 @@ namespace NinePointRotationCalibration.WinForms.Models
             ModelType = TemplateModelType.Shape;
             NumLevels = 5;
             MatchNumLevels = 0;
-            AngleStartDegrees = -0.3 * 180.0 / Math.PI;
-            AngleExtentDegrees = 0.6 * 180.0 / Math.PI;
-            MatchAngleStartDegrees = -5.0;
-            MatchAngleExtentDegrees = 10.0;
+            AngleStartDegrees = -15.0;
+            AngleExtentDegrees = 30.0;
+            MatchAngleStartDegrees = -15.0;
+            MatchAngleExtentDegrees = 30.0;
             _hasSeparateMatchParameters = true;
             AngleStepDegrees = 0.0;
             Optimization = "auto";

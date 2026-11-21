@@ -37,6 +37,7 @@ namespace NinePointRotationCalibration.Station.Views
         private Label lblEffectViewportInfo;
         private Label lblCameraLiveStatus;
         private Button btnToggleDualLayout;
+        private CheckBox chkSyncDualViewport;
         private Button btnToggleLiveStream;
         private Button btnSyncLiveToMain;
         private Button btnFitLivePreview;
@@ -48,6 +49,8 @@ namespace NinePointRotationCalibration.Station.Views
         private RichTextBox rtbLog;
         private TabControl tabWork;
         private NumericUpDown nudExpectedCount;
+        private ComboBox cmbDetectionPolarity;
+        private ComboBox cmbHoleFillMode;
         private CheckBox chkRectangleFilter;
         private CheckBox chkTemplateMatchingEnabled;
         private CheckBox chkBinaryPreview;
@@ -68,6 +71,7 @@ namespace NinePointRotationCalibration.Station.Views
         private Label lblCursorPosition;
         private Label lblInspectionHud;
         private Label lblDetectionSummary;
+        private Label lblCalibrationSpanHint;
         private Button btnSnapshot;
         private Button btnImportImage;
         private Button btnDetectCurrentImage;
@@ -312,9 +316,23 @@ namespace NinePointRotationCalibration.Station.Views
             btnToggleDualLayout.Font = new Font("Microsoft YaHei UI", 8.0F, FontStyle.Regular, GraphicsUnit.Point, 134);
             btnToggleDualLayout.ForeColor = Color.FromArgb(226, 232, 240);
             btnToggleDualLayout.Name = "btnToggleDualLayout";
-            btnToggleDualLayout.Text = "⇄ 左右对比";
+            btnToggleDualLayout.Text = "⇄ 切换左右";
             btnToggleDualLayout.Width = 88;
             toolTip.SetToolTip(btnToggleDualLayout, "切换原图与检测效果图窗口的上下 / 左右排列方式");
+            chkSyncDualViewport = new CheckBox();
+            chkSyncDualViewport.AutoSize = false;
+            chkSyncDualViewport.BackColor = ViewportHeaderColor;
+            chkSyncDualViewport.Checked = true;
+            chkSyncDualViewport.Cursor = Cursors.Hand;
+            chkSyncDualViewport.Dock = DockStyle.Right;
+            chkSyncDualViewport.Font = new Font("Microsoft YaHei UI", 8.0F, FontStyle.Regular, GraphicsUnit.Point, 134);
+            chkSyncDualViewport.ForeColor = Color.FromArgb(203, 213, 225);
+            chkSyncDualViewport.Name = "chkSyncDualViewport";
+            chkSyncDualViewport.Padding = new Padding(0, 0, 6, 0);
+            chkSyncDualViewport.Text = "双窗联动";
+            chkSyncDualViewport.UseVisualStyleBackColor = false;
+            chkSyncDualViewport.Width = 80;
+            toolTip.SetToolTip(chkSyncDualViewport, "开启时原图与效果图同步缩放平移；取消勾选可各自独立查看不同区域");
             Label lblSourceViewportTitle = new Label();
             lblSourceViewportTitle.Dock = DockStyle.Fill;
             lblSourceViewportTitle.Font = new Font("Microsoft YaHei UI", 8.25F, FontStyle.Bold, GraphicsUnit.Point, 134);
@@ -322,6 +340,7 @@ namespace NinePointRotationCalibration.Station.Views
             lblSourceViewportTitle.Text = "原图视口";
             lblSourceViewportTitle.TextAlign = ContentAlignment.MiddleLeft;
             pnlSourceViewportHeader.Controls.Add(lblSourceViewportTitle);
+            pnlSourceViewportHeader.Controls.Add(chkSyncDualViewport);
             pnlSourceViewportHeader.Controls.Add(btnToggleDualLayout);
 
             imageViewport = new ImageViewport();
@@ -454,7 +473,7 @@ namespace NinePointRotationCalibration.Station.Views
             layout.MinimumSize = new Size(0, 520);
             layout.Padding = new Padding(10);
             layout.RowCount = 4;
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 232.0F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 242.0F));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 44.0F));
             layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100.0F));
@@ -530,28 +549,45 @@ namespace NinePointRotationCalibration.Station.Views
                 point1, point2, point3, point4, point5, point6, point7,
                 point8, point9, point10, point11, point12, point13, point14
             };
+            string[] pointTips =
+            {
+                "P1：九点平移 (-ΔX, -ΔY)", "P2：九点平移 (0, -ΔY)", "P3：九点平移 (+ΔX, -ΔY)",
+                "P4：九点平移 (+ΔX, 0)", "P5：九点共享中心原点 (0, 0)", "P6：九点平移 (-ΔX, 0)",
+                "P7：九点平移 (-ΔX, +ΔY)", "P8：九点平移 (0, +ΔY)", "P9：九点平移 (+ΔX, +ΔY)",
+                "R10：旋转点 -2ΔR", "R11：旋转点 -ΔR", "R12：五点共享原点 0°",
+                "R13：旋转点 +ΔR", "R14：旋转点 +2ΔR"
+            };
+            for (int i = 0; i < calibrationPointButtons.Length; i++)
+            {
+                toolTip.SetToolTip(calibrationPointButtons[i], pointTips[i]);
+            }
 
             TableLayoutPanel moveFields = CreateFieldTable(2);
             moveFields.AutoScroll = false;
-            moveFields.ColumnStyles[0].Width = 94.0F;
-            NumericUpDown stepX = CreateDecimalInput("nudCalibrationStepX", 10.0M, 0.001M, 1000.0M, 3);
-            NumericUpDown stepY = CreateDecimalInput("nudCalibrationStepY", 10.0M, 0.001M, 1000.0M, 3);
-            NumericUpDown stepR = CreateDecimalInput("nudCalibrationStepR", 3.0M, 0.001M, 360.0M, 3);
-            NumericUpDown motionTimeout = CreateDecimalInput("nudMotionTimeout", 30000.0M, 1000.0M, 600000.0M, 0);
+            moveFields.ColumnStyles[0].Width = 96.0F;
+            NumericUpDown stepX = CreateDecimalInput("nudCalibrationStepX", 10.0M, 0.1M, 500.0M, 3, 1.0M, false);
+            NumericUpDown stepY = CreateDecimalInput("nudCalibrationStepY", 10.0M, 0.1M, 500.0M, 3, 1.0M, false);
+            NumericUpDown stepR = CreateDecimalInput("nudCalibrationStepR", 6.0M, 0.5M, 90.0M, 2, 0.5M, false);
+            NumericUpDown motionTimeout = CreateDecimalInput("nudMotionTimeout", 30000.0M, 1000.0M, 600000.0M, 0, 1000.0M, false);
+            toolTip.SetToolTip(stepR, "五点旋转依次采集 -2ΔR / -ΔR / 0 / +ΔR / +2ΔR，总跨度 4×ΔR 须 ≥ 20°（推荐 6°~10°）");
+            toolTip.SetToolTip(motionTimeout, "等待上位机运动到位的超时时间（毫秒），每次调节步进 1000 ms");
             AddField(moveFields, 0, "X 步距 (mm)", stepX);
             AddField(moveFields, 1, "Y 步距 (mm)", stepY);
-            AddField(moveFields, 2, "R 步距 (deg)", stepR);
+            AddField(moveFields, 2, "R 步距 (°)", stepR);
             AddField(moveFields, 3, "到位超时 (ms)", motionTimeout);
             moveFields.RowCount = 5;
             moveFields.RowStyles.Add(new RowStyle(SizeType.Percent, 100.0F));
-            Label centerHint = new Label();
-            centerHint.AutoSize = true;
-            centerHint.Font = new Font("Microsoft YaHei UI", 8.25F, FontStyle.Regular, GraphicsUnit.Point, 134);
-            centerHint.ForeColor = TextMutedColor;
-            centerHint.Margin = new Padding(0, 4, 0, 0);
-            centerHint.Text = "5 / 12 号为九点 / 五点原点";
-            moveFields.Controls.Add(centerHint, 0, 4);
-            moveFields.SetColumnSpan(centerHint, 2);
+            lblCalibrationSpanHint = new Label();
+            lblCalibrationSpanHint.AutoEllipsis = true;
+            lblCalibrationSpanHint.Dock = DockStyle.Fill;
+            lblCalibrationSpanHint.Font = new Font("Microsoft YaHei UI", 8.0F, FontStyle.Regular, GraphicsUnit.Point, 134);
+            lblCalibrationSpanHint.ForeColor = TextMutedColor;
+            lblCalibrationSpanHint.Margin = new Padding(0, 4, 0, 0);
+            lblCalibrationSpanHint.Name = "lblCalibrationSpanHint";
+            lblCalibrationSpanHint.Text = "5/12 原点 · 旋转总跨度 24.0° (要求≥20°)";
+            lblCalibrationSpanHint.TextAlign = ContentAlignment.MiddleLeft;
+            moveFields.Controls.Add(lblCalibrationSpanHint, 0, 4);
+            moveFields.SetColumnSpan(lblCalibrationSpanHint, 2);
             Panel moveGroup = CreateCard("点位参数", moveFields);
             moveGroup.Margin = new Padding(4, 0, 0, 8);
 
@@ -589,14 +625,14 @@ namespace NinePointRotationCalibration.Station.Views
             dgvCalibration.MinimumSize = new Size(0, 140);
             dgvCalibration.MultiSelect = false;
             dgvCalibration.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
-            AddTextColumn(dgvCalibration, "Point", "点", 36);
-            AddTextColumn(dgvCalibration, "Kind", "类型", 42);
-            AddTextColumn(dgvCalibration, "MachineX", "机械 X", 66);
-            AddTextColumn(dgvCalibration, "MachineY", "机械 Y", 66);
-            AddTextColumn(dgvCalibration, "MachineR", "机械 R", 60);
+            AddTextColumn(dgvCalibration, "Point", "点", 34);
+            AddTextColumn(dgvCalibration, "Kind", "类型", 40);
+            AddTextColumn(dgvCalibration, "MachineX", "机械 X(mm)", 76);
+            AddTextColumn(dgvCalibration, "MachineY", "机械 Y(mm)", 76);
+            AddTextColumn(dgvCalibration, "MachineR", "机械 R(°)", 68);
             AddTextColumn(dgvCalibration, "ImageRow", "图像 Row", 70);
             AddTextColumn(dgvCalibration, "ImageColumn", "图像 Col", 70);
-            AddTextColumn(dgvCalibration, "ImageAngle", "角度", 56);
+            AddTextColumn(dgvCalibration, "ImageAngle", "图像角(°)", 66);
             AddTextColumn(dgvCalibration, "Residual", "残差(px)", 64);
             AddTextColumn(dgvCalibration, "Status", "状态", 52);
 
@@ -614,10 +650,10 @@ namespace NinePointRotationCalibration.Station.Views
             TabPage page = CreateTabPage("tabTeaching", "左右示教");
             TableLayoutPanel layout = CreateScrollableStack(page);
             layout.RowCount = 4;
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 212.0F));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 212.0F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 220.0F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 220.0F));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 62.0F));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 52.0F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 54.0F));
 
             TextBox[] leftValues;
             TextBox[] rightValues;
@@ -635,10 +671,10 @@ namespace NinePointRotationCalibration.Station.Views
             lblDualNozzleSummary.Margin = new Padding(0, 2, 0, 8);
             lblDualNozzleSummary.Name = "lblDualNozzleSummary";
             lblDualNozzleSummary.Padding = new Padding(12, 7, 12, 7);
-            lblDualNozzleSummary.Text = "双吸嘴状态：等待左右吸嘴完成示教\r\n工艺模式：吸取时旋转 R 轴对齐来料板角 → 盲摆转回固定示教角 (0°)";
+            lblDualNozzleSummary.Text = "双吸嘴状态：等待左右吸嘴完成示教\r\n工艺模式：吸取时旋转 R 轴对齐来料板角 → 盲摆转回固定示教 R 角";
             lblDualNozzleSummary.TextAlign = ContentAlignment.MiddleLeft;
 
-            Label hint = CreateHintLabel("多板治具下，记录左/右吸嘴示教均自动锁定左上角 1 号基准板；吸取时 R 轴旋转对齐 PCB，盲摆时转回示教固定 R 角（0°），并自动补偿旋转中心偏心摆臂。");
+            Label hint = CreateHintLabel("多板治具下，记录左/右吸嘴示教均自动锁定左上角 1 号基准板；吸取时 R 轴旋转对齐 PCB，盲摆时转回示教固定 R 角，并自动补偿旋转中心偏心摆臂。");
             layout.Controls.Add(leftGroup, 0, 0);
             layout.Controls.Add(rightGroup, 0, 1);
             layout.Controls.Add(lblDualNozzleSummary, 0, 2);
@@ -703,64 +739,74 @@ namespace NinePointRotationCalibration.Station.Views
             layout.Dock = DockStyle.Fill;
             layout.Padding = new Padding(10);
             layout.RowCount = 4;
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 314.0F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 316.0F));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 44.0F));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 28.0F));
             layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100.0F));
 
             TableLayoutPanel settingFields = CreatePairedFieldTable();
-            settingFields.RowCount = 9;
+            settingFields.RowCount = 8;
             settingFields.RowStyles.Clear();
-            settingFields.RowStyles.Add(new RowStyle(SizeType.Percent, 11.11F));
-            settingFields.RowStyles.Add(new RowStyle(SizeType.Percent, 11.11F));
-            settingFields.RowStyles.Add(new RowStyle(SizeType.Percent, 11.11F));
-            settingFields.RowStyles.Add(new RowStyle(SizeType.Percent, 11.11F));
-            settingFields.RowStyles.Add(new RowStyle(SizeType.Percent, 11.11F));
-            settingFields.RowStyles.Add(new RowStyle(SizeType.Percent, 11.11F));
-            settingFields.RowStyles.Add(new RowStyle(SizeType.Percent, 11.11F));
-            settingFields.RowStyles.Add(new RowStyle(SizeType.Percent, 11.11F));
-            settingFields.RowStyles.Add(new RowStyle(SizeType.Percent, 11.12F));
-            nudExpectedCount = CreateDecimalInput("nudExpectedCount", 6.0M, 1.0M, 100.0M, 0);
-            NumericUpDown brightThreshold = CreateDecimalInput("nudBrightThreshold", 128.0M, 0.0M, 255.0M, 0);
-            NumericUpDown minimumArea = CreateDecimalInput("nudMinimumBlobArea", 30.0M, 0.0M, 10000000.0M, 0);
-            NumericUpDown maximumArea = CreateDecimalInput("nudMaximumBlobArea", 10000.0M, 0.0M, 10000000.0M, 0);
-            NumericUpDown rectangularity = CreateDecimalInput("nudRectangularity", 0.78M, 0.0M, 1.0M, 2);
-            NumericUpDown morphologyRadius = CreateDecimalInput("nudMorphologyRadius", 1.0M, 0.0M, 5.0M, 0);
+            settingFields.RowStyles.Add(new RowStyle(SizeType.Absolute, 34.0F));
+            settingFields.RowStyles.Add(new RowStyle(SizeType.Absolute, 32.0F));
+            settingFields.RowStyles.Add(new RowStyle(SizeType.Absolute, 32.0F));
+            settingFields.RowStyles.Add(new RowStyle(SizeType.Absolute, 32.0F));
+            settingFields.RowStyles.Add(new RowStyle(SizeType.Absolute, 32.0F));
+            settingFields.RowStyles.Add(new RowStyle(SizeType.Absolute, 28.0F));
+            settingFields.RowStyles.Add(new RowStyle(SizeType.Absolute, 28.0F));
+            settingFields.RowStyles.Add(new RowStyle(SizeType.Absolute, 28.0F));
+
+            cmbDetectionPolarity = CreateComboBox("cmbDetectionPolarity");
+            cmbDetectionPolarity.Items.AddRange(new object[] { "黑底白点 (亮)", "白底黑点 (暗)" });
+            cmbDetectionPolarity.SelectedIndex = 0;
+            cmbDetectionPolarity.Tag = "detection.previewParameters";
+            toolTip.SetToolTip(cmbDetectionPolarity, "选择不良标记相对背景的明暗极性：黑底白点检测亮标记，白底黑点检测暗标记");
+
+            cmbHoleFillMode = CreateComboBox("cmbHoleFillMode");
+            cmbHoleFillMode.Items.AddRange(new object[] { "填充内部空洞", "不填充空洞" });
+            cmbHoleFillMode.SelectedIndex = 0;
+            cmbHoleFillMode.Tag = "detection.previewParameters";
+            toolTip.SetToolTip(cmbHoleFillMode, "选择是否填充检出目标内部的封闭空洞（自动按当前检测极性生效）");
+
+            nudExpectedCount = CreateDecimalInput("nudExpectedCount", 6.0M, 1.0M, 100.0M, 0, 1.0M, false);
+            NumericUpDown brightThreshold = CreateDecimalInput("nudBrightThreshold", 128.0M, 0.0M, 255.0M, 0, 1.0M, false);
+            NumericUpDown minimumArea = CreateDecimalInput("nudMinimumBlobArea", 20.0M, 0.0M, 10000000.0M, 0, 10.0M, true);
+            NumericUpDown maximumArea = CreateDecimalInput("nudMaximumBlobArea", 100000.0M, 0.0M, 10000000.0M, 0, 100.0M, true);
+            NumericUpDown rectangularity = CreateDecimalInput("nudRectangularity", 0.92M, 0.0M, 1.0M, 2, 0.01M, false);
+            NumericUpDown morphologyRadius = CreateDecimalInput("nudMorphologyRadius", 1.0M, 0.0M, 20.0M, 0, 1.0M, false);
             nudExpectedCount.Tag = "detection.previewParameters";
             brightThreshold.Tag = "detection.previewParameters";
             minimumArea.Tag = "detection.previewParameters";
             maximumArea.Tag = "detection.previewParameters";
             rectangularity.Tag = "detection.previewParameters";
             morphologyRadius.Tag = "detection.previewParameters";
-            AddPairedField(settingFields, 0, 0, "生产目标板数", nudExpectedCount);
-            AddPairedField(settingFields, 0, 2, "手动阈值", brightThreshold);
-            AddPairedField(settingFields, 1, 0, "最小面积", minimumArea);
-            AddPairedField(settingFields, 1, 2, "最大面积", maximumArea);
-            AddPairedField(settingFields, 2, 0, "矩形度", rectangularity);
-            AddPairedField(settingFields, 3, 0, "噪点去除半径", morphologyRadius);
+            toolTip.SetToolTip(nudExpectedCount, "启用模板匹配时用于核对单帧实际检出的子板数量");
+            toolTip.SetToolTip(brightThreshold, "手动固定二值化阈值 (0-255)；勾选「ROI 自动阈值」后自动接管");
+            toolTip.SetToolTip(rectangularity, "矩形度上限 (0.00-1.00)，大于等于该值的规整矩形将被判定为标签干扰并过滤");
+            toolTip.SetToolTip(morphologyRadius, "形态学开运算去噪半径（像素），设为 0 表示关闭去噪");
+
+            AddPairedField(settingFields, 0, 0, "检测极性", cmbDetectionPolarity);
+            AddPairedField(settingFields, 0, 2, "空洞填充", cmbHoleFillMode);
+            AddPairedField(settingFields, 1, 0, "生产目标板数", nudExpectedCount);
+            AddPairedField(settingFields, 1, 2, "手动阈值", brightThreshold);
+            AddPairedField(settingFields, 2, 0, "最小面积(px²)", minimumArea);
+            AddPairedField(settingFields, 2, 2, "最大面积(px²)", maximumArea);
+            AddPairedField(settingFields, 3, 0, "矩形度阈值", rectangularity);
             chkRectangleFilter = CreateCheckBox("chkRectangleFilter", "启用矩形标签过滤", true, "detection.previewParameters");
-            settingFields.Controls.Add(chkRectangleFilter, 2, 2);
+            settingFields.Controls.Add(chkRectangleFilter, 2, 3);
             settingFields.SetColumnSpan(chkRectangleFilter, 2);
-            CheckBox autoThreshold = CreateCheckBox("chkAutoThreshold", "ROI 自动阈值", true, "detection.previewParameters");
-            settingFields.Controls.Add(autoThreshold, 2, 3);
+            AddPairedField(settingFields, 4, 0, "噪点半径(px)", morphologyRadius);
+            CheckBox autoThreshold = CreateCheckBox("chkAutoThreshold", "ROI 自动阈值 (Otsu)", true, "detection.previewParameters");
+            settingFields.Controls.Add(autoThreshold, 2, 4);
             settingFields.SetColumnSpan(autoThreshold, 2);
-            CheckBox darkForeground = CreateCheckBox("chkDarkForeground", "白底黑点（暗目标）", false, "detection.previewParameters");
-            settingFields.Controls.Add(darkForeground, 0, 4);
-            settingFields.SetColumnSpan(darkForeground, 4);
-            CheckBox fillHoles = CreateCheckBox("chkFillHoles", "填充白色空洞（白目标）", true, "detection.previewParameters");
-            settingFields.Controls.Add(fillHoles, 0, 5);
-            settingFields.SetColumnSpan(fillHoles, 2);
-            CheckBox fillDarkHoles = CreateCheckBox("chkFillDarkHoles", "填充黑色空洞（黑目标）", true, "detection.previewParameters");
-            settingFields.Controls.Add(fillDarkHoles, 2, 5);
-            settingFields.SetColumnSpan(fillDarkHoles, 2);
             chkTemplateMatchingEnabled = CreateCheckBox("chkTemplateMatchingEnabled", "启用模板匹配（生产检测）", true, "detection.previewParameters");
-            settingFields.Controls.Add(chkTemplateMatchingEnabled, 0, 6);
+            settingFields.Controls.Add(chkTemplateMatchingEnabled, 0, 5);
             settingFields.SetColumnSpan(chkTemplateMatchingEnabled, 4);
             CheckBox affineWithTemplate = CreateCheckBox("chkRoiAffineWithTemplate", "使用模板中的检测 ROI（随板旋转）", true, "detection.previewParameters");
-            settingFields.Controls.Add(affineWithTemplate, 0, 7);
+            settingFields.Controls.Add(affineWithTemplate, 0, 6);
             settingFields.SetColumnSpan(affineWithTemplate, 4);
             chkBinaryPreview = CreateCheckBox("chkBinaryPreview", "检测效果图显示局部二值分割", true, "detection.binaryPreview");
-            settingFields.Controls.Add(chkBinaryPreview, 0, 8);
+            settingFields.Controls.Add(chkBinaryPreview, 0, 7);
             settingFields.SetColumnSpan(chkBinaryPreview, 4);
             Panel settings = CreateCard("板件与标记检测参数", settingFields);
 
@@ -772,12 +818,13 @@ namespace NinePointRotationCalibration.Station.Views
             currentRLabel.AutoSize = false;
             currentRLabel.ForeColor = TextSecondaryColor;
             currentRLabel.Margin = new Padding(0, 0, 4, 0);
-            currentRLabel.Size = new Size(46, 32);
-            currentRLabel.Text = "当前 R";
+            currentRLabel.Size = new Size(56, 32);
+            currentRLabel.Text = "当前 R(°)";
             currentRLabel.TextAlign = ContentAlignment.MiddleLeft;
-            NumericUpDown currentR = CreateDecimalInput("nudInspectionCurrentR", 0.0M, -360000.0M, 360000.0M, 3);
+            NumericUpDown currentR = CreateDecimalInput("nudInspectionCurrentR", 0.0M, -360.0M, 360.0M, 2, 1.0M, false);
             currentR.Margin = new Padding(0, 4, 10, 0);
-            currentR.Size = new Size(68, 27);
+            currentR.Size = new Size(76, 27);
+            toolTip.SetToolTip(currentR, "离线或手动测试检测时模拟机台当前 R 轴角度（度）");
             actions.Controls.Add(currentRLabel);
             actions.Controls.Add(currentR);
             actions.Controls.Add(CreateButton("btnTestDetection", "测试检测", 84, 34, true, "detection.test"));
@@ -789,7 +836,7 @@ namespace NinePointRotationCalibration.Station.Views
             lblDetectionSummary.Dock = DockStyle.Fill;
             lblDetectionSummary.Font = new Font("Microsoft YaHei UI", 9.0F, FontStyle.Bold, GraphicsUnit.Point, 134);
             lblDetectionSummary.ForeColor = TextSecondaryColor;
-            lblDetectionSummary.Text = "目标 6  /  实际 --  /  等待检测";
+            lblDetectionSummary.Text = "目标 --  /  实际 --  /  等待检测";
             lblDetectionSummary.TextAlign = ContentAlignment.MiddleLeft;
 
             dgvDetectionResults = new DataGridView();
@@ -844,9 +891,10 @@ namespace NinePointRotationCalibration.Station.Views
             chkLiveAcquisition.Margin = new Padding(0, 4, 16, 4);
             toolTip.SetToolTip(chkLiveAcquisition, "开启后兼容大华/海康/模拟相机平滑实时采集流，并自动在生产抓拍时无冲突让出相机");
 
-            chkArchiveImages = CreateCheckBox("chkArchiveImages", "保存生产原图（默认关闭）", false, "camera.archiveImages");
+            chkArchiveImages = CreateCheckBox("chkArchiveImages", "保存生产原图", false, "camera.archiveImages");
             chkArchiveImages.Dock = DockStyle.None;
             chkArchiveImages.Margin = new Padding(0, 4, 0, 4);
+            toolTip.SetToolTip(chkArchiveImages, "开启后自动保存每次检测原图到归档目录（默认关闭以节省磁盘空间）");
 
             modeOptions.Controls.Add(chkCameraEnabled);
             modeOptions.Controls.Add(chkCalibrationEnabled);
@@ -908,6 +956,8 @@ namespace NinePointRotationCalibration.Station.Views
             cmbCameraProvider = CreateComboBox("cmbCameraProvider");
             cmbCameraProvider.Items.AddRange(new object[] { "大华 (CameraDH)", "海康 (MVS)", "模拟相机" });
             cmbCameraProvider.SelectedIndex = 0;
+            cmbCameraProvider.Tag = "camera.providerChanged";
+            toolTip.SetToolTip(cmbCameraProvider, "切换相机驱动后即时生效，点击「枚举」或「连接」即可发现对应相机");
             cmbCameraDevice = CreateComboBox("cmbCameraDevice");
             AddField(connectionFields, 0, "相机驱动", cmbCameraProvider);
             AddField(connectionFields, 1, "设备", cmbCameraDevice);
@@ -928,7 +978,9 @@ namespace NinePointRotationCalibration.Station.Views
 
             TableLayoutPanel acquisitionFields = CreateFieldTable(2);
             acquisitionFields.AutoScroll = false;
-            AddField(acquisitionFields, 0, "曝光 (μs)", CreateDecimalInput("nudCameraExposure", 0M, 0M, 1000000000M, 3));
+            NumericUpDown cameraExposure = CreateDecimalInput("nudCameraExposure", 10000M, 10M, 10000000M, 1, 100M, false);
+            toolTip.SetToolTip(cameraExposure, "相机曝光时间（微秒 μs），范围 10 ~ 10,000,000，每次调节步进 100 μs");
+            AddField(acquisitionFields, 0, "曝光 (μs)", cameraExposure);
             AddField(acquisitionFields, 1, "增益", new Label { Name = "lblCameraGain", Text = "未读取", AutoSize = true, Anchor = AnchorStyles.Left, ForeColor = TextSecondaryColor });
             AddField(acquisitionFields, 2, "触发模式", new Label { Name = "lblCameraTrigger", Text = "未读取", AutoSize = true, Anchor = AnchorStyles.Left, ForeColor = TextSecondaryColor });
             Panel acquisition = CreateCard("采集参数", acquisitionFields);
@@ -962,7 +1014,9 @@ namespace NinePointRotationCalibration.Station.Views
             TableLayoutPanel tcpFields = CreateFieldTable(2);
             tcpFields.AutoScroll = false;
             txtTcpBindAddress = CreateTextBox("txtTcpBindAddress", "0.0.0.0");
-            nudTcpPort = CreateDecimalInput("nudTcpPort", 9100.0M, 1.0M, 65535.0M, 0);
+            nudTcpPort = CreateDecimalInput("nudTcpPort", 9100.0M, 1.0M, 65535.0M, 0, 1.0M, false);
+            toolTip.SetToolTip(txtTcpBindAddress, "监听网卡 IP（0.0.0.0 表示监听本机所有网卡）");
+            toolTip.SetToolTip(nudTcpPort, "TCP 服务监听端口 (1-65535)，修改后点击「启动监听」立即生效");
             AddField(tcpFields, 0, "监听地址", txtTcpBindAddress);
             AddField(tcpFields, 1, "监听端口", nudTcpPort);
             tcpFields.RowCount = 3;
@@ -972,7 +1026,9 @@ namespace NinePointRotationCalibration.Station.Views
             tcpCommands.Dock = DockStyle.Fill;
             tcpCommands.Margin = Padding.Empty;
             tcpCommands.Padding = new Padding(0, 4, 0, 0);
-            tcpCommands.Controls.Add(CreateButton("btnStartTcp", "启动监听", 88, 30, true, "tcp.start"));
+            Button startTcpButton = CreateButton("btnStartTcp", "启动监听", 88, 30, true, "tcp.start");
+            toolTip.SetToolTip(startTcpButton, "按当前监听地址与端口启动或热重启 TCP 监听");
+            tcpCommands.Controls.Add(startTcpButton);
             tcpCommands.Controls.Add(CreateButton("btnStopTcp", "停止监听", 88, 30, false, "tcp.stop"));
             tcpFields.Controls.Add(tcpCommands, 0, 2);
             tcpFields.SetColumnSpan(tcpCommands, 2);
@@ -1076,9 +1132,9 @@ namespace NinePointRotationCalibration.Station.Views
         {
             TableLayoutPanel fields = new TableLayoutPanel();
             fields.ColumnCount = 4;
-            fields.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 68.0F));
+            fields.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 84.0F));
             fields.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50.0F));
-            fields.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 68.0F));
+            fields.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 78.0F));
             fields.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50.0F));
             fields.Dock = DockStyle.Fill;
             fields.Margin = Padding.Empty;
@@ -1098,12 +1154,12 @@ namespace NinePointRotationCalibration.Station.Views
             TextBox machineR = CreateMachinePoseInput(sideKey + "MachineR");
             values = new[] { imageRow, imageColumn, imageAngle, machineX, machineY, machineR };
 
-            AddTeachingField(fields, 0, 0, "图像 Row", imageRow);
-            AddTeachingField(fields, 0, 2, "机械 X", machineX);
-            AddTeachingField(fields, 1, 0, "图像 Col", imageColumn);
-            AddTeachingField(fields, 1, 2, "机械 Y", machineY);
-            AddTeachingField(fields, 2, 0, "图像角度", imageAngle);
-            AddTeachingField(fields, 2, 2, "机械 R", machineR);
+            AddTeachingField(fields, 0, 0, "图像 Row(px)", imageRow);
+            AddTeachingField(fields, 0, 2, "机械 X(mm)", machineX);
+            AddTeachingField(fields, 1, 0, "图像 Col(px)", imageColumn);
+            AddTeachingField(fields, 1, 2, "机械 Y(mm)", machineY);
+            AddTeachingField(fields, 2, 0, "图像角(°)", imageAngle);
+            AddTeachingField(fields, 2, 2, "机械 R(°)", machineR);
 
             statusLabel = new Label();
             statusLabel.AutoSize = true;
@@ -1155,7 +1211,7 @@ namespace NinePointRotationCalibration.Station.Views
             commands.Margin = Padding.Empty;
             commands.Padding = new Padding(0, 2, 0, 0);
             commands.WrapContents = false;
-            commands.Controls.Add(CreateButton("btnCreate" + pathName, "创建模板", 86, 30, true, actionPrefix + ".create"));
+            commands.Controls.Add(CreateButton("btnCreate" + pathName, "创建 / 编辑", 94, 30, true, actionPrefix + ".create"));
             commands.Controls.Add(CreateButton("btnBrowse" + pathName, "浏览", 66, 30, false, actionPrefix + ".browse"));
             commands.Controls.Add(CreateButton("btnLoad" + pathName, "加载", 66, 30, false, actionPrefix + ".load"));
             commands.Controls.Add(CreateButton("btnTest" + pathName, "测试", 66, 30, false, actionPrefix + ".test"));
@@ -1280,9 +1336,9 @@ namespace NinePointRotationCalibration.Station.Views
             TableLayoutPanel fields = new TableLayoutPanel();
             fields.BackColor = CardBackgroundColor;
             fields.ColumnCount = 4;
-            fields.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 84.0F));
+            fields.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 96.0F));
             fields.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50.0F));
-            fields.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 80.0F));
+            fields.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 92.0F));
             fields.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50.0F));
             fields.Dock = DockStyle.Fill;
             fields.Font = new Font("Microsoft YaHei UI", 9.0F, FontStyle.Regular, GraphicsUnit.Point, 134);
@@ -1476,19 +1532,28 @@ namespace NinePointRotationCalibration.Station.Views
             return button;
         }
 
-        private static NumericUpDown CreateDecimalInput(string name, decimal value, decimal minimum, decimal maximum, int decimalPlaces)
+        private static NumericUpDown CreateDecimalInput(
+            string name,
+            decimal value,
+            decimal minimum,
+            decimal maximum,
+            int decimalPlaces,
+            decimal? increment = null,
+            bool thousandsSeparator = false)
         {
             NumericUpDown input = new NumericUpDown();
             input.BackColor = Color.White;
             input.BorderStyle = BorderStyle.FixedSingle;
             input.DecimalPlaces = decimalPlaces;
             input.ForeColor = TextPrimaryColor;
-            input.Increment = decimalPlaces == 0 ? 1.0M : 0.1M;
+            input.Increment = increment.HasValue
+                ? increment.Value
+                : (decimalPlaces == 0 ? 1.0M : decimalPlaces == 2 ? 0.01M : 0.1M);
             input.Maximum = maximum;
             input.Minimum = minimum;
             input.Name = name;
             input.TextAlign = HorizontalAlignment.Right;
-            input.ThousandsSeparator = true;
+            input.ThousandsSeparator = thousandsSeparator;
             input.Value = Math.Max(minimum, Math.Min(maximum, value));
             return input;
         }

@@ -20,6 +20,44 @@ namespace NinePointRotationCalibration.WinForms.Forms
         private const string DefaultMetric = "use_polarity";
         private const string EdgeContourMetric = "ignore_local_polarity";
 
+        private static readonly ComboOption[] OptimizationOptions =
+        {
+            new ComboOption("auto", "自动 (auto)"),
+            new ComboOption("none", "不降采样 (none)"),
+            new ComboOption("point_reduction_low", "低点数缩减"),
+            new ComboOption("point_reduction_medium", "中点数缩减"),
+            new ComboOption("point_reduction_high", "高点数缩减")
+        };
+
+        private static readonly ComboOption[] ShapeMetricOptions =
+        {
+            new ComboOption("use_polarity", "保持极性 (use_polarity)"),
+            new ComboOption("ignore_global_polarity", "忽略全局极性"),
+            new ComboOption("ignore_local_polarity", "忽略局部极性"),
+            new ComboOption("ignore_color_polarity", "忽略颜色极性")
+        };
+
+        private static readonly ComboOption[] NccMetricOptions =
+        {
+            new ComboOption("use_polarity", "保持极性 (use_polarity)"),
+            new ComboOption("ignore_global_polarity", "忽略全局极性")
+        };
+
+        private static readonly ComboOption[] ShapeSubPixelOptions =
+        {
+            new ComboOption("none", "关闭 (none)"),
+            new ComboOption("interpolation", "插值 (interpolation)"),
+            new ComboOption("least_squares", "最小二乘 (least_squares)"),
+            new ComboOption("least_squares_high", "高精度最小二乘"),
+            new ComboOption("least_squares_very_high", "超高精度最小二乘")
+        };
+
+        private static readonly ComboOption[] NccSubPixelOptions =
+        {
+            new ComboOption("none", "关闭 (none)"),
+            new ComboOption("interpolation", "插值 (interpolation)")
+        };
+
         private const int HistoryLimit = 30;
 
         private readonly CalibrationCanvas _canvas;
@@ -175,7 +213,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
             _invertMaskButton = CreateCompactButton("反选", InvertMask);
             _clearMaskButton = CreateCompactButton("清空", ClearMask);
 
-            _modelTypeCombo = CreateCombo(new[] { "Shape", "NCC" });
+            _modelTypeCombo = CreateCombo(new[] { "形状匹配 (Shape)", "灰度相关 (NCC)" });
             _autoThresholdCheck = new CheckBox
             {
                 Text = "自动阈值（自适应对比度与边缘）",
@@ -184,15 +222,15 @@ namespace NinePointRotationCalibration.WinForms.Forms
             };
             _teachAdvancedToggle = CreateAdvancedToggle();
             _matchAdvancedToggle = CreateAdvancedToggle();
-            _levelsInput = CreateIntegerInput(0, 12, 5);
-            _matchLevelsInput = CreateIntegerInput(0, 12, 0);
-            _angleStartInput = CreateDecimalInput(-180, 180, -17.189m, 0.1m, 3);
-            _angleExtentInput = CreateDecimalInput(0, 360, 34.377m, 0.1m, 3);
-            _matchAngleStartInput = CreateDecimalInput(-180, 180, -5m, 0.1m, 3);
-            _matchAngleExtentInput = CreateDecimalInput(0.001m, 360, 10m, 0.1m, 3);
+            _levelsInput = CreateIntegerInput(0, 10, 5);
+            _matchLevelsInput = CreateIntegerInput(0, 10, 0);
+            _angleStartInput = CreateDecimalInput(-180, 180, -15.0m, 1.0m, 2);
+            _angleExtentInput = CreateDecimalInput(0.001m, 360, 30.0m, 1.0m, 2);
+            _matchAngleStartInput = CreateDecimalInput(-180, 180, -15.0m, 1.0m, 2);
+            _matchAngleExtentInput = CreateDecimalInput(0.001m, 360, 30.0m, 1.0m, 2);
             _angleStepInput = CreateDecimalInput(0, 30, 0, 0.1m, 3);
-            _optimizationCombo = CreateCombo(new[] { "auto", "none", "point_reduction_low", "point_reduction_medium", "point_reduction_high" });
-            _metricCombo = CreateCombo(new[] { "use_polarity", "ignore_global_polarity", "ignore_local_polarity", "ignore_color_polarity" });
+            _optimizationCombo = CreateOptionCombo(OptimizationOptions);
+            _metricCombo = CreateOptionCombo(ShapeMetricOptions);
             _contrastInput = CreateDecimalInput(1, 255, 30, 1, 1);
             _minimumContrastInput = CreateDecimalInput(0, 255, 10, 1, 1);
             _edgeContourModeCheck = new CheckBox { Text = "使用外轮廓 XLD 匹配", AutoSize = true };
@@ -203,10 +241,10 @@ namespace NinePointRotationCalibration.WinForms.Forms
             _featurePointSpacingInput = CreateDecimalInput(0.5m, 100, 6, 0.5m, 1);
             _maximumFeaturePointCountInput = CreateIntegerInput(100, 100000, 20000, 100);
             _minimumScoreInput = CreateDecimalInput(0, 1, 0.5m, 0.01m, 3);
-            _greedinessInput = CreateDecimalInput(0, 1, 0.75m, 0.01m, 3);
+            _greedinessInput = CreateDecimalInput(0, 1, 0.85m, 0.01m, 3);
             _maximumOverlapInput = CreateDecimalInput(0, 1, 0.3m, 0.01m, 3);
             _matchCountInput = CreateIntegerInput(0, 100, 1);
-            _subPixelCombo = CreateCombo(new[] { "none", "interpolation", "least_squares", "least_squares_high", "least_squares_very_high" });
+            _subPixelCombo = CreateOptionCombo(ShapeSubPixelOptions);
             _timeoutInput = CreateIntegerInput(0, 60000, 0, 50);
             _contourPointSpacingInput = CreateDecimalInput(0.5m, 100, 3, 0.5m, 1);
             _allowPartialCheck = new CheckBox { Text = "允许模板部分超出搜索区域", AutoSize = true };
@@ -624,10 +662,10 @@ namespace NinePointRotationCalibration.WinForms.Forms
             AddStackSection(teachStack, _teachAdvancedToggle);
             TableLayoutPanel teachAdvancedTable = CreateParameterTable();
             teachAdvancedTable.Padding = new Padding(4, 2, 4, 6);
-            AddParameterRow(teachAdvancedTable, "金字塔层数", _levelsInput);
-            AddParameterRow(teachAdvancedTable, "角度步长 (°)", _angleStepInput);
-            AddParameterRow(teachAdvancedTable, "优化方式", _optimizationCombo);
-            AddParameterRow(teachAdvancedTable, "极性 / Metric", _metricCombo);
+            AddParameterRow(teachAdvancedTable, "金字塔层数 (0=自动)", _levelsInput);
+            AddParameterRow(teachAdvancedTable, "角度步长 (°, 0=自动)", _angleStepInput);
+            AddParameterRow(teachAdvancedTable, "点云优化方式", _optimizationCombo);
+            AddParameterRow(teachAdvancedTable, "匹配极性 (Metric)", _metricCombo);
             AddParameterRow(teachAdvancedTable, "最小对比度", _minimumContrastInput);
             AddControlRow(teachAdvancedTable, _edgeContourModeCheck);
             AddParameterRow(teachAdvancedTable, "边缘 Sigma", _edgeSigmaInput);
@@ -675,11 +713,11 @@ namespace NinePointRotationCalibration.WinForms.Forms
             TableLayoutPanel matchAdvancedTable = CreateParameterTable();
             matchAdvancedTable.Padding = new Padding(4, 2, 4, 6);
             AddParameterRow(matchAdvancedTable, "搜索金字塔层数 (0=自动)", _matchLevelsInput);
-            AddParameterRow(matchAdvancedTable, "Greediness", _greedinessInput);
-            AddParameterRow(matchAdvancedTable, "最大重叠", _maximumOverlapInput);
-            AddParameterRow(matchAdvancedTable, "亚像素", _subPixelCombo);
+            AddParameterRow(matchAdvancedTable, "贪婪度 (Greediness)", _greedinessInput);
+            AddParameterRow(matchAdvancedTable, "最大重叠度", _maximumOverlapInput);
+            AddParameterRow(matchAdvancedTable, "亚像素精度", _subPixelCombo);
             AddParameterRow(matchAdvancedTable, "超时 (ms, 0=不限)", _timeoutInput);
-            AddParameterRow(matchAdvancedTable, "轮廓采点间隔半径 (px)", _contourPointSpacingInput);
+            AddParameterRow(matchAdvancedTable, "轮廓采点间距 (px)", _contourPointSpacingInput);
             AddControlRow(matchAdvancedTable, _allowPartialCheck);
             _matchAdvancedPanel = new Panel
             {
@@ -696,12 +734,12 @@ namespace NinePointRotationCalibration.WinForms.Forms
 
             TabPage anchorPage = new TabPage("基准中心");
             TableLayoutPanel anchorTable = CreateParameterTable();
-            AddParameterRow(anchorTable, "Row", _anchorRowInput);
-            AddParameterRow(anchorTable, "Column", _anchorColumnInput);
+            AddParameterRow(anchorTable, "行坐标 Row (px)", _anchorRowInput);
+            AddParameterRow(anchorTable, "列坐标 Col (px)", _anchorColumnInput);
             anchorTable.Controls.Add(_anchorLockedCheck, 0, anchorTable.RowCount);
             anchorTable.SetColumnSpan(_anchorLockedCheck, 2);
             anchorTable.RowCount++;
-            Button resetAnchor = new Button { Text = "重置为模板 ROI 中心", Width = 180, Height = 30 };
+            Button resetAnchor = CreateModernButton("重置为模板 ROI 中心", 180, 32, false);
             resetAnchor.Click += ResetAnchor;
             anchorTable.Controls.Add(resetAnchor, 0, anchorTable.RowCount);
             anchorTable.SetColumnSpan(resetAnchor, 2);
@@ -824,7 +862,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 SelectComboValue(_optimizationCombo, parameters.Optimization);
                 NormalizeStoredMetrics(parameters);
                 parameters.Metric = ResolveActiveMetric(parameters);
-                SelectComboValue(_metricCombo, parameters.Metric);
+                UpdateMetricOptions(parameters.ModelType == TemplateModelType.Ncc, parameters.Metric);
                 _autoThresholdCheck.Checked = parameters.AutoThreshold;
                 SetNumeric(_contrastInput, parameters.Contrast);
                 SetNumeric(_minimumContrastInput, parameters.MinimumContrast);
@@ -1244,17 +1282,19 @@ namespace NinePointRotationCalibration.WinForms.Forms
         private void UpdateSubPixelOptions(string preferredValue)
         {
             string selected = string.IsNullOrWhiteSpace(preferredValue)
-                ? Convert.ToString(_subPixelCombo.SelectedItem)
+                ? GetComboValue(_subPixelCombo, "interpolation")
                 : preferredValue;
-            string[] values = _modelTypeCombo.SelectedIndex == 1
-                ? new[] { "none", "interpolation" }
-                : new[] { "none", "interpolation", "least_squares", "least_squares_high", "least_squares_very_high" };
+            ComboOption[] options = _modelTypeCombo.SelectedIndex == 1
+                ? NccSubPixelOptions
+                : ShapeSubPixelOptions;
 
+            bool prevLoading = _loadingControls;
+            _loadingControls = true;
             _subPixelCombo.BeginUpdate();
             try
             {
                 _subPixelCombo.Items.Clear();
-                _subPixelCombo.Items.AddRange(values.Cast<object>().ToArray());
+                _subPixelCombo.Items.AddRange(options);
                 string normalized = _modelTypeCombo.SelectedIndex == 1 &&
                     !string.Equals(selected, "none", StringComparison.OrdinalIgnoreCase)
                     ? "interpolation"
@@ -1264,6 +1304,34 @@ namespace NinePointRotationCalibration.WinForms.Forms
             finally
             {
                 _subPixelCombo.EndUpdate();
+                _loadingControls = prevLoading;
+            }
+        }
+
+        private void UpdateMetricOptions(bool isNcc, string preferredMetric)
+        {
+            string selected = string.IsNullOrWhiteSpace(preferredMetric)
+                ? GetComboValue(_metricCombo, DefaultMetric)
+                : preferredMetric;
+            ComboOption[] options = isNcc ? NccMetricOptions : ShapeMetricOptions;
+
+            bool prevLoading = _loadingControls;
+            _loadingControls = true;
+            _metricCombo.BeginUpdate();
+            try
+            {
+                _metricCombo.Items.Clear();
+                _metricCombo.Items.AddRange(options);
+                string normalized = isNcc &&
+                    !string.Equals(selected, "ignore_global_polarity", StringComparison.OrdinalIgnoreCase)
+                    ? DefaultMetric
+                    : selected;
+                SelectComboValue(_metricCombo, normalized);
+            }
+            finally
+            {
+                _metricCombo.EndUpdate();
+                _loadingControls = prevLoading;
             }
         }
 
@@ -1432,10 +1500,12 @@ namespace NinePointRotationCalibration.WinForms.Forms
         {
             TemplateEditorParameters parameters = _state.Parameters ?? new TemplateEditorParameters();
             NormalizeStoredMetrics(parameters);
-            string selectedMetric = NormalizeMetric(Convert.ToString(_metricCombo.SelectedItem));
+            string selectedMetric = NormalizeMetric(GetComboValue(_metricCombo, DefaultMetric));
             if (parameters.ModelType == TemplateModelType.Ncc)
             {
-                parameters.NccMetric = selectedMetric;
+                parameters.NccMetric = string.Equals(selectedMetric, "ignore_global_polarity", StringComparison.OrdinalIgnoreCase)
+                    ? "ignore_global_polarity"
+                    : DefaultMetric;
             }
             else if (parameters.FeatureExtractionMode != ShapeFeatureExtractionMode.EdgeContours)
             {
@@ -1451,7 +1521,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
             parameters.MatchAngleStartDegrees = (double)_matchAngleStartInput.Value;
             parameters.MatchAngleExtentDegrees = (double)_matchAngleExtentInput.Value;
             parameters.AngleStepDegrees = (double)_angleStepInput.Value;
-            parameters.Optimization = Convert.ToString(_optimizationCombo.SelectedItem);
+            parameters.Optimization = GetComboValue(_optimizationCombo, "auto");
             parameters.Contrast = (double)_contrastInput.Value;
             parameters.MinimumContrast = (double)_minimumContrastInput.Value;
             parameters.FeatureExtractionMode = _edgeContourModeCheck.Checked
@@ -1468,7 +1538,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
             parameters.Greediness = (double)_greedinessInput.Value;
             parameters.MaximumOverlap = (double)_maximumOverlapInput.Value;
             parameters.MatchCount = (int)_matchCountInput.Value;
-            parameters.SubPixel = Convert.ToString(_subPixelCombo.SelectedItem);
+            parameters.SubPixel = GetComboValue(_subPixelCombo, "interpolation");
             parameters.TimeoutMilliseconds = (int)_timeoutInput.Value;
             parameters.ContourPointSpacingPixels = (double)_contourPointSpacingInput.Value;
             parameters.AllowPartialMatch = _allowPartialCheck.Checked;
@@ -2663,22 +2733,14 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 ? EdgeContourMetric
                 : isShapeModel ? parameters.ShapeMetric : parameters.NccMetric;
 
-            bool wasLoadingControls = _loadingControls;
-            _loadingControls = true;
-            try
-            {
-                SelectComboValue(_metricCombo, parameters.Metric);
-            }
-            finally
-            {
-                _loadingControls = wasLoadingControls;
-            }
+            UpdateMetricOptions(!isShapeModel, parameters.Metric);
 
             _autoThresholdCheck.Enabled = isShapeModel;
             _edgeContourModeCheck.Enabled = isShapeModel;
+            _optimizationCombo.Enabled = isShapeModel;
             _metricCombo.Enabled = !edgeContoursEnabled;
-            _contrastInput.Enabled = !edgeContoursEnabled && !autoThreshold;
-            _minimumContrastInput.Enabled = !autoThreshold;
+            _contrastInput.Enabled = isShapeModel && !edgeContoursEnabled && !autoThreshold;
+            _minimumContrastInput.Enabled = isShapeModel && !autoThreshold;
             _edgeSigmaInput.Enabled = edgeContoursEnabled;
             _edgeLowThresholdInput.Enabled = edgeContoursEnabled && !autoThreshold;
             _edgeHighThresholdInput.Enabled = edgeContoursEnabled && !autoThreshold;
@@ -2822,7 +2884,13 @@ namespace NinePointRotationCalibration.WinForms.Forms
         {
             if (_state.Parameters.AngleExtentDegrees <= 0.0)
             {
-                message = "角度范围必须大于 0°。";
+                message = "示教角度范围必须大于 0°。";
+                return false;
+            }
+
+            if (_state.Parameters.MatchAngleExtentDegrees <= 0.0)
+            {
+                message = "搜索角度范围必须大于 0°。";
                 return false;
             }
 
@@ -3161,6 +3229,23 @@ namespace NinePointRotationCalibration.WinForms.Forms
             return toggle;
         }
 
+        private static ComboBox CreateOptionCombo(IEnumerable<ComboOption> items)
+        {
+            ComboBox combo = new ComboBox
+            {
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                Dock = DockStyle.Fill,
+                IntegralHeight = false,
+                DropDownHeight = 240
+            };
+            combo.Items.AddRange(items.Cast<object>().ToArray());
+            if (combo.Items.Count > 0)
+            {
+                combo.SelectedIndex = 0;
+            }
+            return combo;
+        }
+
         private static ComboBox CreateCombo(IEnumerable<string> items)
         {
             ComboBox combo = new ComboBox
@@ -3193,7 +3278,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 Increment = increment,
                 DecimalPlaces = decimals,
                 Dock = DockStyle.Fill,
-                ThousandsSeparator = true
+                ThousandsSeparator = maximum >= 10000m
             };
             input.MouseWheel += NumericInput_MouseWheel;
             return input;
@@ -3346,10 +3431,43 @@ namespace NinePointRotationCalibration.WinForms.Forms
             control.Value = Math.Max(control.Minimum, Math.Min(control.Maximum, decimalValue));
         }
 
+        private static string GetComboValue(ComboBox combo, string fallback)
+        {
+            if (combo == null || combo.SelectedItem == null) return fallback;
+            ComboOption option = combo.SelectedItem as ComboOption;
+            if (option != null) return option.Value;
+            string raw = Convert.ToString(combo.SelectedItem);
+            return string.IsNullOrWhiteSpace(raw) ? fallback : raw;
+        }
+
         private static void SelectComboValue(ComboBox combo, string value)
         {
-            int index = combo.FindStringExact(value ?? string.Empty);
+            if (combo == null || combo.Items.Count == 0) return;
+            string target = value ?? string.Empty;
+            for (int i = 0; i < combo.Items.Count; i++)
+            {
+                ComboOption option = combo.Items[i] as ComboOption;
+                if (option != null && string.Equals(option.Value, target, StringComparison.OrdinalIgnoreCase))
+                {
+                    combo.SelectedIndex = i;
+                    return;
+                }
+            }
+            int index = combo.FindStringExact(target);
             combo.SelectedIndex = index >= 0 ? index : 0;
+        }
+
+        private sealed class ComboOption
+        {
+            public ComboOption(string value, string label)
+            {
+                Value = value;
+                Label = label;
+            }
+
+            public string Value { get; private set; }
+            public string Label { get; private set; }
+            public override string ToString() { return Label; }
         }
     }
 

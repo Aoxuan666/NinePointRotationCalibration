@@ -72,6 +72,11 @@ namespace NinePointRotationCalibration.Station.Views
             toolTip.SetToolTip(
                 chkTemplateMatchingEnabled,
                 "取消勾选后跳过定位模板，对整幅图直接执行二值化和 Blob 分析。");
+            toolTip.SetToolTip(cmbDetectionPolarity, "选择不良标记相对背景的明暗极性：黑底白点检测亮标记，白底黑点检测暗标记。");
+            toolTip.SetToolTip(cmbHoleFillMode, "选择是否填充检出目标内部的封闭空洞（自动按当前检测极性处理）。");
+            toolTip.SetToolTip(nudMorphologyRadius, "形态学开运算去噪半径（像素），设为 0 表示关闭去噪。");
+            toolTip.SetToolTip(nudRectangularity, "面积与最小外接矩形之比上限，达到该值的规整矩形将被判定为标签干扰并过滤。");
+            toolTip.SetToolTip(chkSyncViewport, "开启时原图与二值效果图同步缩放平移；取消勾选后可各自独立查看不同区域。");
             toolTip.SetToolTip(btnRefresh, "立即使用当前参数刷新预览。");
             toolTip.SetToolTip(btnFit, "使当前图像适应窗口。");
             toolTip.SetToolTip(btnActualPixels, "以一个图像像素对应一个屏幕像素显示。");
@@ -93,15 +98,14 @@ namespace NinePointRotationCalibration.Station.Views
             chkTemplateMatchingEnabled.CheckedChanged += ParameterControl_Changed;
             chkFollowTemplateTransform.CheckedChanged += ParameterControl_Changed;
             chkRectangleFilter.CheckedChanged += ParameterControl_Changed;
+            cmbDetectionPolarity.SelectedIndexChanged += ParameterControl_Changed;
+            cmbHoleFillMode.SelectedIndexChanged += ParameterControl_Changed;
             nudBrightThreshold.ValueChanged += ParameterControl_Changed;
             nudMinimumBlobArea.ValueChanged += ParameterControl_Changed;
             nudMaximumBlobArea.ValueChanged += ParameterControl_Changed;
             nudRectangularity.ValueChanged += ParameterControl_Changed;
             nudMorphologyRadius.ValueChanged += ParameterControl_Changed;
-            chkFillHoles.CheckedChanged += ParameterControl_Changed;
-            chkFillDarkHoles.CheckedChanged += ParameterControl_Changed;
             chkAutoThreshold.CheckedChanged += ParameterControl_Changed;
-            chkDarkForeground.CheckedChanged += ParameterControl_Changed;
             foreach (NumericUpDown input in new[]
             {
                 nudBrightThreshold,
@@ -130,11 +134,20 @@ namespace NinePointRotationCalibration.Station.Views
             previewSplit.SizeChanged += delegate { BalancePreviewSplit(); };
             sourceViewport.ViewChanged += delegate { SyncViewportView(sourceViewport, binaryViewport); };
             binaryViewport.ViewChanged += delegate { SyncViewportView(binaryViewport, sourceViewport); };
+            if (chkSyncViewport != null)
+            {
+                chkSyncViewport.CheckedChanged += delegate
+                {
+                    if (chkSyncViewport.Checked) SyncViewportView(sourceViewport, binaryViewport);
+                };
+            }
         }
 
         private void SyncViewportView(ImageViewport origin, ImageViewport target)
         {
-            if (_syncingViewport || _closing || origin == null || target == null || !target.HasImage) return;
+            if (_syncingViewport || _closing ||
+                (chkSyncViewport != null && !chkSyncViewport.Checked) ||
+                origin == null || target == null || !target.HasImage) return;
             _syncingViewport = true;
             try
             {
@@ -729,7 +742,8 @@ namespace NinePointRotationCalibration.Station.Views
             lblModeStatus.Text = payload.TemplateMatchingEnabled
                 ? "模板匹配：" + payload.MatchCount + " 个目标，检测 ROI 已变换"
                 : "直接二值化：整幅图像";
-            lblModeStatus.Text += chkDarkForeground.Checked ? "  /  白底黑点" : "  /  黑底白点";
+            lblModeStatus.Text += cmbDetectionPolarity.SelectedIndex == 1 ? "  /  白底黑点" : "  /  黑底白点";
+            lblModeStatus.Text += cmbHoleFillMode.SelectedIndex == 0 ? "  /  填孔" : "  /  不填孔";
             lblModeStatus.Text += "  /  ROI 外保留原图";
             lblSummary.Text = string.Format(
                 CultureInfo.InvariantCulture,
@@ -773,10 +787,10 @@ namespace NinePointRotationCalibration.Station.Views
                 chkTemplateMatchingEnabled.Checked = value.TemplateMatchingEnabled;
                 chkFollowTemplateTransform.Checked = value.FollowTemplateTransform;
                 chkRectangleFilter.Checked = value.RectangleFilterEnabled;
-                chkFillHoles.Checked = value.FillHoles;
-                chkFillDarkHoles.Checked = value.FillDarkHoles;
                 chkAutoThreshold.Checked = value.AutoThreshold;
-                chkDarkForeground.Checked = value.DetectDarkForeground;
+                cmbDetectionPolarity.SelectedIndex = value.DetectDarkForeground ? 1 : 0;
+                bool fillEnabled = value.DetectDarkForeground ? value.FillDarkHoles : value.FillHoles;
+                cmbHoleFillMode.SelectedIndex = fillEnabled ? 0 : 1;
                 SetNumericValue(nudBrightThreshold, value.BrightThreshold);
                 SetNumericValue(nudMinimumBlobArea, value.MinimumBlobArea);
                 SetNumericValue(nudMaximumBlobArea, value.MaximumBlobArea);
@@ -799,20 +813,22 @@ namespace NinePointRotationCalibration.Station.Views
                 return false;
             }
 
+            bool darkForeground = cmbDetectionPolarity.SelectedIndex == 1;
+            bool fillEnabled = cmbHoleFillMode.SelectedIndex == 0;
             profile = new DetectionProfile
             {
                 Roi = CloneRoi(_appliedProfile == null ? null : _appliedProfile.Roi),
                 TemplateMatchingEnabled = chkTemplateMatchingEnabled.Checked,
                 FollowTemplateTransform = chkFollowTemplateTransform.Checked,
                 AutoThreshold = chkAutoThreshold.Checked,
-                DetectDarkForeground = chkDarkForeground.Checked,
+                DetectDarkForeground = darkForeground,
                 BrightThreshold = Decimal.ToInt32(nudBrightThreshold.Value),
                 MinimumBlobArea = Decimal.ToDouble(nudMinimumBlobArea.Value),
                 MaximumBlobArea = Decimal.ToDouble(nudMaximumBlobArea.Value),
                 RectangleFilterEnabled = chkRectangleFilter.Checked,
                 RectangleFillThreshold = Decimal.ToDouble(nudRectangularity.Value),
-                FillHoles = chkFillHoles.Checked,
-                FillDarkHoles = chkFillDarkHoles.Checked,
+                FillHoles = fillEnabled,
+                FillDarkHoles = fillEnabled,
                 MorphologyRadius = Decimal.ToInt32(nudMorphologyRadius.Value)
             };
             return true;
@@ -823,12 +839,11 @@ namespace NinePointRotationCalibration.Station.Views
             chkFollowTemplateTransform.Enabled = chkTemplateMatchingEnabled.Checked;
             nudRectangularity.Enabled = chkRectangleFilter.Checked;
             nudBrightThreshold.Enabled = !chkAutoThreshold.Checked;
-            chkFillHoles.Enabled = !chkDarkForeground.Checked;
-            chkFillDarkHoles.Enabled = chkDarkForeground.Checked;
-            string polarity = chkDarkForeground.Checked ? "白底黑点" : "黑底白点";
+            string polarity = cmbDetectionPolarity.SelectedIndex == 1 ? "白底黑点" : "黑底白点";
+            string holeFill = cmbHoleFillMode.SelectedIndex == 0 ? "填孔" : "不填孔";
             lblModeStatus.Text = (chkTemplateMatchingEnabled.Checked
                 ? "模板匹配 + 检测 ROI"
-                : "关闭模板匹配，整图直接二值化") + "  /  " + polarity;
+                : "关闭模板匹配，整图直接二值化") + "  /  " + polarity + "  /  " + holeFill;
         }
 
         private void UpdatePreviewToolbar()

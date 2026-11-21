@@ -103,34 +103,42 @@ namespace NinePointRotationCalibration.WinForms.Forms
             {
                 Text = "九点 XY",
                 Appearance = Appearance.Button,
+                FlatStyle = FlatStyle.Flat,
+                Cursor = Cursors.Hand,
                 AutoSize = false,
                 Width = 100,
                 Height = 32,
                 TextAlign = ContentAlignment.MiddleCenter,
+                UseVisualStyleBackColor = false,
                 Checked = true
             };
+            _translationModeButton.FlatAppearance.BorderSize = 1;
             _rotationModeButton = new RadioButton
             {
-                Text = "旋转",
+                Text = "五点旋转",
                 Appearance = Appearance.Button,
+                FlatStyle = FlatStyle.Flat,
+                Cursor = Cursors.Hand,
                 AutoSize = false,
                 Width = 100,
                 Height = 32,
-                TextAlign = ContentAlignment.MiddleCenter
+                TextAlign = ContentAlignment.MiddleCenter,
+                UseVisualStyleBackColor = false
             };
+            _rotationModeButton.FlatAppearance.BorderSize = 1;
             _machineXInput = CreateCoordinateInput();
             _machineYInput = CreateCoordinateInput();
             _machineThetaInput = CreateCoordinateInput();
-            _tagInput = new TextBox { Dock = DockStyle.Fill };
+            _tagInput = new TextBox { Dock = DockStyle.Fill, BorderStyle = BorderStyle.FixedSingle };
             _currentMatchLabel = new Label
             {
                 AutoSize = false,
                 Height = 42,
                 Dock = DockStyle.Top,
                 TextAlign = ContentAlignment.MiddleLeft,
-                Padding = new Padding(8, 0, 8, 0),
-                BackColor = Color.FromArgb(232, 235, 239),
-                ForeColor = Color.FromArgb(50, 55, 62),
+                Padding = new Padding(10, 0, 10, 0),
+                BackColor = Color.FromArgb(241, 245, 249),
+                ForeColor = Color.FromArgb(51, 65, 85),
                 Text = "尚未定位当前图像"
             };
             _locateButton = CreateButton("定位当前图", LocateCurrentImageAsync, 104, false);
@@ -222,7 +230,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 throw new ArgumentNullException(nameof(image));
             }
 
-            Bitmap replacement = new Bitmap(image);
+            Bitmap replacement = CloneToFastPArgb(image);
             Bitmap previous = _currentImage;
             _currentImage = replacement;
             if (previous != null)
@@ -230,7 +238,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 previous.Dispose();
             }
 
-            _canvas.SetImage(_currentImage);
+            _canvas.SetImageOwned(CloneToFastPArgb(_currentImage));
             ApplyTemplateToCanvas();
             ClearCurrentLocate();
             EventHandler handler = CurrentImageChanged;
@@ -435,9 +443,9 @@ namespace NinePointRotationCalibration.WinForms.Forms
             poseTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50.0f));
             poseTable.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             poseTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50.0f));
-            AddLabeledControl(poseTable, 0, "机械 X", _machineXInput);
-            AddLabeledControl(poseTable, 1, "机械 Y", _machineYInput);
-            AddLabeledControl(poseTable, 2, "机械角度 (°)", _machineThetaInput);
+            AddLabeledControl(poseTable, 0, "机械 X (mm)", _machineXInput);
+            AddLabeledControl(poseTable, 1, "机械 Y (mm)", _machineYInput);
+            AddLabeledControl(poseTable, 2, "机械角 (°)", _machineThetaInput);
             AddLabeledControl(poseTable, 3, "标签", _tagInput);
 
             Panel actionBlock = new Panel { Dock = DockStyle.Top, Height = 95 };
@@ -1239,12 +1247,25 @@ namespace NinePointRotationCalibration.WinForms.Forms
 
         private void UpdateModeControls()
         {
+            StyleModeRadio(_translationModeButton, _translationModeButton.Checked);
+            StyleModeRadio(_rotationModeButton, _rotationModeButton.Checked);
             _machineThetaInput.Enabled = _rotationModeButton.Checked;
             if (_translationModeButton.Checked)
             {
                 _machineThetaInput.Value = 0;
             }
             UpdateActionAvailability();
+        }
+
+        private void StyleModeRadio(RadioButton button, bool active)
+        {
+            if (button == null) return;
+            button.BackColor = active ? Color.FromArgb(37, 99, 235) : Color.White;
+            button.ForeColor = active ? Color.White : Color.FromArgb(15, 23, 42);
+            button.FlatAppearance.BorderColor = active ? Color.FromArgb(37, 99, 235) : Color.FromArgb(203, 213, 225);
+            button.FlatAppearance.CheckedBackColor = Color.FromArgb(37, 99, 235);
+            button.FlatAppearance.MouseOverBackColor = active ? Color.FromArgb(29, 78, 216) : Color.FromArgb(241, 245, 249);
+            button.Font = active ? (_boldResultFont ?? Font) : Font;
         }
 
         private void UpdateActionAvailability()
@@ -1255,8 +1276,8 @@ namespace NinePointRotationCalibration.WinForms.Forms
         private void ClearCurrentLocate()
         {
             _currentLocate = null;
-            _currentMatchLabel.BackColor = Color.FromArgb(232, 235, 239);
-            _currentMatchLabel.ForeColor = Color.FromArgb(50, 55, 62);
+            _currentMatchLabel.BackColor = Color.FromArgb(241, 245, 249);
+            _currentMatchLabel.ForeColor = Color.FromArgb(51, 65, 85);
             _currentMatchLabel.Text = "尚未定位当前图像";
             UpdateActionAvailability();
             UpdateCanvasOverlay();
@@ -1508,22 +1529,39 @@ namespace NinePointRotationCalibration.WinForms.Forms
             grid.Columns.Add(CreateCheckColumn("Enabled", "启用", 48));
             grid.Columns.Add(CreateTextColumn("Sequence", "序号", 48, "0", true));
             grid.Columns.Add(CreateTextColumn("Tag", "标签", 66, null, false));
-            grid.Columns.Add(CreateTextColumn("MachineX", "X", 70, "0.###", true));
-            grid.Columns.Add(CreateTextColumn("MachineY", "Y", 70, "0.###", true));
+            grid.Columns.Add(CreateTextColumn("MachineX", "机械 X(mm)", 80, "0.###", true));
+            grid.Columns.Add(CreateTextColumn("MachineY", "机械 Y(mm)", 80, "0.###", true));
             if (rotation)
             {
-                grid.Columns.Add(CreateTextColumn("MachineThetaDegrees", "机械角", 70, "0.###", true));
+                grid.Columns.Add(CreateTextColumn("MachineThetaDegrees", "机械角(°)", 74, "0.###", true));
             }
-            grid.Columns.Add(CreateTextColumn("ImageRow", "Row", 76, "0.###", true));
-            grid.Columns.Add(CreateTextColumn("ImageColumn", "Column", 76, "0.###", true));
+            grid.Columns.Add(CreateTextColumn("ImageRow", "图像 Row", 76, "0.###", true));
+            grid.Columns.Add(CreateTextColumn("ImageColumn", "图像 Col", 76, "0.###", true));
             if (rotation)
             {
-                grid.Columns.Add(CreateTextColumn("ImageAngleDegrees", "图像角", 70, "0.###", true));
+                grid.Columns.Add(CreateTextColumn("ImageAngleDegrees", "图像角(°)", 74, "0.###", true));
             }
-            grid.Columns.Add(CreateTextColumn("Score", "Score", 62, "0.000", true));
-            grid.Columns.Add(CreateTextColumn("ResidualPixels", "残差", 64, "0.###", true));
+            grid.Columns.Add(CreateTextColumn("Score", "分数", 60, "0.000", true));
+            grid.Columns.Add(CreateTextColumn("ResidualPixels", "残差(px)", 68, "0.###", true));
             grid.Columns.Add(CreateTextColumn("Status", "状态", 110, null, true));
             return grid;
+        }
+
+        private static Bitmap CloneToFastPArgb(Bitmap source)
+        {
+            Bitmap copy = new Bitmap(
+                Math.Max(1, source.Width),
+                Math.Max(1, source.Height),
+                System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
+            copy.SetResolution(
+                source.HorizontalResolution > 0.0f ? source.HorizontalResolution : 96.0f,
+                source.VerticalResolution > 0.0f ? source.VerticalResolution : 96.0f);
+            using (Graphics g = Graphics.FromImage(copy))
+            {
+                g.CompositingMode = System.Drawing.Drawing2D.CompositingMode.SourceCopy;
+                g.DrawImageUnscaled(source, 0, 0);
+            }
+            return copy;
         }
 
         private static DataGridViewTextBoxColumn CreateTextColumn(
@@ -1568,9 +1606,10 @@ namespace NinePointRotationCalibration.WinForms.Forms
             {
                 Minimum = -100000000,
                 Maximum = 100000000,
-                DecimalPlaces = 4,
+                DecimalPlaces = 3,
                 Increment = 0.1m,
-                ThousandsSeparator = true,
+                ThousandsSeparator = false,
+                TextAlign = HorizontalAlignment.Right,
                 Dock = DockStyle.Fill
             };
         }

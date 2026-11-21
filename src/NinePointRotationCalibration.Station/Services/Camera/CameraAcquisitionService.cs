@@ -151,6 +151,48 @@ namespace NinePointRotationCalibration.Station.Services.Camera
             }
         }
 
+        /// <summary>热切换底层相机驱动实例：先停止预览并安全释放旧驱动，再无缝接管新驱动。</summary>
+        public async Task ReplaceDeviceAsync(ICameraDevice nextDevice, CancellationToken cancellationToken)
+        {
+            ThrowIfDisposed();
+            if (nextDevice == null) throw new ArgumentNullException(nameof(nextDevice));
+
+            await StopPreviewAsync().ConfigureAwait(false);
+            await _deviceGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            ICameraDevice previous = null;
+            try
+            {
+                if (ReferenceEquals(_device, nextDevice)) return;
+                previous = _device;
+                if (previous != null)
+                {
+                    try { await previous.DisconnectAsync().ConfigureAwait(false); }
+                    catch { }
+                }
+                lock (_sync)
+                {
+                    _device = nextDevice;
+                    _liveFps = 0.0;
+                }
+                Interlocked.Exchange(ref _liveFrameCount, 0);
+                Interlocked.Exchange(ref _liveDroppedFrameCount, 0);
+                OnLog("INFO", "Camera driver switched to " + nextDevice.ProviderName + ".");
+            }
+            catch
+            {
+                nextDevice.Dispose();
+                throw;
+            }
+            finally
+            {
+                _deviceGate.Release();
+                if (previous != null && !ReferenceEquals(previous, nextDevice))
+                {
+                    try { previous.Dispose(); } catch { }
+                }
+            }
+        }
+
         /// <summary>在线更新相机曝光时间（微秒）。</summary>
         public async Task SetExposureAsync(double exposureMicroseconds, CancellationToken cancellationToken)
         {

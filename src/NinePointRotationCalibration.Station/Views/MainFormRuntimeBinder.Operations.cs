@@ -21,6 +21,23 @@ namespace NinePointRotationCalibration.Station.Views
     /// <summary>界面用户操作处理：相机连接与高级参数、模板编辑/测试、左右示教、检测及路径浏览。</summary>
     public sealed partial class MainFormRuntimeBinder
     {
+        private async Task SwitchCameraProviderAsync(CancellationToken cancellationToken)
+        {
+            string provider = GetSelectedCameraProvider();
+            _view.CameraDeviceInput.Items.Clear();
+            _view.CameraDeviceInput.SelectedItem = null;
+            RenderCameraFeatures(null);
+            await _runtime.SwitchCameraProviderAsync(provider, cancellationToken).ConfigureAwait(true);
+            UpdateCameraLiveUiStatus();
+        }
+
+        private async Task StartTcpServerFromViewAsync(CancellationToken cancellationToken)
+        {
+            string bindAddress = _view.TcpBindAddressInput.Text.Trim();
+            int port = Decimal.ToInt32(_view.TcpPortInput.Value);
+            await _runtime.StartTcpServerAsync(bindAddress, port, cancellationToken).ConfigureAwait(true);
+        }
+
         private async Task EnumerateCamerasAsync(CancellationToken cancellationToken)
         {
             IReadOnlyList<CameraDescriptor> cameras = await _runtime
@@ -220,11 +237,14 @@ namespace NinePointRotationCalibration.Station.Views
         {
             _readExposure = null;
             NumericUpDown exposure = FindControl<NumericUpDown>("nudCameraExposure");
-            exposure.Value = 0M;
+            exposure.Value = exposure.Minimum;
             if (parameters != null && parameters.ExposureMicroseconds > 0 &&
-                parameters.ExposureMicroseconds <= (double)exposure.Maximum)
+                !double.IsNaN(parameters.ExposureMicroseconds) &&
+                !double.IsInfinity(parameters.ExposureMicroseconds))
             {
-                exposure.Value = (decimal)parameters.ExposureMicroseconds;
+                decimal rawExposure = (decimal)parameters.ExposureMicroseconds;
+                decimal clamped = Math.Max(exposure.Minimum, Math.Min(exposure.Maximum, rawExposure));
+                exposure.Value = clamped;
                 _readExposure = exposure.Value;
             }
             if (!_readExposure.HasValue) exposure.Text = string.Empty;
@@ -522,6 +542,7 @@ namespace NinePointRotationCalibration.Station.Views
         private async Task RunInspectionAsync(CancellationToken cancellationToken)
         {
             DetectionProfile profile = ReadDetectionProfileFromView();
+            ValidateDetectionProfile(profile);
             _runtime.UpdateDetectionProfile(profile);
             int expectedCount = Decimal.ToInt32(_view.ExpectedBoardCountInput.Value);
             double currentR = ReadNumeric("nudInspectionCurrentR");
@@ -568,6 +589,7 @@ namespace NinePointRotationCalibration.Station.Views
                 if (image == null) throw new InvalidOperationException("请先点击「导入图片」加载检测图像。");
 
                 DetectionProfile profile = ReadDetectionProfileFromView();
+                ValidateDetectionProfile(profile);
                 _runtime.UpdateDetectionProfile(profile);
                 int expectedCount = Decimal.ToInt32(_view.ExpectedBoardCountInput.Value);
                 double currentR = ReadNumeric("nudInspectionCurrentR");
@@ -686,9 +708,11 @@ namespace NinePointRotationCalibration.Station.Views
                 current = _runtime.GetOptionsSnapshot();
             }
 
+            DetectionProfile profile = ReadDetectionProfileFromView();
+            ValidateDetectionProfile(profile);
             StationOptions options = ReadOptionsFromView(current);
             _runtime.UpdateOptions(options);
-            _runtime.UpdateDetectionProfile(ReadDetectionProfileFromView());
+            _runtime.UpdateDetectionProfile(profile);
             _view.AppendLog("工作站设置与检测参数已保存。", false);
             _view.SetOperationStatus("设置已保存", false, false);
         }
@@ -721,6 +745,7 @@ namespace NinePointRotationCalibration.Station.Views
         private void SaveDetectionProfile()
         {
             DetectionProfile profile = ReadDetectionProfileFromView();
+            ValidateDetectionProfile(profile);
             _runtime.UpdateDetectionProfile(profile);
             StationOptions options = _runtime.GetOptionsSnapshot();
             options.ExpectedBoardCount = Decimal.ToInt32(_view.ExpectedBoardCountInput.Value);
@@ -730,19 +755,27 @@ namespace NinePointRotationCalibration.Station.Views
             _view.SetOperationStatus("检测参数已保存", false, false);
         }
 
+        private static void ValidateDetectionProfile(DetectionProfile profile)
+        {
+            if (profile == null) throw new InvalidOperationException("检测参数无效。");
+            if (profile.MinimumBlobArea > profile.MaximumBlobArea)
+                throw new InvalidOperationException("最小面积不能大于最大面积，请调整后再继续。");
+        }
+
         private DetectionProfile ReadDetectionProfileFromView()
         {
             DetectionProfile profile = _runtime.GetDetectionProfileSnapshot() ?? new DetectionProfile();
+            bool darkForeground = _view.DetectionPolarityInput != null && _view.DetectionPolarityInput.SelectedIndex == 1;
+            bool fillEnabled = _view.HoleFillModeInput == null || _view.HoleFillModeInput.SelectedIndex == 0;
             profile.AutoThreshold = FindControl<CheckBox>("chkAutoThreshold").Checked;
-            profile.DetectDarkForeground = FindControl<CheckBox>("chkDarkForeground").Checked;
+            profile.DetectDarkForeground = darkForeground;
             profile.BrightThreshold = Convert.ToInt32(ReadNumeric("nudBrightThreshold"), CultureInfo.InvariantCulture);
             profile.MinimumBlobArea = ReadNumeric("nudMinimumBlobArea");
             profile.MaximumBlobArea = ReadNumeric("nudMaximumBlobArea");
             profile.RectangleFilterEnabled = _view.RectangleFilterInput.Checked;
             profile.RectangleFillThreshold = ReadNumeric("nudRectangularity");
-            profile.FillHoles = FindControl<CheckBox>("chkFillHoles").Checked;
-            CheckBox fillDarkHoles = FindControl<CheckBox>("chkFillDarkHoles");
-            profile.FillDarkHoles = fillDarkHoles == null || fillDarkHoles.Checked;
+            profile.FillHoles = fillEnabled;
+            profile.FillDarkHoles = fillEnabled;
             profile.MorphologyRadius = Convert.ToInt32(
                 ReadNumeric("nudMorphologyRadius"), CultureInfo.InvariantCulture);
             profile.FollowTemplateTransform = FindControl<CheckBox>("chkRoiAffineWithTemplate").Checked;
@@ -763,23 +796,23 @@ namespace NinePointRotationCalibration.Station.Views
                 SetNumeric("nudRectangularity", profile.RectangleFillThreshold);
                 SetNumeric("nudMorphologyRadius", profile.MorphologyRadius);
                 FindControl<CheckBox>("chkAutoThreshold").Checked = profile.AutoThreshold;
-                FindControl<CheckBox>("chkDarkForeground").Checked = profile.DetectDarkForeground;
                 FindControl<NumericUpDown>("nudBrightThreshold").Enabled = !profile.AutoThreshold;
+                if (_view.DetectionPolarityInput != null && _view.DetectionPolarityInput.Items.Count >= 2)
+                {
+                    _view.DetectionPolarityInput.SelectedIndex = profile.DetectDarkForeground ? 1 : 0;
+                }
+                if (_view.HoleFillModeInput != null && _view.HoleFillModeInput.Items.Count >= 2)
+                {
+                    bool fillEnabled = profile.DetectDarkForeground ? profile.FillDarkHoles : profile.FillHoles;
+                    _view.HoleFillModeInput.SelectedIndex = fillEnabled ? 0 : 1;
+                }
                 _view.RectangleFilterInput.Checked = profile.RectangleFilterEnabled;
                 FindControl<NumericUpDown>("nudRectangularity").Enabled = profile.RectangleFilterEnabled;
-                CheckBox fillHoles = FindControl<CheckBox>("chkFillHoles");
-                fillHoles.Checked = profile.FillHoles;
-                fillHoles.Enabled = !profile.DetectDarkForeground;
-                CheckBox fillDarkHoles = FindControl<CheckBox>("chkFillDarkHoles");
-                if (fillDarkHoles != null)
-                {
-                    fillDarkHoles.Checked = profile.FillDarkHoles;
-                    fillDarkHoles.Enabled = profile.DetectDarkForeground;
-                }
                 CheckBox affineWithTemplate = FindControl<CheckBox>("chkRoiAffineWithTemplate");
                 affineWithTemplate.Checked = profile.FollowTemplateTransform;
                 affineWithTemplate.Enabled = profile.TemplateMatchingEnabled;
                 _view.TemplateMatchingInput.Checked = profile.TemplateMatchingEnabled;
+                _view.ExpectedBoardCountInput.Enabled = profile.TemplateMatchingEnabled;
             }
             finally
             {
