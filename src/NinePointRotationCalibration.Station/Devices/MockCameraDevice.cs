@@ -160,11 +160,11 @@ namespace NinePointRotationCalibration.Station.Devices
         }
 
         /// <summary>获取模拟相机当前参数集的独立拷贝。</summary>
-        public async Task<CameraParameterSet> GetParametersAsync(CancellationToken cancellationToken)
+        public Task<CameraParameterSet> GetParametersAsync(CancellationToken cancellationToken)
         {
             ThrowIfDisposed();
             cancellationToken.ThrowIfCancellationRequested();
-            lock (_parametersSync) return CloneParameters(_parameters);
+            lock (_parametersSync) return Task.FromResult(CloneParameters(_parameters));
         }
 
         /// <summary>更新模拟相机参数集。</summary>

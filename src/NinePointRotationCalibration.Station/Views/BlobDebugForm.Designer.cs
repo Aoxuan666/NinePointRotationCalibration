@@ -9,6 +9,20 @@ namespace NinePointRotationCalibration.Station.Views
     // BlobDebugForm 界面控件声明与布局构建
     partial class BlobDebugForm
     {
+        private static readonly Color PageBackgroundColor = Color.FromArgb(248, 250, 252);
+        private static readonly Color CardBackgroundColor = Color.White;
+        private static readonly Color CardBorderColor = Color.FromArgb(226, 232, 240);
+        private static readonly Color HeaderDarkColor = Color.FromArgb(15, 23, 42);
+        private static readonly Color HeaderSurfaceColor = Color.FromArgb(30, 41, 59);
+        private static readonly Color ViewportBackdropColor = Color.FromArgb(11, 15, 23);
+        private static readonly Color ViewportHeaderColor = Color.FromArgb(17, 24, 39);
+        private static readonly Color TextPrimaryColor = Color.FromArgb(15, 23, 42);
+        private static readonly Color TextSecondaryColor = Color.FromArgb(71, 85, 105);
+        private static readonly Color TextMutedColor = Color.FromArgb(100, 116, 139);
+        private static readonly Color AccentPrimaryColor = Color.FromArgb(37, 99, 235);
+        private static readonly Color AccentHoverColor = Color.FromArgb(29, 78, 216);
+        private static readonly Color AccentDownColor = Color.FromArgb(30, 64, 175);
+
         private IContainer components;
         private SplitContainer mainSplit;
         private CheckBox chkTemplateMatchingEnabled;
@@ -59,10 +73,10 @@ namespace NinePointRotationCalibration.Station.Views
             SuspendLayout();
             AutoScaleDimensions = new SizeF(96.0F, 96.0F);
             AutoScaleMode = AutoScaleMode.Dpi;
-            BackColor = Color.FromArgb(232, 235, 238);
+            BackColor = PageBackgroundColor;
             ClientSize = new Size(1440, 880);
             Font = new Font("Microsoft YaHei UI", 9.0F, FontStyle.Regular, GraphicsUnit.Point, 134);
-            ForeColor = Color.FromArgb(39, 43, 48);
+            ForeColor = TextPrimaryColor;
             FormBorderStyle = FormBorderStyle.Sizable;
             KeyPreview = true;
             MinimumSize = new Size(1040, 680);
@@ -72,28 +86,29 @@ namespace NinePointRotationCalibration.Station.Views
             Text = "Blob 检测调试";
 
             TableLayoutPanel root = new TableLayoutPanel();
-            root.BackColor = BackColor;
+            root.BackColor = PageBackgroundColor;
             root.ColumnCount = 1;
             root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100.0F));
             root.Dock = DockStyle.Fill;
             root.Margin = Padding.Empty;
             root.RowCount = 2;
             root.RowStyles.Add(new RowStyle(SizeType.Percent, 100.0F));
-            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 42.0F));
+            // 底部操作栏高度 56px，确保 34px 高的「应用参数 / 取消」按钮完整展示且留有均衡边距
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 56.0F));
 
             mainSplit = new SplitContainer();
-            mainSplit.BackColor = Color.FromArgb(202, 207, 212);
+            mainSplit.BackColor = CardBorderColor;
             mainSplit.Dock = DockStyle.Fill;
             mainSplit.FixedPanel = FixedPanel.Panel1;
             mainSplit.IsSplitterFixed = false;
             mainSplit.Name = "mainSplit";
-            mainSplit.Size = new Size(1440, 838);
-            mainSplit.Panel1.BackColor = Color.FromArgb(244, 246, 248);
-            mainSplit.Panel1MinSize = 300;
-            mainSplit.Panel2.BackColor = Color.Black;
+            mainSplit.Size = new Size(1440, 824);
+            mainSplit.Panel1.BackColor = PageBackgroundColor;
+            mainSplit.Panel1MinSize = 310;
+            mainSplit.Panel2.BackColor = ViewportBackdropColor;
             mainSplit.Panel2MinSize = 560;
-            mainSplit.SplitterDistance = 326;
-            mainSplit.SplitterWidth = 6;
+            mainSplit.SplitterDistance = 336;
+            mainSplit.SplitterWidth = 4;
 
             BuildParameterPanel(mainSplit.Panel1);
             BuildPreviewPanel(mainSplit.Panel2);
@@ -105,24 +120,22 @@ namespace NinePointRotationCalibration.Station.Views
             ResumeLayout(false);
         }
 
-        // 构建左侧 Blob 参数调试面板
+        // 构建左侧极简白卡 Blob 参数调试面板
         private void BuildParameterPanel(Control parent)
         {
             TableLayoutPanel layout = new TableLayoutPanel();
             layout.AutoScroll = true;
-            layout.BackColor = Color.FromArgb(244, 246, 248);
+            layout.BackColor = PageBackgroundColor;
             layout.ColumnCount = 1;
             layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100.0F));
             layout.Dock = DockStyle.Fill;
             layout.Padding = new Padding(10);
-            layout.RowCount = 5;
-            layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            layout.RowCount = 4;
             layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100.0F));
 
-            GroupBox modeGroup = CreateGroupBox("检测路径");
             TableLayoutPanel modeFields = CreateFieldTable();
             chkTemplateMatchingEnabled = CreateCheckBox(
                 "chkTemplateMatchingEnabled",
@@ -133,7 +146,8 @@ namespace NinePointRotationCalibration.Station.Views
             lblModeStatus = new Label();
             lblModeStatus.AutoEllipsis = true;
             lblModeStatus.Dock = DockStyle.Fill;
-            lblModeStatus.ForeColor = Color.FromArgb(94, 101, 109);
+            lblModeStatus.Font = new Font("Microsoft YaHei UI", 8.25F, FontStyle.Regular, GraphicsUnit.Point, 134);
+            lblModeStatus.ForeColor = TextMutedColor;
             lblModeStatus.Name = "lblModeStatus";
             lblModeStatus.Padding = new Padding(0, 4, 0, 2);
             lblModeStatus.Text = "等待分析";
@@ -144,9 +158,8 @@ namespace NinePointRotationCalibration.Station.Views
             modeFields.SetColumnSpan(chkFollowTemplateTransform, 2);
             modeFields.Controls.Add(lblModeStatus, 0, 2);
             modeFields.SetColumnSpan(lblModeStatus, 2);
-            modeGroup.Controls.Add(modeFields);
+            Panel modeGroup = CreateCard("检测路径", modeFields);
 
-            GroupBox thresholdGroup = CreateGroupBox("阈值与 Blob");
             TableLayoutPanel thresholdFields = CreateFieldTable();
             nudBrightThreshold = CreateNumeric("nudBrightThreshold", 128.0M, 0.0M, 255.0M, 0, 1.0M);
             nudMinimumBlobArea = CreateNumeric("nudMinimumBlobArea", 20.0M, 0.0M, 10000000.0M, 0, 1.0M);
@@ -175,31 +188,34 @@ namespace NinePointRotationCalibration.Station.Views
                 "白底黑点（检测暗目标）");
             thresholdFields.Controls.Add(chkDarkForeground, 0, 9);
             thresholdFields.SetColumnSpan(chkDarkForeground, 2);
-            thresholdGroup.Controls.Add(thresholdFields);
+            Panel thresholdGroup = CreateCard("阈值与 Blob", thresholdFields);
 
-            GroupBox resultGroup = CreateGroupBox("当前结果");
             TableLayoutPanel resultLayout = new TableLayoutPanel();
+            resultLayout.AutoSize = true;
+            resultLayout.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            resultLayout.BackColor = CardBackgroundColor;
             resultLayout.ColumnCount = 1;
             resultLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100.0F));
-            resultLayout.Dock = DockStyle.Fill;
-            resultLayout.Padding = new Padding(8, 7, 8, 8);
+            resultLayout.Dock = DockStyle.Top;
+            resultLayout.Margin = Padding.Empty;
+            resultLayout.Padding = Padding.Empty;
             resultLayout.RowCount = 2;
             resultLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             resultLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             lblSummary = new Label();
             lblSummary.AutoEllipsis = true;
             lblSummary.Dock = DockStyle.Fill;
-            lblSummary.Font = new Font(Font.FontFamily, 9.0F, FontStyle.Bold);
-            lblSummary.ForeColor = Color.FromArgb(94, 101, 109);
+            lblSummary.Font = new Font("Microsoft YaHei UI", 8.75F, FontStyle.Bold, GraphicsUnit.Point, 134);
+            lblSummary.ForeColor = TextSecondaryColor;
             lblSummary.Name = "lblSummary";
-            lblSummary.Padding = new Padding(0, 2, 0, 7);
+            lblSummary.Padding = new Padding(0, 2, 0, 8);
             lblSummary.Text = "Blob --";
             lblSummary.TextAlign = ContentAlignment.MiddleLeft;
             btnRefresh = CreateButton("btnRefresh", "立即刷新", 92, 32, false);
             btnRefresh.Anchor = AnchorStyles.Left;
             resultLayout.Controls.Add(lblSummary, 0, 0);
             resultLayout.Controls.Add(btnRefresh, 0, 1);
-            resultGroup.Controls.Add(resultLayout);
+            Panel resultGroup = CreateCard("当前结果", resultLayout);
 
             layout.Controls.Add(modeGroup, 0, 0);
             layout.Controls.Add(thresholdGroup, 0, 1);
@@ -211,43 +227,44 @@ namespace NinePointRotationCalibration.Station.Views
         private void BuildPreviewPanel(Control parent)
         {
             TableLayoutPanel layout = new TableLayoutPanel();
-            layout.BackColor = Color.Black;
+            layout.BackColor = ViewportBackdropColor;
             layout.ColumnCount = 1;
             layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100.0F));
             layout.Dock = DockStyle.Fill;
             layout.Margin = Padding.Empty;
             layout.RowCount = 3;
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34.0F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 38.0F));
             layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100.0F));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 106.0F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 118.0F));
 
             TableLayoutPanel toolbar = new TableLayoutPanel();
-            toolbar.BackColor = Color.FromArgb(38, 43, 49);
+            toolbar.BackColor = HeaderDarkColor;
             toolbar.ColumnCount = 4;
             toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100.0F));
-            toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 94.0F));
+            toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 96.0F));
             toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 68.0F));
             toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 58.0F));
             toolbar.Dock = DockStyle.Fill;
             toolbar.Margin = Padding.Empty;
-            toolbar.Padding = new Padding(10, 4, 6, 4);
+            toolbar.Padding = new Padding(12, 5, 8, 5);
             toolbar.RowCount = 1;
             toolbar.RowStyles.Add(new RowStyle(SizeType.Percent, 100.0F));
 
             lblPreviewStatus = new Label();
             lblPreviewStatus.AutoEllipsis = true;
             lblPreviewStatus.Dock = DockStyle.Fill;
-            lblPreviewStatus.ForeColor = Color.FromArgb(205, 211, 218);
+            lblPreviewStatus.Font = new Font("Microsoft YaHei UI", 8.5F, FontStyle.Regular, GraphicsUnit.Point, 134);
+            lblPreviewStatus.ForeColor = Color.FromArgb(203, 213, 225);
             lblPreviewStatus.Name = "lblPreviewStatus";
             lblPreviewStatus.Text = "等待更新";
             lblPreviewStatus.TextAlign = ContentAlignment.MiddleLeft;
-            btnToggleLayout = CreateButton("btnToggleLayout", "⇄ 切换左右", 88, 26, false);
+            btnToggleLayout = CreateDarkButton("btnToggleLayout", "⇄ 切换左右", 88, 26);
             btnToggleLayout.Dock = DockStyle.Fill;
             btnToggleLayout.Margin = new Padding(4, 0, 4, 0);
-            btnFit = CreateButton("btnFit", "适应", 62, 26, false);
+            btnFit = CreateDarkButton("btnFit", "适应", 62, 26);
             btnFit.Dock = DockStyle.Fill;
             btnFit.Margin = new Padding(4, 0, 4, 0);
-            btnActualPixels = CreateButton("btnActualPixels", "1:1", 52, 26, false);
+            btnActualPixels = CreateDarkButton("btnActualPixels", "1:1", 52, 26);
             btnActualPixels.Dock = DockStyle.Fill;
             btnActualPixels.Margin = new Padding(4, 0, 0, 0);
             toolbar.Controls.Add(lblPreviewStatus, 0, 0);
@@ -256,35 +273,35 @@ namespace NinePointRotationCalibration.Station.Views
             toolbar.Controls.Add(btnActualPixels, 3, 0);
 
             previewSplit = new SplitContainer();
-            previewSplit.BackColor = Color.FromArgb(45, 52, 60);
+            previewSplit.BackColor = HeaderSurfaceColor;
             previewSplit.Dock = DockStyle.Fill;
             previewSplit.IsSplitterFixed = false;
             previewSplit.Margin = Padding.Empty;
             previewSplit.Name = "previewSplit";
             previewSplit.Orientation = Orientation.Horizontal;
-            previewSplit.Size = new Size(1108, 666);
+            previewSplit.Size = new Size(1100, 668);
             previewSplit.Panel1MinSize = 110;
             previewSplit.Panel2MinSize = 110;
-            previewSplit.SplitterDistance = 331;
-            previewSplit.SplitterWidth = 4;
+            previewSplit.SplitterDistance = 332;
+            previewSplit.SplitterWidth = 3;
 
             sourceViewport = new ImageViewport();
             sourceViewport.Dock = DockStyle.Fill;
             sourceViewport.Name = "sourceViewport";
-            previewSplit.Panel1.Controls.Add(CreateViewportPane("原图窗口（原始像素对比）", sourceViewport));
+            previewSplit.Panel1.Controls.Add(CreateViewportPane("原图视口（支持滚轮/拖拽双窗联动）", sourceViewport));
 
             binaryViewport = new ImageViewport();
             binaryViewport.Dock = DockStyle.Fill;
             binaryViewport.Name = "binaryViewport";
-            previewSplit.Panel2.Controls.Add(CreateViewportPane("局部二值效果图窗口（ROI 分割 / 轮廓叠加）", binaryViewport));
+            previewSplit.Panel2.Controls.Add(CreateViewportPane("局部二值效果视口（ROI 分割 / 轮廓叠加）", binaryViewport));
 
             dgvBlobs = new DataGridView();
             ConfigureGrid(dgvBlobs);
             dgvBlobs.Columns.Add(CreateGridColumn("colBlobIndex", "#", 44));
-            dgvBlobs.Columns.Add(CreateGridColumn("colBlobColumn", "X", 82));
-            dgvBlobs.Columns.Add(CreateGridColumn("colBlobRow", "Y", 82));
+            dgvBlobs.Columns.Add(CreateGridColumn("colBlobColumn", "X", 84));
+            dgvBlobs.Columns.Add(CreateGridColumn("colBlobRow", "Y", 84));
             dgvBlobs.Columns.Add(CreateGridColumn("colBlobArea", "面积", 92));
-            dgvBlobs.Columns.Add(CreateGridColumn("colBlobRectangularity", "矩形度", 82));
+            dgvBlobs.Columns.Add(CreateGridColumn("colBlobRectangularity", "矩形度", 84));
             DataGridViewTextBoxColumn stateColumn = CreateGridColumn("colBlobState", "判定", 96);
             stateColumn.AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill;
             dgvBlobs.Columns.Add(stateColumn);
@@ -304,15 +321,24 @@ namespace NinePointRotationCalibration.Station.Views
             footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100.0F));
             footer.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             footer.Dock = DockStyle.Fill;
-            footer.Padding = new Padding(12, 10, 10, 9);
+            footer.Margin = Padding.Empty;
+            footer.Padding = new Padding(14, 10, 14, 10);
             footer.RowCount = 1;
             footer.RowStyles.Add(new RowStyle(SizeType.Percent, 100.0F));
+            footer.Paint += delegate(object sender, PaintEventArgs e)
+            {
+                using (Pen border = new Pen(CardBorderColor, 1.0F))
+                {
+                    e.Graphics.DrawLine(border, 0, 0, footer.Width, 0);
+                }
+            };
 
             Label resultHint = new Label();
             resultHint.AutoEllipsis = true;
             resultHint.Dock = DockStyle.Fill;
-            resultHint.ForeColor = Color.FromArgb(94, 101, 109);
-            resultHint.Text = "预览显示完整阈值分割；检测结果从每个 ROI 中提取最大目标区域";
+            resultHint.Font = new Font("Microsoft YaHei UI", 8.5F, FontStyle.Regular, GraphicsUnit.Point, 134);
+            resultHint.ForeColor = TextMutedColor;
+            resultHint.Text = "提示：预览显示完整阈值分割；检测时优先在面积区间内检出非矩形不良标记，滚轮/拖拽支持双视口同步缩放。";
             resultHint.TextAlign = ContentAlignment.MiddleLeft;
 
             FlowLayoutPanel actions = new FlowLayoutPanel();
@@ -321,8 +347,10 @@ namespace NinePointRotationCalibration.Station.Views
             actions.FlowDirection = FlowDirection.RightToLeft;
             actions.Margin = Padding.Empty;
             actions.WrapContents = false;
-            btnApply = CreateButton("btnApply", "应用参数", 96, 34, true);
-            btnCancel = CreateButton("btnCancel", "取消", 82, 34, false);
+            btnApply = CreateButton("btnApply", "应用参数", 100, 34, true);
+            btnApply.Margin = new Padding(0, 0, 0, 0);
+            btnCancel = CreateButton("btnCancel", "取消", 84, 34, false);
+            btnCancel.Margin = new Padding(0, 0, 8, 0);
             btnCancel.DialogResult = DialogResult.Cancel;
             actions.Controls.Add(btnApply);
             actions.Controls.Add(btnCancel);
@@ -332,17 +360,49 @@ namespace NinePointRotationCalibration.Station.Views
         }
 
         // 控件构建与网格样式辅助方法
-        private static GroupBox CreateGroupBox(string text)
+        private static Panel CreateCard(string text, Control body)
         {
-            GroupBox group = new GroupBox();
-            group.AutoSize = true;
-            group.AutoSizeMode = AutoSizeMode.GrowAndShrink;
-            group.Dock = DockStyle.Top;
-            group.Font = new Font("Microsoft YaHei UI", 9.0F, FontStyle.Bold, GraphicsUnit.Point, 134);
-            group.Margin = new Padding(0, 0, 0, 9);
-            group.Padding = new Padding(6, 21, 6, 6);
-            group.Text = text;
-            return group;
+            Panel card = new Panel();
+            card.AutoSize = true;
+            card.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            card.BackColor = CardBackgroundColor;
+            card.Dock = DockStyle.Top;
+            card.Margin = new Padding(0, 0, 0, 10);
+            card.Padding = new Padding(12, 10, 12, 10);
+            card.Paint += delegate(object sender, PaintEventArgs e)
+            {
+                if (card.Width <= 1 || card.Height <= 1) return;
+                using (Pen border = new Pen(CardBorderColor, 1.0F))
+                {
+                    e.Graphics.DrawRectangle(border, 0, 0, card.Width - 1, card.Height - 1);
+                }
+            };
+
+            TableLayoutPanel frame = new TableLayoutPanel();
+            frame.AutoSize = true;
+            frame.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            frame.BackColor = CardBackgroundColor;
+            frame.ColumnCount = 1;
+            frame.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100.0F));
+            frame.Dock = DockStyle.Top;
+            frame.Margin = Padding.Empty;
+            frame.RowCount = 2;
+            frame.RowStyles.Add(new RowStyle(SizeType.Absolute, 24.0F));
+            frame.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+            Label title = new Label();
+            title.AutoEllipsis = true;
+            title.Dock = DockStyle.Fill;
+            title.Font = new Font("Microsoft YaHei UI", 9.0F, FontStyle.Bold, GraphicsUnit.Point, 134);
+            title.ForeColor = TextPrimaryColor;
+            title.Margin = new Padding(0, 0, 0, 4);
+            title.Text = text;
+            title.TextAlign = ContentAlignment.MiddleLeft;
+
+            frame.Controls.Add(title, 0, 0);
+            frame.Controls.Add(body, 0, 1);
+            card.Controls.Add(frame);
+            return card;
         }
 
         private static TableLayoutPanel CreateFieldTable()
@@ -350,12 +410,14 @@ namespace NinePointRotationCalibration.Station.Views
             TableLayoutPanel table = new TableLayoutPanel();
             table.AutoSize = true;
             table.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            table.BackColor = CardBackgroundColor;
             table.ColumnCount = 2;
-            table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 104.0F));
+            table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 100.0F));
             table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100.0F));
             table.Dock = DockStyle.Top;
             table.Font = new Font("Microsoft YaHei UI", 9.0F, FontStyle.Regular, GraphicsUnit.Point, 134);
-            table.Padding = new Padding(8, 5, 8, 7);
+            table.Margin = Padding.Empty;
+            table.Padding = Padding.Empty;
             return table;
         }
 
@@ -364,7 +426,8 @@ namespace NinePointRotationCalibration.Station.Views
             Label label = new Label();
             label.AutoEllipsis = true;
             label.Dock = DockStyle.Fill;
-            label.Margin = new Padding(0, 5, 5, 5);
+            label.ForeColor = TextSecondaryColor;
+            label.Margin = new Padding(0, 4, 6, 4);
             label.Text = text;
             label.TextAlign = ContentAlignment.MiddleLeft;
             control.Dock = DockStyle.Fill;
@@ -377,8 +440,10 @@ namespace NinePointRotationCalibration.Station.Views
         {
             CheckBox checkBox = new CheckBox();
             checkBox.AutoSize = true;
+            checkBox.Cursor = Cursors.Hand;
             checkBox.Dock = DockStyle.Fill;
-            checkBox.Margin = new Padding(0, 5, 0, 5);
+            checkBox.ForeColor = TextPrimaryColor;
+            checkBox.Margin = new Padding(0, 4, 0, 4);
             checkBox.Name = name;
             checkBox.Text = text;
             checkBox.UseVisualStyleBackColor = true;
@@ -394,11 +459,15 @@ namespace NinePointRotationCalibration.Station.Views
             decimal increment)
         {
             NumericUpDown input = new NumericUpDown();
+            input.BackColor = Color.White;
+            input.BorderStyle = BorderStyle.FixedSingle;
             input.DecimalPlaces = decimalPlaces;
+            input.ForeColor = TextPrimaryColor;
             input.Increment = increment;
             input.Maximum = maximum;
             input.Minimum = minimum;
             input.Name = name;
+            input.TextAlign = HorizontalAlignment.Right;
             input.ThousandsSeparator = maximum >= 10000.0M;
             input.Value = Math.Max(minimum, Math.Min(maximum, value));
             return input;
@@ -407,14 +476,36 @@ namespace NinePointRotationCalibration.Station.Views
         private static Button CreateButton(string name, string text, int width, int height, bool primary)
         {
             Button button = new Button();
-            button.BackColor = primary ? Color.FromArgb(17, 122, 101) : Color.FromArgb(72, 78, 86);
+            button.BackColor = primary ? AccentPrimaryColor : Color.White;
             button.Cursor = Cursors.Hand;
-            button.FlatAppearance.BorderColor = primary
-                ? Color.FromArgb(17, 122, 101)
-                : Color.FromArgb(100, 107, 115);
+            button.FlatAppearance.BorderColor = primary ? AccentPrimaryColor : Color.FromArgb(203, 213, 225);
+            button.FlatAppearance.BorderSize = 1;
+            button.FlatAppearance.MouseOverBackColor = primary ? AccentHoverColor : Color.FromArgb(241, 245, 249);
+            button.FlatAppearance.MouseDownBackColor = primary ? AccentDownColor : Color.FromArgb(226, 232, 240);
             button.FlatStyle = FlatStyle.Flat;
-            button.ForeColor = Color.White;
+            button.Font = new Font("Microsoft YaHei UI", 8.75F, primary ? FontStyle.Bold : FontStyle.Regular, GraphicsUnit.Point, 134);
+            button.ForeColor = primary ? Color.White : TextPrimaryColor;
             button.Margin = new Padding(0, 0, 7, 0);
+            button.Name = name;
+            button.Size = new Size(width, height);
+            button.Text = text;
+            button.UseVisualStyleBackColor = false;
+            return button;
+        }
+
+        private static Button CreateDarkButton(string name, string text, int width, int height)
+        {
+            Button button = new Button();
+            button.BackColor = HeaderSurfaceColor;
+            button.Cursor = Cursors.Hand;
+            button.FlatAppearance.BorderColor = Color.FromArgb(51, 65, 85);
+            button.FlatAppearance.BorderSize = 1;
+            button.FlatAppearance.MouseOverBackColor = Color.FromArgb(51, 65, 85);
+            button.FlatAppearance.MouseDownBackColor = HeaderDarkColor;
+            button.FlatStyle = FlatStyle.Flat;
+            button.Font = new Font("Microsoft YaHei UI", 8.25F, FontStyle.Regular, GraphicsUnit.Point, 134);
+            button.ForeColor = Color.FromArgb(226, 232, 240);
+            button.Margin = new Padding(0, 0, 6, 0);
             button.Name = name;
             button.Size = new Size(width, height);
             button.Text = text;
@@ -425,15 +516,16 @@ namespace NinePointRotationCalibration.Station.Views
         private static Control CreateViewportPane(string headerText, ImageViewport viewport)
         {
             Panel container = new Panel();
-            container.BackColor = Color.Black;
+            container.BackColor = ViewportBackdropColor;
             container.Dock = DockStyle.Fill;
 
             Label header = new Label();
-            header.BackColor = Color.FromArgb(24, 32, 44);
+            header.BackColor = ViewportHeaderColor;
             header.Dock = DockStyle.Top;
-            header.ForeColor = Color.FromArgb(203, 213, 225);
-            header.Height = 20;
-            header.Padding = new Padding(8, 0, 0, 0);
+            header.Font = new Font("Microsoft YaHei UI", 8.25F, FontStyle.Bold, GraphicsUnit.Point, 134);
+            header.ForeColor = Color.FromArgb(148, 163, 184);
+            header.Height = 24;
+            header.Padding = new Padding(10, 0, 0, 0);
             header.Text = headerText;
             header.TextAlign = ContentAlignment.MiddleLeft;
 
@@ -444,31 +536,39 @@ namespace NinePointRotationCalibration.Station.Views
 
         private static void ConfigureGrid(DataGridView grid)
         {
+            System.Reflection.PropertyInfo doubleBuffered = typeof(DataGridView).GetProperty(
+                "DoubleBuffered",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            if (doubleBuffered != null) doubleBuffered.SetValue(grid, true, null);
+
             grid.AllowUserToAddRows = false;
             grid.AllowUserToDeleteRows = false;
             grid.AllowUserToResizeRows = false;
             grid.AutoSizeRowsMode = DataGridViewAutoSizeRowsMode.None;
+            grid.AlternatingRowsDefaultCellStyle.BackColor = Color.FromArgb(250, 252, 255);
             grid.BackgroundColor = Color.White;
-            grid.BorderStyle = BorderStyle.FixedSingle;
-            grid.ColumnHeadersBorderStyle = DataGridViewHeaderBorderStyle.Single;
-            grid.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(226, 230, 234);
-            grid.ColumnHeadersDefaultCellStyle.ForeColor = Color.FromArgb(39, 43, 48);
-            grid.ColumnHeadersDefaultCellStyle.SelectionBackColor = Color.FromArgb(226, 230, 234);
-            grid.ColumnHeadersDefaultCellStyle.SelectionForeColor = Color.FromArgb(39, 43, 48);
+            grid.BorderStyle = BorderStyle.None;
+            grid.CellBorderStyle = DataGridViewCellBorderStyle.SingleHorizontal;
+            grid.ColumnHeadersBorderStyle = DataGridViewHeaderBorderStyle.None;
+            grid.ColumnHeadersDefaultCellStyle.BackColor = PageBackgroundColor;
+            grid.ColumnHeadersDefaultCellStyle.Font = new Font("Microsoft YaHei UI", 8.5F, FontStyle.Bold, GraphicsUnit.Point, 134);
+            grid.ColumnHeadersDefaultCellStyle.ForeColor = TextSecondaryColor;
+            grid.ColumnHeadersDefaultCellStyle.SelectionBackColor = PageBackgroundColor;
+            grid.ColumnHeadersDefaultCellStyle.SelectionForeColor = TextSecondaryColor;
             grid.ColumnHeadersHeight = 30;
             grid.ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing;
             grid.DefaultCellStyle.BackColor = Color.White;
-            grid.DefaultCellStyle.ForeColor = Color.FromArgb(45, 49, 54);
-            grid.DefaultCellStyle.SelectionBackColor = Color.FromArgb(205, 226, 220);
-            grid.DefaultCellStyle.SelectionForeColor = Color.FromArgb(25, 45, 40);
+            grid.DefaultCellStyle.ForeColor = TextPrimaryColor;
+            grid.DefaultCellStyle.SelectionBackColor = Color.FromArgb(239, 246, 255);
+            grid.DefaultCellStyle.SelectionForeColor = AccentHoverColor;
             grid.Dock = DockStyle.Fill;
             grid.EnableHeadersVisualStyles = false;
-            grid.GridColor = Color.FromArgb(218, 222, 226);
+            grid.GridColor = Color.FromArgb(241, 245, 249);
             grid.MultiSelect = false;
             grid.Name = "dgvBlobs";
             grid.ReadOnly = true;
             grid.RowHeadersVisible = false;
-            grid.RowTemplate.Height = 25;
+            grid.RowTemplate.Height = 27;
             grid.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
         }
 

@@ -55,39 +55,62 @@ namespace NinePointRotationCalibration
             string tempPath = Path.Combine(directory, Path.GetFileName(fullPath) + "." + Guid.NewGuid().ToString("N") + ".tmp");
             try
             {
-                using (FileStream stream = new FileStream(tempPath, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None))
-                using (ZipArchive archive = new ZipArchive(stream, ZipArchiveMode.Create, false, Encoding.UTF8))
+                using (FileStream stream = new FileStream(
+                    tempPath,
+                    FileMode.CreateNew,
+                    FileAccess.ReadWrite,
+                    FileShare.None,
+                    4096,
+                    FileOptions.WriteThrough))
                 {
-                    ZipArchiveEntry jobEntry = archive.CreateEntry(JobEntryName, CompressionLevel.Optimal);
-                    using (Stream entryStream = jobEntry.Open())
+                    using (ZipArchive archive = new ZipArchive(stream, ZipArchiveMode.Create, true, Encoding.UTF8))
                     {
-                        DataContractJsonSerializer serializer = CreateSerializer();
-                        serializer.WriteObject(entryStream, metadata);
-                    }
+                        ZipArchiveEntry jobEntry = archive.CreateEntry(JobEntryName, CompressionLevel.Optimal);
+                        using (Stream entryStream = jobEntry.Open())
+                        {
+                            DataContractJsonSerializer serializer = CreateSerializer();
+                            serializer.WriteObject(entryStream, metadata);
+                        }
 
-                    if (modelData != null && modelData.Length > 0)
-                    {
-                        ZipArchiveEntry modelEntry = archive.CreateEntry(ModelEntryName, CompressionLevel.NoCompression);
-                        using (Stream entryStream = modelEntry.Open())
-                            entryStream.Write(modelData, 0, modelData.Length);
+                        if (modelData != null && modelData.Length > 0)
+                        {
+                            ZipArchiveEntry modelEntry = archive.CreateEntry(ModelEntryName, CompressionLevel.NoCompression);
+                            using (Stream entryStream = modelEntry.Open())
+                                entryStream.Write(modelData, 0, modelData.Length);
+                        }
                     }
+                    stream.Flush(true);
                 }
 
-                if (File.Exists(fullPath))
-                {
-                    // 先写临时包再原子替换目标文件，防止保存中断损坏已有 Job 文件。
-                    string backupPath = fullPath + ".bak";
-                    File.Replace(tempPath, fullPath, backupPath, true);
-                    try { File.Delete(backupPath); } catch { }
-                }
-                else
-                {
-                    File.Move(tempPath, fullPath);
-                }
+                CommitFile(tempPath, fullPath);
             }
             finally
             {
                 try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { }
+            }
+        }
+
+        private static void CommitFile(string tempPath, string destinationPath)
+        {
+            if (!File.Exists(destinationPath))
+            {
+                try
+                {
+                    File.Move(tempPath, destinationPath);
+                    return;
+                }
+                catch (IOException) when (File.Exists(destinationPath))
+                {
+                }
+            }
+
+            try
+            {
+                File.Replace(tempPath, destinationPath, null, true);
+            }
+            catch (FileNotFoundException)
+            {
+                File.Move(tempPath, destinationPath);
             }
         }
 
@@ -98,7 +121,7 @@ namespace NinePointRotationCalibration
             string fullPath = Path.GetFullPath(path);
             if (!File.Exists(fullPath)) throw new FileNotFoundException("标定 Job 文件不存在。", fullPath);
 
-            using (FileStream stream = new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.Read))
+            using (FileStream stream = new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete))
             using (ZipArchive archive = new ZipArchive(stream, ZipArchiveMode.Read, false, Encoding.UTF8))
             {
                 ZipArchiveEntry jobEntry = archive.GetEntry(JobEntryName);

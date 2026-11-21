@@ -60,8 +60,13 @@ namespace NinePointRotationCalibration
                 }
 
                 List<double> residuals = ComputeResiduals(observations, matrix, geometryBackend);
+                List<double> inlierResiduals = new List<double>();
+                for (int i = 0; i < observations.Count; i++)
+                {
+                    if (inliers[i]) inlierResiduals.Add(residuals[i]);
+                }
                 double threshold = SolverMath.MadThreshold(
-                    residuals,
+                    inlierResiduals.Count > 0 ? inlierResiduals : residuals,
                     options.MadMultiplier,
                     options.RansacInlierThresholdPixels);
                 bool[] refined = new bool[observations.Count];

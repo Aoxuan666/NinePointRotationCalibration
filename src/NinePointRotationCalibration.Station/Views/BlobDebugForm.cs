@@ -40,6 +40,7 @@ namespace NinePointRotationCalibration.Station.Views
         private int _releaseStarted;
         private int _resourcesDisposed;
         private bool _loadingControls;
+        private bool _syncingViewport;
         private volatile bool _closing;
 
         public BlobDebugForm(
@@ -50,7 +51,7 @@ namespace NinePointRotationCalibration.Station.Views
         {
             if (sourceImage == null) throw new ArgumentNullException(nameof(sourceImage));
 
-            _sourceImage = CloneToFastPArgb(sourceImage);
+            _sourceImage = ImageViewport.CloneToPArgbFast(sourceImage);
             _positioningJob = positioningJob == null ? null : positioningJob.DeepClone();
             _maximumMatches = Math.Max(0, maximumMatches);
             _appliedProfile = CloneProfile(profile);
@@ -61,7 +62,9 @@ namespace NinePointRotationCalibration.Station.Views
             UiRenderOptimizer.EnableDoubleBufferingRecursive(this);
             ApplyProfileToControls(_appliedProfile);
             WireEvents();
-            sourceViewport.SetImage(_sourceImage);
+            Bitmap sourceDisplay = ImageViewport.CloneToPArgbFast(_sourceImage);
+            Bitmap sourcePreview = ImageViewport.CreateFastPreview(sourceDisplay);
+            sourceViewport.SetImageOwned(sourceDisplay, sourcePreview);
             UpdateDependentControls();
 
             AcceptButton = btnApply;
@@ -125,6 +128,22 @@ namespace NinePointRotationCalibration.Station.Views
             btnApply.Click += BtnApply_Click;
             btnToggleLayout.Click += delegate { TogglePreviewLayout(); };
             previewSplit.SizeChanged += delegate { BalancePreviewSplit(); };
+            sourceViewport.ViewChanged += delegate { SyncViewportView(sourceViewport, binaryViewport); };
+            binaryViewport.ViewChanged += delegate { SyncViewportView(binaryViewport, sourceViewport); };
+        }
+
+        private void SyncViewportView(ImageViewport origin, ImageViewport target)
+        {
+            if (_syncingViewport || _closing || origin == null || target == null || !target.HasImage) return;
+            _syncingViewport = true;
+            try
+            {
+                target.SyncViewFrom(origin);
+            }
+            finally
+            {
+                _syncingViewport = false;
+            }
         }
 
         private void BlobDebugForm_Shown(object sender, EventArgs e)
@@ -340,7 +359,10 @@ namespace NinePointRotationCalibration.Station.Views
                         if (located == null) return null;
                         if (located.Matches != null)
                         {
-                            matches.AddRange(located.Matches.Where(match => match != null && match.Success));
+                            matches.AddRange(BoardInspectionService.OrderMatches(
+                                located.Matches,
+                                _positioningJob == null ? null : _positioningJob.Template,
+                                profile));
                         }
                         if (matches.Count == 0)
                         {
@@ -462,6 +484,7 @@ namespace NinePointRotationCalibration.Station.Views
                     payload.Dispose();
                     return null;
                 }
+                payload.PreviewImage = ImageViewport.CreateFastPreview(payload.BinaryImage);
                 payload.TemplateMatchingEnabled = templateMatchingEnabled;
                 payload.MatchCount = matches == null ? 0 : matches.Count;
                 payload.TotalMilliseconds = totalMilliseconds;
@@ -529,7 +552,7 @@ namespace NinePointRotationCalibration.Station.Views
             CancellationToken cancellationToken)
         {
             // 在原图副本上仅将各检测 ROI 旋转多边形内的像素替换为二值结果，ROI 外部保留原图便于对照定位
-            Bitmap combined = new Bitmap(_sourceImage);
+            Bitmap combined = ImageViewport.CloneToPArgbFast(_sourceImage);
             try
             {
                 using (Graphics graphics = Graphics.FromImage(combined))
@@ -679,7 +702,9 @@ namespace NinePointRotationCalibration.Station.Views
             }
 
             Bitmap binaryImage = payload.TakeBinaryImage();
-            binaryViewport.SetImageOwned(binaryImage);
+            Bitmap previewImage = payload.TakePreviewImage();
+            binaryViewport.SetImageOwned(binaryImage, previewImage);
+            SyncViewportView(sourceViewport, binaryViewport);
             sourceViewport.ClearOverlays();
             binaryViewport.SetPointOverlays(null);
             binaryViewport.SetRoiOverlays(payload.Regions);
@@ -889,20 +914,6 @@ namespace NinePointRotationCalibration.Station.Views
             control.Value = converted;
         }
 
-        private static Bitmap CloneToFastPArgb(Bitmap source)
-        {
-            Bitmap result = new Bitmap(
-                Math.Max(1, source.Width),
-                Math.Max(1, source.Height),
-                PixelFormat.Format32bppPArgb);
-            using (Graphics graphics = Graphics.FromImage(result))
-            {
-                graphics.CompositingMode = CompositingMode.SourceCopy;
-                graphics.DrawImageUnscaled(source, 0, 0);
-            }
-            return result;
-        }
-
         private static DetectionProfile CloneProfile(DetectionProfile source)
         {
             DetectionProfile value = source ?? new DetectionProfile();
@@ -987,6 +998,7 @@ namespace NinePointRotationCalibration.Station.Views
             }
 
             public Bitmap BinaryImage { get; set; }
+            public Bitmap PreviewImage { get; set; }
             public string ErrorMessage { get; set; }
             public List<ViewportRoiOverlay> Regions { get; private set; }
             public List<ViewportContourOverlay> Contours { get; private set; }
@@ -1011,11 +1023,21 @@ namespace NinePointRotationCalibration.Station.Views
                 return value;
             }
 
+            public Bitmap TakePreviewImage()
+            {
+                Bitmap value = PreviewImage;
+                PreviewImage = null;
+                return value;
+            }
+
             public void Dispose()
             {
                 Bitmap image = BinaryImage;
                 BinaryImage = null;
                 if (image != null) image.Dispose();
+                Bitmap preview = PreviewImage;
+                PreviewImage = null;
+                if (preview != null) preview.Dispose();
             }
         }
 

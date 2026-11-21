@@ -122,8 +122,9 @@ namespace NinePointRotationCalibration.WinForms.Forms
 
             Service = service;
             _enableDetectionRoi = enableDetectionRoi;
-            _referenceImage = new Bitmap(referenceImage);
-            _previewImageHolder = new PreviewImageHolder(_referenceImage);
+            _referenceImage = CloneToFastPArgb(referenceImage);
+            // PreviewImageHolder 复用已转换的 _referenceImage，打开窗口时消除一次冗余 20MP 同步位图复制
+            _previewImageHolder = new PreviewImageHolder(_referenceImage, false);
             _state = initialState == null ? new TemplateEditorState() : initialState.DeepClone();
             if (_state.Parameters == null)
             {
@@ -144,7 +145,8 @@ namespace NinePointRotationCalibration.WinForms.Forms
             KeyPreview = true;
             ShowIcon = false;
             Font = new Font("Microsoft YaHei UI", 9.0f, FontStyle.Regular, GraphicsUnit.Point);
-            BackColor = Color.FromArgb(244, 246, 248);
+            BackColor = Color.FromArgb(248, 250, 252);
+            ForeColor = Color.FromArgb(15, 23, 42);
 
             _canvas = new CalibrationCanvas { Dock = DockStyle.Fill };
             _autoPreviewTimer = new System.Windows.Forms.Timer { Interval = 40 };
@@ -215,38 +217,43 @@ namespace NinePointRotationCalibration.WinForms.Forms
             _templateLockedCheck = new CheckBox { Text = "锁定模板 ROI", AutoSize = true };
             _searchLockedCheck = new CheckBox { Text = "锁定搜索 ROI", AutoSize = true };
 
-            _extractButton = CreateActionButton("刷新特征", ExtractFeaturesAsync);
-            _createButton = CreateActionButton("创建模型", CreateModelAsync);
-            _testButton = CreateActionButton("测试匹配", TestMatchAsync);
-            _okButton = new Button { Text = "确认", Width = 96, Height = 34 };
-            _cancelButton = new Button { Text = "取消", Width = 96, Height = 34, DialogResult = DialogResult.Cancel };
+            _extractButton = CreateActionButton("刷新特征", ExtractFeaturesAsync, false);
+            _createButton = CreateActionButton("创建模型", CreateModelAsync, true);
+            _testButton = CreateActionButton("测试匹配", TestMatchAsync, false);
+            _okButton = CreateModernButton("确认", 96, 34, true);
+            _cancelButton = CreateModernButton("取消", 88, 34, false);
+            _cancelButton.DialogResult = DialogResult.Cancel;
             _operationLog = new TextBox
             {
                 Multiline = true,
                 ReadOnly = true,
                 ScrollBars = ScrollBars.Vertical,
+                BorderStyle = BorderStyle.FixedSingle,
                 Dock = DockStyle.Fill,
                 BackColor = Color.White,
+                ForeColor = Color.FromArgb(51, 65, 85),
+                Font = new Font("Consolas", 8.75f, FontStyle.Regular, GraphicsUnit.Point),
                 MinimumSize = new Size(0, 100)
             };
             _testResultLabel = new Label
             {
                 AutoSize = false,
                 Dock = DockStyle.Top,
-                Height = 42,
+                Height = 40,
                 Text = "测试结果：尚未测试",
                 TextAlign = ContentAlignment.MiddleLeft,
-                Padding = new Padding(8, 0, 8, 0),
-                BackColor = Color.FromArgb(232, 236, 240),
-                ForeColor = Color.FromArgb(45, 55, 65)
+                Padding = new Padding(10, 0, 10, 0),
+                BackColor = Color.FromArgb(241, 245, 249),
+                ForeColor = Color.FromArgb(51, 65, 85)
             };
             _modelStateLabel = new Label
             {
                 AutoSize = false,
                 Height = 34,
                 Dock = DockStyle.Top,
+                Font = new Font("Microsoft YaHei UI", 8.75f, FontStyle.Bold, GraphicsUnit.Point),
                 TextAlign = ContentAlignment.MiddleLeft,
-                Padding = new Padding(8, 0, 8, 0)
+                Padding = new Padding(10, 0, 10, 0)
             };
             _statusLabel = new ToolStripStatusLabel { Spring = true, TextAlign = ContentAlignment.MiddleLeft };
             _progressBar = new ToolStripProgressBar
@@ -329,14 +336,12 @@ namespace NinePointRotationCalibration.WinForms.Forms
             }
 
             CancelAutoPreview();
-            Bitmap previous = _referenceImage;
             PreviewImageHolder previousHolder = _previewImageHolder;
-            _referenceImage = new Bitmap(image);
-            _previewImageHolder = new PreviewImageHolder(_referenceImage);
-            previousHolder.Dispose();
-            previous.Dispose();
+            _referenceImage = CloneToFastPArgb(image);
+            _previewImageHolder = new PreviewImageHolder(_referenceImage, false);
+            if (previousHolder != null) previousHolder.Dispose();
             EnsureInitialGeometry(_state, _referenceImage.Size, _enableDetectionRoi);
-            _canvas.SetImage(_referenceImage);
+            _canvas.SetImageOwned(CloneToFastPArgb(_referenceImage));
             if (resetView)
             {
                 _canvas.FitImage();
@@ -363,12 +368,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
                     _previewImageHolder.Dispose();
                     _previewImageHolder = null;
                 }
-
-                if (_referenceImage != null)
-                {
-                    _referenceImage.Dispose();
-                    _referenceImage = null;
-                }
+                _referenceImage = null;
             }
 
             base.Dispose(disposing);
@@ -441,8 +441,10 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 GripStyle = ToolStripGripStyle.Hidden,
                 Dock = DockStyle.Top,
                 LayoutStyle = ToolStripLayoutStyle.Flow,
-                RenderMode = ToolStripRenderMode.System,
-                Padding = new Padding(5, 3, 5, 3)
+                Renderer = new DarkToolStripRenderer(),
+                BackColor = Color.FromArgb(15, 23, 42),
+                ForeColor = Color.FromArgb(226, 232, 240),
+                Padding = new Padding(8, 4, 8, 4)
             };
             tools.Items.Add(CreateToolButton("适应", "使整幅图像适应窗口 (F / 双击空白)", (sender, args) => _canvas.FitImage()));
             tools.Items.Add(CreateToolButton("1:1", "以一个图像像素对应一个屏幕像素显示 (1)", (sender, args) => _canvas.ShowOneToOne()));
@@ -453,13 +455,15 @@ namespace NinePointRotationCalibration.WinForms.Forms
             SplitContainer mainSplit = new SplitContainer
             {
                 Dock = DockStyle.Fill,
+                BackColor = Color.FromArgb(226, 232, 240),
                 Size = new Size(1200, 700),
                 Orientation = Orientation.Vertical,
-                SplitterWidth = 6,
+                SplitterWidth = 4,
                 FixedPanel = FixedPanel.Panel2,
-                Panel2MinSize = 400,
+                Panel2MinSize = 410,
                 SplitterDistance = 780
             };
+            mainSplit.Panel1.BackColor = Color.FromArgb(11, 15, 23);
             mainSplit.Panel1.Controls.Add(_canvas);
             mainSplit.Panel1.Controls.Add(tools);
 
@@ -469,6 +473,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
             {
                 Dock = DockStyle.Bottom,
                 AutoSize = true,
+                BackColor = Color.FromArgb(248, 250, 252),
                 Padding = new Padding(0, 6, 0, 2)
             };
             FlowLayoutPanel actionButtons = new FlowLayoutPanel
@@ -476,7 +481,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 AutoSize = true,
                 Dock = DockStyle.Bottom,
                 WrapContents = true,
-                Padding = new Padding(0, 6, 0, 0)
+                Padding = new Padding(0, 8, 0, 0)
             };
             actionButtons.Controls.Add(_extractButton);
             actionButtons.Controls.Add(_createButton);
@@ -484,20 +489,26 @@ namespace NinePointRotationCalibration.WinForms.Forms
             persistentActions.Controls.Add(_testResultLabel);
             persistentActions.Controls.Add(actionButtons);
 
-            Panel rightPanel = new Panel { Dock = DockStyle.Fill, Padding = new Padding(8) };
+            Panel rightPanel = new Panel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(248, 250, 252), Padding = new Padding(10) };
             rightPanel.Controls.Add(_parameterTabs);
             rightPanel.Controls.Add(persistentActions);
             rightPanel.Controls.Add(_modelStateLabel);
+            mainSplit.Panel2.BackColor = Color.FromArgb(248, 250, 252);
             mainSplit.Panel2.Controls.Add(rightPanel);
 
             FlowLayoutPanel footer = new FlowLayoutPanel
             {
                 Dock = DockStyle.Bottom,
-                Height = 52,
+                Height = 54,
                 FlowDirection = FlowDirection.RightToLeft,
                 WrapContents = false,
-                Padding = new Padding(8),
+                Padding = new Padding(12, 10, 12, 10),
                 BackColor = Color.White
+            };
+            footer.Paint += (s, pe) =>
+            {
+                using (Pen border = new Pen(Color.FromArgb(226, 232, 240), 1.0f))
+                    pe.Graphics.DrawLine(border, 0, 0, footer.Width, 0);
             };
             footer.Controls.Add(_cancelButton);
             footer.Controls.Add(_okButton);
@@ -529,15 +540,6 @@ namespace NinePointRotationCalibration.WinForms.Forms
             teachStack.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100.0f));
 
             // 1. ROI 区域操作卡片（位于高级选项上方）
-            GroupBox roiGroup = new GroupBox
-            {
-                Text = "ROI 区域（点击添加或切换选中）",
-                Dock = DockStyle.Top,
-                AutoSize = true,
-                AutoSizeMode = AutoSizeMode.GrowAndShrink,
-                Padding = new Padding(8, 6, 8, 8),
-                Margin = new Padding(2, 2, 2, 6)
-            };
             TableLayoutPanel roiGrid = new TableLayoutPanel
             {
                 Dock = DockStyle.Top,
@@ -559,19 +561,10 @@ namespace NinePointRotationCalibration.WinForms.Forms
             roiGrid.Controls.Add(_moveAnchorToolButton, 0, 1);
             roiGrid.SetColumnSpan(_moveAnchorToolButton, 2);
             roiGrid.Controls.Add(_deleteRoiButton, 2, 1);
-            roiGroup.Controls.Add(roiGrid);
+            Panel roiGroup = CreateCardSection("ROI 区域（点击添加或切换选中）", roiGrid);
             AddStackSection(teachStack, roiGroup);
 
             // 2. 模板掩膜操作卡片（紧接 ROI 下方，位于高级选项上方）
-            GroupBox maskGroup = new GroupBox
-            {
-                Text = "模板掩膜",
-                Dock = DockStyle.Top,
-                AutoSize = true,
-                AutoSizeMode = AutoSizeMode.GrowAndShrink,
-                Padding = new Padding(8, 6, 8, 8),
-                Margin = new Padding(2, 0, 2, 6)
-            };
             TableLayoutPanel maskGrid = new TableLayoutPanel
             {
                 Dock = DockStyle.Top,
@@ -594,6 +587,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 Text = "画笔半径",
                 AutoSize = true,
                 Anchor = AnchorStyles.Left,
+                ForeColor = Color.FromArgb(71, 85, 105),
                 Margin = new Padding(2, 8, 2, 4)
             };
             _brushRadiusInput.Margin = new Padding(2, 4, 4, 4);
@@ -602,6 +596,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
             maskGrid.Controls.Add(_invertMaskButton, 2, 1);
             maskGrid.Controls.Add(_clearMaskButton, 3, 1);
 
+            Panel maskInner = new Panel { Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, BackColor = Color.White };
             FlowLayoutPanel maskFooter = new FlowLayoutPanel
             {
                 Dock = DockStyle.Top,
@@ -610,8 +605,9 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 Padding = new Padding(2, 4, 2, 0)
             };
             maskFooter.Controls.Add(_maskVisibleCheck);
-            maskGroup.Controls.Add(maskFooter);
-            maskGroup.Controls.Add(maskGrid);
+            maskInner.Controls.Add(maskFooter);
+            maskInner.Controls.Add(maskGrid);
+            Panel maskGroup = CreateCardSection("模板掩膜", maskInner);
             AddStackSection(teachStack, maskGroup);
 
             // 3. 基础示教参数
@@ -856,7 +852,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 _searchLockedCheck.Checked = _state.SearchRoiLocked;
                 if (resetImage)
                 {
-                    _canvas.SetImage(_referenceImage);
+                    _canvas.SetImageOwned(CloneToFastPArgb(_referenceImage));
                 }
                 _canvas.TemplateRoi = _state.TemplateRoi;
                 _canvas.SearchRoi = _state.SearchRoi;
@@ -2959,9 +2955,9 @@ namespace NinePointRotationCalibration.WinForms.Forms
             private int _refCount;
             private bool _disposed;
 
-            public PreviewImageHolder(Bitmap source)
+            public PreviewImageHolder(Bitmap source, bool clone = true)
             {
-                _bitmap = new Bitmap(source);
+                _bitmap = clone ? CloneToFastPArgb(source) : source;
             }
 
             public bool TryAcquire(out PreviewImageLease lease)
@@ -3033,6 +3029,69 @@ namespace NinePointRotationCalibration.WinForms.Forms
             }
         }
 
+        private static Bitmap CloneToFastPArgb(Bitmap source)
+        {
+            Bitmap copy = new Bitmap(
+                Math.Max(1, source.Width),
+                Math.Max(1, source.Height),
+                System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
+            copy.SetResolution(
+                source.HorizontalResolution > 0.0f ? source.HorizontalResolution : 96.0f,
+                source.VerticalResolution > 0.0f ? source.VerticalResolution : 96.0f);
+            using (Graphics g = Graphics.FromImage(copy))
+            {
+                g.CompositingMode = System.Drawing.Drawing2D.CompositingMode.SourceCopy;
+                g.DrawImageUnscaled(source, 0, 0);
+            }
+            return copy;
+        }
+
+        private static Panel CreateCardSection(string titleText, Control body)
+        {
+            Panel card = new Panel
+            {
+                Dock = DockStyle.Top,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                BackColor = Color.White,
+                Padding = new Padding(10, 8, 10, 10),
+                Margin = new Padding(0, 0, 0, 8)
+            };
+            card.Paint += (sender, e) =>
+            {
+                if (card.Width <= 1 || card.Height <= 1) return;
+                using (Pen border = new Pen(Color.FromArgb(226, 232, 240), 1.0f))
+                {
+                    e.Graphics.DrawRectangle(border, 0, 0, card.Width - 1, card.Height - 1);
+                }
+            };
+            TableLayoutPanel frame = new TableLayoutPanel
+            {
+                Dock = DockStyle.Top,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                BackColor = Color.White,
+                ColumnCount = 1,
+                RowCount = 2,
+                Margin = Padding.Empty
+            };
+            frame.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100.0f));
+            frame.RowStyles.Add(new RowStyle(SizeType.Absolute, 24.0f));
+            frame.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            Label title = new Label
+            {
+                Text = titleText,
+                Dock = DockStyle.Fill,
+                Font = new Font("Microsoft YaHei UI", 8.75f, FontStyle.Bold, GraphicsUnit.Point),
+                ForeColor = Color.FromArgb(15, 23, 42),
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+            frame.Controls.Add(title, 0, 0);
+            frame.Controls.Add(body, 0, 1);
+            card.Controls.Add(frame);
+            return card;
+        }
+
         private static ToolStripButton CreateToolButton(
             string text,
             string toolTip,
@@ -3044,16 +3103,41 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 ToolTipText = toolTip,
                 CheckOnClick = checkOnClick,
                 DisplayStyle = ToolStripItemDisplayStyle.Text,
+                ForeColor = Color.FromArgb(226, 232, 240),
                 AutoSize = true
             };
             button.Click += click;
             return button;
         }
 
-        private static Button CreateActionButton(string text, EventHandler click)
+        private static Button CreateActionButton(string text, EventHandler click, bool primary)
         {
-            Button button = new Button { Text = text, AutoSize = true, Height = 34, MinimumSize = new Size(96, 34) };
+            Button button = CreateModernButton(text, 96, 34, primary);
+            button.AutoSize = true;
+            button.MinimumSize = new Size(96, 34);
             button.Click += click;
+            return button;
+        }
+
+        private static Button CreateModernButton(string text, int width, int height, bool primary)
+        {
+            Button button = new Button
+            {
+                Text = text,
+                Width = width,
+                Height = height,
+                FlatStyle = FlatStyle.Flat,
+                Cursor = Cursors.Hand,
+                BackColor = primary ? Color.FromArgb(37, 99, 235) : Color.White,
+                ForeColor = primary ? Color.White : Color.FromArgb(15, 23, 42),
+                Font = new Font("Microsoft YaHei UI", 8.75f, primary ? FontStyle.Bold : FontStyle.Regular, GraphicsUnit.Point),
+                UseVisualStyleBackColor = false,
+                Margin = new Padding(0, 0, 8, 0)
+            };
+            button.FlatAppearance.BorderColor = primary ? Color.FromArgb(37, 99, 235) : Color.FromArgb(203, 213, 225);
+            button.FlatAppearance.BorderSize = 1;
+            button.FlatAppearance.MouseOverBackColor = primary ? Color.FromArgb(29, 78, 216) : Color.FromArgb(241, 245, 249);
+            button.FlatAppearance.MouseDownBackColor = primary ? Color.FromArgb(30, 64, 175) : Color.FromArgb(226, 232, 240);
             return button;
         }
 

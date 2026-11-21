@@ -110,7 +110,8 @@ namespace NinePointRotationCalibration.Halcon
                 using (HTuple autoParam = new HTuple("auto"))
                 using (HTuple numLevels = new HTuple(1))
                 using (HTuple scaleOne = new HTuple(1.0))
-                using (HTuple targetParams = new HTuple(new[] { "contrast", "min_contrast" }))
+                // HALCON determine_shape_model_params 传入 "all" 可兼容任意 optimization("auto"/"none") 并返回 contrast_low/contrast_high/min_contrast
+                using (HTuple targetParams = new HTuple("all"))
                 {
                     HTuple values;
                     using (HTuple names = reducedImage.DetermineShapeModelParams(

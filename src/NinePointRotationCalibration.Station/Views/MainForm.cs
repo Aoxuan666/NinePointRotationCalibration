@@ -57,10 +57,17 @@ namespace NinePointRotationCalibration.Station.Views
     public partial class MainForm : Form
     {
         private readonly Dictionary<int, Button> _pointButtonMap = new Dictionary<int, Button>();
-        private readonly Color _idlePointColor = Color.FromArgb(51, 65, 85);
-        private readonly Color _activePointColor = Color.FromArgb(15, 118, 110);
+        private readonly Dictionary<string, Control> _actionControlMap = new Dictionary<string, Control>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, Control> _namedControlMap = new Dictionary<string, Control>(StringComparer.Ordinal);
+        private readonly Color _idlePointColor = Color.White;
+        private readonly Color _originPointColor = Color.FromArgb(239, 246, 255);
+        private readonly Color _activePointColor = Color.FromArgb(37, 99, 235);
+        private Color _hudAccentColor = Color.FromArgb(59, 130, 246);
         private bool _workflowBusy;
         private bool _suppressFeatureEvents;
+        private bool _syncingViewport;
+        private int _lastCursorTextTick;
+        private string _lastCursorText;
         private bool _leftTeachingValid;
         private bool _rightTeachingValid;
         private double _leftTeachX;
@@ -82,6 +89,7 @@ namespace NinePointRotationCalibration.Station.Views
         public MainForm()
         {
             InitializeComponent();
+            BuildControlLookups();
             tabWork.SelectedIndexChanged += delegate { UpdateCameraTabState(); };
             UpdateCameraTabState();
             UiRenderOptimizer.EnableDoubleBufferingRecursive(this);
@@ -96,6 +104,24 @@ namespace NinePointRotationCalibration.Station.Views
                 chkTemplateMatchingEnabled,
                 "关闭后跳过模板定位，对当前图像直接做整图二值化/Blob；生产检测建议保持开启。");
             RefreshFeatureAvailability(false);
+        }
+
+        private void BuildControlLookups()
+        {
+            _actionControlMap.Clear();
+            _namedControlMap.Clear();
+            foreach (Control control in FindControls(this))
+            {
+                if (!string.IsNullOrWhiteSpace(control.Name) && !_namedControlMap.ContainsKey(control.Name))
+                {
+                    _namedControlMap[control.Name] = control;
+                }
+                string actionKey = control.Tag as string;
+                if (!string.IsNullOrWhiteSpace(actionKey) && !_actionControlMap.ContainsKey(actionKey))
+                {
+                    _actionControlMap[actionKey] = control;
+                }
+            }
         }
 
         /// <summary>
@@ -395,15 +421,21 @@ namespace NinePointRotationCalibration.Station.Views
                 {
                     btnToggleLiveStream.Text = running ? "停止实时" : "开始实时";
                     btnToggleLiveStream.BackColor = running
-                        ? Color.FromArgb(153, 27, 27)
-                        : Color.FromArgb(15, 118, 110);
+                        ? Color.FromArgb(254, 242, 242)
+                        : AccentPrimaryColor;
+                    btnToggleLiveStream.ForeColor = running
+                        ? Color.FromArgb(185, 28, 28)
+                        : Color.White;
+                    btnToggleLiveStream.FlatAppearance.BorderColor = running
+                        ? Color.FromArgb(254, 202, 202)
+                        : AccentPrimaryColor;
                 }
 
                 if (lblCameraLiveStatus != null && !lblCameraLiveStatus.IsDisposed)
                 {
                     lblCameraLiveStatus.ForeColor = running
-                        ? Color.FromArgb(15, 118, 110)
-                        : Color.FromArgb(71, 85, 105);
+                        ? Color.FromArgb(21, 128, 61)
+                        : TextMutedColor;
                     lblCameraLiveStatus.Text = string.IsNullOrWhiteSpace(detail)
                         ? (running ? "● 实时采集中" : "○ 实时采集已停止")
                         : detail;
@@ -465,8 +497,11 @@ namespace NinePointRotationCalibration.Station.Views
             {
                 lblOperationStatus.Text = string.IsNullOrWhiteSpace(text) ? "就绪" : text;
                 lblOperationStatus.BackColor = isError
-                    ? Color.FromArgb(153, 55, 55)
-                    : isBusy ? Color.FromArgb(157, 105, 25) : Color.FromArgb(43, 92, 68);
+                    ? Color.FromArgb(127, 29, 29)
+                    : isBusy ? Color.FromArgb(120, 53, 15) : Color.FromArgb(20, 83, 45);
+                lblOperationStatus.ForeColor = isError
+                    ? Color.FromArgb(254, 202, 202)
+                    : isBusy ? Color.FromArgb(254, 243, 199) : Color.FromArgb(187, 247, 208);
             });
         }
 
@@ -674,8 +709,17 @@ namespace NinePointRotationCalibration.Station.Views
             {
                 foreach (KeyValuePair<int, Button> pair in _pointButtonMap)
                 {
-                    pair.Value.BackColor = pair.Key == pointNumber ? _activePointColor : _idlePointColor;
-                    pair.Value.ForeColor = Color.White;
+                    bool selected = pair.Key == pointNumber;
+                    bool isOrigin = pair.Key == 5 || pair.Key == 12;
+                    pair.Value.BackColor = selected
+                        ? _activePointColor
+                        : (isOrigin ? _originPointColor : _idlePointColor);
+                    pair.Value.ForeColor = selected
+                        ? Color.White
+                        : (isOrigin ? AccentPrimaryColor : TextPrimaryColor);
+                    pair.Value.FlatAppearance.BorderColor = selected
+                        ? _activePointColor
+                        : (isOrigin ? Color.FromArgb(147, 197, 253) : Color.FromArgb(203, 213, 225));
                 }
 
                 foreach (DataGridViewRow row in dgvCalibration.Rows)
@@ -900,7 +944,7 @@ namespace NinePointRotationCalibration.Station.Views
 
                 Label statusLabel = left ? lblLeftTeachingStatus : lblRightTeachingStatus;
                 statusLabel.Text = valid ? "● 已示教" : "○ 未示教";
-                statusLabel.ForeColor = valid ? Color.FromArgb(15, 118, 110) : Color.FromArgb(185, 28, 28);
+                statusLabel.ForeColor = valid ? Color.FromArgb(21, 128, 61) : Color.FromArgb(185, 28, 28);
 
                 if (left)
                 {
@@ -930,8 +974,8 @@ namespace NinePointRotationCalibration.Station.Views
                 double dx = _rightTeachX - _leftTeachX;
                 double dy = _rightTeachY - _leftTeachY;
                 double distance = Math.Sqrt((dx * dx) + (dy * dy));
-                lblDualNozzleSummary.BackColor = Color.FromArgb(204, 251, 241);
-                lblDualNozzleSummary.ForeColor = Color.FromArgb(17, 94, 89);
+                lblDualNozzleSummary.BackColor = Color.FromArgb(236, 253, 245);
+                lblDualNozzleSummary.ForeColor = Color.FromArgb(21, 128, 61);
                 lblDualNozzleSummary.Text = string.Format(
                     CultureInfo.InvariantCulture,
                     "双吸嘴已就绪：同轴间距 ΔX={0:0.###}  ΔY={1:0.###}  |ΔD|={2:0.###} mm\r\n盲摆策略：吸取旋转 R 对齐板角 → 盲摆转回固定角 (左:{3:0.##}° / 右:{4:0.##}°)",
@@ -965,9 +1009,22 @@ namespace NinePointRotationCalibration.Station.Views
                     success ? "OK" : "NG",
                     string.IsNullOrWhiteSpace(message) ? string.Empty : "  " + message);
                 lblDetectionSummary.ForeColor = success
-                    ? Color.FromArgb(17, 122, 101)
-                    : Color.FromArgb(178, 55, 55);
+                    ? Color.FromArgb(21, 128, 61)
+                    : Color.FromArgb(185, 28, 28);
             });
+        }
+
+        private void LblInspectionHud_Paint(object sender, PaintEventArgs e)
+        {
+            if (lblInspectionHud == null) return;
+            using (SolidBrush accent = new SolidBrush(_hudAccentColor))
+            {
+                e.Graphics.FillRectangle(accent, 0, 0, 4, lblInspectionHud.Height);
+            }
+            using (Pen border = new Pen(Color.FromArgb(51, 65, 85), 1.0F))
+            {
+                e.Graphics.DrawRectangle(border, 0, 0, lblInspectionHud.Width - 1, lblInspectionHud.Height - 1);
+            }
         }
 
         public void SetInspectionHud(
@@ -991,31 +1048,35 @@ namespace NinePointRotationCalibration.Station.Views
             {
                 string resultText = pass
                     ? "OK"
-                    : (string.IsNullOrWhiteSpace(ngReason) ? "NG" : "NG(" + ngReason + ")");
+                    : (string.IsNullOrWhiteSpace(ngReason) ? "NG" : "NG·" + ngReason);
                 string breakdown = (okCount >= 0 && ngCount >= 0)
                     ? string.Format(CultureInfo.InvariantCulture, " (OK {0}/NG {1})", okCount, ngCount)
                     : string.Empty;
                 lblInspectionHud.Text = string.Format(
                     CultureInfo.InvariantCulture,
-                    "CT {0:0} ms   定位 {1:0}   检测 {2:0}\r\n结果 {3}   板 {4}/{5}{6}   标记 {7}\r\n图转 {8:0}  阈值 {9:0}  形态 {10:0}  填孔 {11:0}  连通 {12:0}",
-                    totalMilliseconds,
-                    matchMilliseconds,
-                    blobMilliseconds,
+                    "{0}   板 {1}/{2}{3}   CT {4:0} ms\r\n定位 {5:0}  检测 {6:0}  |  图转 {7:0} 阈 {8:0} 形 {9:0} 孔 {10:0} 连 {11:0}  标记:{12}",
                     resultText,
                     actual,
                     expected,
                     breakdown,
-                    hasManualMarks ? "有" : "无",
+                    totalMilliseconds,
+                    matchMilliseconds,
+                    blobMilliseconds,
                     imageConversionMilliseconds,
                     thresholdMilliseconds,
                     morphologyMilliseconds,
                     holeFillMilliseconds,
-                    componentMilliseconds);
+                    componentMilliseconds,
+                    hasManualMarks ? "有" : "无");
+                _hudAccentColor = pass
+                    ? Color.FromArgb(34, 197, 94)
+                    : Color.FromArgb(239, 68, 68);
                 lblInspectionHud.ForeColor = pass
-                    ? Color.FromArgb(116, 235, 176)
-                    : Color.FromArgb(255, 154, 154);
+                    ? Color.FromArgb(187, 247, 208)
+                    : Color.FromArgb(254, 202, 202);
                 lblInspectionHud.Visible = true;
                 lblInspectionHud.BringToFront();
+                lblInspectionHud.Invalidate();
             });
         }
 
@@ -1150,6 +1211,10 @@ namespace NinePointRotationCalibration.Station.Views
 
         public Control FindActionControl(string actionKey)
         {
+            if (string.IsNullOrWhiteSpace(actionKey)) return null;
+            Control cached;
+            if (_actionControlMap.TryGetValue(actionKey, out cached) && cached != null && !cached.IsDisposed)
+                return cached;
             return FindControls(this)
                 .FirstOrDefault(control => string.Equals(Convert.ToString(control.Tag), actionKey, StringComparison.OrdinalIgnoreCase));
         }
@@ -1230,7 +1295,9 @@ namespace NinePointRotationCalibration.Station.Views
             tabWork.DrawItem += TabWork_DrawItem;
             imageViewport.ImagePositionChanged += ImageViewport_ImagePositionChanged;
             imageViewport.ImageAvailabilityChanged += ImageViewport_ImageAvailabilityChanged;
+            imageViewport.ViewChanged += delegate { SyncDualViewportView(imageViewport, effectViewport); };
             effectViewport.ImagePositionChanged += ImageViewport_ImagePositionChanged;
+            effectViewport.ViewChanged += delegate { SyncDualViewportView(effectViewport, imageViewport); };
             dgvDetectionResults.SelectionChanged += delegate { RaiseUiAction("detection.rowSelected", dgvDetectionResults); };
             chkCameraEnabled.CheckedChanged += FeatureToggle_CheckedChanged;
             chkCalibrationEnabled.CheckedChanged += FeatureToggle_CheckedChanged;
@@ -1303,9 +1370,23 @@ namespace NinePointRotationCalibration.Station.Views
             if (handler != null) handler(this, new CalibrationPointRequestedEventArgs(pointNumber));
         }
 
+        private void SyncDualViewportView(ImageViewport origin, ImageViewport target)
+        {
+            if (!_dualViewActive || _syncingViewport || origin == null || target == null || !target.HasImage) return;
+            _syncingViewport = true;
+            try
+            {
+                target.SyncViewFrom(origin);
+            }
+            finally
+            {
+                _syncingViewport = false;
+            }
+        }
+
         private void TabWork_DrawItem(object sender, DrawItemEventArgs e)
         {
-            // 自绘右侧工作区标签页：突出选中态并在底部绘制青绿色强调指示条
+            // 极简现代标签栏：纯白底色 + 底部 1px 浅灰分隔 + 选中态 2px 钴蓝下划线与加粗文案
             if (e.Index < 0 || e.Index >= tabWork.TabPages.Count) return;
             TabPage page = tabWork.TabPages[e.Index];
             Rectangle bounds = e.Bounds;
@@ -1313,11 +1394,11 @@ namespace NinePointRotationCalibration.Station.Views
             bool enabled = page.Enabled;
 
             Color backColor = selected
-                ? Color.FromArgb(255, 255, 255)
-                : Color.FromArgb(226, 232, 240);
+                ? Color.White
+                : PageBackgroundColor;
             Color foreColor = !enabled
                 ? Color.FromArgb(148, 163, 184)
-                : selected ? Color.FromArgb(15, 118, 110) : Color.FromArgb(51, 65, 85);
+                : selected ? AccentPrimaryColor : TextSecondaryColor;
 
             using (SolidBrush fillBrush = new SolidBrush(backColor))
             {
@@ -1326,19 +1407,36 @@ namespace NinePointRotationCalibration.Station.Views
 
             if (selected)
             {
-                using (SolidBrush accentBrush = new SolidBrush(Color.FromArgb(15, 118, 110)))
+                using (SolidBrush accentBrush = new SolidBrush(AccentPrimaryColor))
                 {
-                    e.Graphics.FillRectangle(accentBrush, bounds.X, bounds.Bottom - 3, bounds.Width, 3);
+                    e.Graphics.FillRectangle(accentBrush, bounds.X + 6, bounds.Bottom - 2, Math.Max(0, bounds.Width - 12), 2);
+                }
+            }
+            else
+            {
+                using (SolidBrush dividerBrush = new SolidBrush(CardBorderColor))
+                {
+                    e.Graphics.FillRectangle(dividerBrush, bounds.X, bounds.Bottom - 1, bounds.Width, 1);
                 }
             }
 
-            TextRenderer.DrawText(
-                e.Graphics,
-                page.Text,
-                tabWork.Font,
-                bounds,
-                foreColor,
-                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine);
+            Font drawFont = selected
+                ? new Font(tabWork.Font, FontStyle.Bold)
+                : tabWork.Font;
+            try
+            {
+                TextRenderer.DrawText(
+                    e.Graphics,
+                    page.Text,
+                    drawFont,
+                    bounds,
+                    foreColor,
+                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine);
+            }
+            finally
+            {
+                if (!ReferenceEquals(drawFont, tabWork.Font)) drawFont.Dispose();
+            }
         }
 
         private void CommandButton_Click(object sender, EventArgs e)
@@ -1371,9 +1469,16 @@ namespace NinePointRotationCalibration.Station.Views
 
         private void ImageViewport_ImagePositionChanged(object sender, ImagePositionEventArgs e)
         {
-            lblCursorPosition.Text = e.IsInsideImage
+            // 30Hz 节流刷新像素坐标文本，避免鼠标高频滑过视口触发冗余 Label 重绘拖慢拖拽/缩放流畅度
+            int now = Environment.TickCount;
+            if (e.IsInsideImage && unchecked(now - _lastCursorTextTick) < 33) return;
+            string nextText = e.IsInsideImage
                 ? string.Format(CultureInfo.InvariantCulture, "X {0:0.0}   Y {1:0.0}", e.ImagePoint.X, e.ImagePoint.Y)
                 : "X --   Y --";
+            if (string.Equals(nextText, _lastCursorText, StringComparison.Ordinal)) return;
+            _lastCursorText = nextText;
+            _lastCursorTextTick = now;
+            lblCursorPosition.Text = nextText;
         }
 
         private void ImageViewport_ImageAvailabilityChanged(object sender, EventArgs e)
@@ -1500,8 +1605,12 @@ namespace NinePointRotationCalibration.Station.Views
 
         private void SetControlEnabled(string controlName, bool enabled)
         {
-            Control control = FindControls(this)
-                .FirstOrDefault(item => string.Equals(item.Name, controlName, StringComparison.Ordinal));
+            Control control;
+            if (!_namedControlMap.TryGetValue(controlName, out control) || control == null || control.IsDisposed)
+            {
+                control = FindControls(this)
+                    .FirstOrDefault(item => string.Equals(item.Name, controlName, StringComparison.Ordinal));
+            }
             if (control != null) control.Enabled = enabled;
         }
 
@@ -1537,7 +1646,7 @@ namespace NinePointRotationCalibration.Station.Views
             }
         }
 
-        private void RunOnUiThread(MethodInvoker action)
+        internal void RunOnUiThread(MethodInvoker action)
         {
             // 安全封送到 UI 线程；窗体已销毁或正在关闭时忽略滞后回调
             if (action == null || IsDisposed || Disposing) return;

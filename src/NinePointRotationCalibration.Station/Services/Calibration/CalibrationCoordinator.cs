@@ -393,17 +393,17 @@ namespace NinePointRotationCalibration.Station.Services.Calibration
             response.Data["success"] = result.Success;
             response.Data["errorCode"] = result.ErrorCode.ToString();
             response.Data["message"] = result.Message ?? string.Empty;
-            response.Data["rmsResidualPixels"] = result.RmsResidualPixels;
-            response.Data["rmsResidualStage"] = result.RmsResidualStage;
-            response.Data["maxResidualPixels"] = result.MaxResidualPixels;
-            response.Data["rotationCenterRmsPixels"] = result.Rotation == null ? 0.0 : result.Rotation.CenterRmsResidualPixels;
-            response.Data["rotationAngleRmsDegrees"] = result.Rotation == null ? 0.0 : result.Rotation.AngleRmsDegrees;
+            response.Data["rmsResidualPixels"] = FiniteOrZero(result.RmsResidualPixels);
+            response.Data["rmsResidualStage"] = FiniteOrZero(result.RmsResidualStage);
+            response.Data["maxResidualPixels"] = FiniteOrZero(result.MaxResidualPixels);
+            response.Data["rotationCenterRmsPixels"] = result.Rotation == null ? 0.0 : FiniteOrZero(result.Rotation.CenterRmsResidualPixels);
+            response.Data["rotationAngleRmsDegrees"] = result.Rotation == null ? 0.0 : FiniteOrZero(result.Rotation.AngleRmsDegrees);
             response.Data["rmsScore"] = rms.Score;
             response.Data["rmsGrade"] = rms.GradeLabel ?? string.Empty;
             response.Data["rmsReasonable"] = rms.IsReasonable;
             response.Data["rmsSummary"] = rms.Summary ?? string.Empty;
-            response.Data["resolutionX"] = result.ResolutionX;
-            response.Data["resolutionY"] = result.ResolutionY;
+            response.Data["resolutionX"] = FiniteOrZero(result.ResolutionX);
+            response.Data["resolutionY"] = FiniteOrZero(result.ResolutionY);
             try
             {
                 await _sendAsync(response, cancellationToken).ConfigureAwait(false);
@@ -576,6 +576,24 @@ namespace NinePointRotationCalibration.Station.Services.Calibration
         private static bool IsFinite(double value)
         {
             return !double.IsNaN(value) && !double.IsInfinity(value);
+        }
+
+        private static double FiniteOrZero(double value)
+        {
+            return IsFinite(value) ? value : 0.0;
+        }
+
+        /// <summary>取消所有正在等待上位机到位的标定移动请求（如 TCP 断连时调用）。</summary>
+        public void CancelPendingMoves(string reason = null)
+        {
+            foreach (KeyValuePair<string, PendingMove> entry in _pendingMoves)
+            {
+                entry.Value.Completion.TrySetCanceled();
+            }
+            if (!string.IsNullOrWhiteSpace(reason))
+            {
+                OnLog("WARN", "Cancelled pending calibration moves: " + reason);
+            }
         }
 
         /// <summary>取消进行中的自动标定与挂起等待，并释放同步资源。</summary>

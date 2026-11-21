@@ -52,6 +52,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
         private readonly ComboBox _unitCombo;
 
         private Bitmap _currentImage;
+        private Font _boldResultFont;
         private CalibrationSetupState _state;
         private CalibrationLocateUiResult _currentLocate;
         private CancellationTokenSource _operationCancellation;
@@ -83,7 +84,9 @@ namespace NinePointRotationCalibration.WinForms.Forms
             KeyPreview = true;
             ShowIcon = false;
             Font = new Font("Microsoft YaHei UI", 9.0f, FontStyle.Regular, GraphicsUnit.Point);
-            BackColor = Color.FromArgb(244, 246, 248);
+            _boldResultFont = new Font(Font, FontStyle.Bold);
+            BackColor = Color.FromArgb(248, 250, 252);
+            ForeColor = Color.FromArgb(15, 23, 42);
 
             _canvas = new CalibrationCanvas
             {
@@ -130,14 +133,15 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 ForeColor = Color.FromArgb(50, 55, 62),
                 Text = "尚未定位当前图像"
             };
-            _locateButton = CreateButton("定位当前图", LocateCurrentImageAsync, 104);
-            _addSampleButton = CreateButton("添加样本", AddCurrentSample, 96);
-            _replaceSampleButton = CreateButton("重采选中", ReplaceSelectedSample, 96);
-            _deleteSampleButton = CreateButton("删除选中", DeleteSelectedSamples, 96);
-            _calculateButton = CreateButton("计算标定", CalculateCalibrationAsync, 112);
-            _templateButton = CreateButton("模板设置", OpenTemplateEditor, 104);
-            _okButton = CreateButton("确认", ConfirmSetup, 96);
-            _cancelButton = new Button { Text = "取消", Width = 96, Height = 34, DialogResult = DialogResult.Cancel };
+            _locateButton = CreateButton("定位当前图", LocateCurrentImageAsync, 104, false);
+            _addSampleButton = CreateButton("添加样本", AddCurrentSample, 92, true);
+            _replaceSampleButton = CreateButton("重采选中", ReplaceSelectedSample, 92, false);
+            _deleteSampleButton = CreateButton("删除选中", DeleteSelectedSamples, 92, false, true);
+            _calculateButton = CreateButton("计算标定", CalculateCalibrationAsync, 108, true);
+            _templateButton = CreateButton("模板设置", OpenTemplateEditor, 104, false);
+            _okButton = CreateButton("确认", ConfirmSetup, 94, true);
+            _cancelButton = CreateButton("取消", null, 88, false);
+            _cancelButton.DialogResult = DialogResult.Cancel;
             _templateSummaryLabel = new Label { AutoSize = false, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft };
             _sampleCountLabel = new Label { AutoSize = true, ForeColor = Color.DimGray, Margin = new Padding(6, 9, 6, 3) };
             _resultBanner = new Label
@@ -166,6 +170,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
             };
 
             BuildLayout();
+            UiRenderOptimizer.EnableDoubleBufferingRecursive(this);
             WireEvents();
             LoadStateToUi();
             if (referenceImage != null)
@@ -271,6 +276,11 @@ namespace NinePointRotationCalibration.WinForms.Forms
                     _currentImage.Dispose();
                     _currentImage = null;
                 }
+                if (_boldResultFont != null)
+                {
+                    _boldResultFont.Dispose();
+                    _boldResultFont = null;
+                }
             }
 
             base.Dispose(disposing);
@@ -323,8 +333,10 @@ namespace NinePointRotationCalibration.WinForms.Forms
             {
                 GripStyle = ToolStripGripStyle.Hidden,
                 Dock = DockStyle.Top,
-                RenderMode = ToolStripRenderMode.System,
-                Padding = new Padding(5, 3, 5, 3)
+                Renderer = new DarkToolStripRenderer(),
+                BackColor = Color.FromArgb(15, 23, 42),
+                ForeColor = Color.FromArgb(226, 232, 240),
+                Padding = new Padding(8, 4, 8, 4)
             };
             canvasTools.Items.Add(CreateToolButton("加载图像", "从文件加载当前采样图像", LoadImage));
             canvasTools.Items.Add(CreateToolButton("适应", "使整幅图像适应窗口", (sender, args) => _canvas.FitImage()));
@@ -335,31 +347,39 @@ namespace NinePointRotationCalibration.WinForms.Forms
             SplitContainer mainSplit = new SplitContainer
             {
                 Dock = DockStyle.Fill,
+                BackColor = Color.FromArgb(226, 232, 240),
                 Size = new Size(1400, 820),
                 Orientation = Orientation.Vertical,
-                SplitterWidth = 6,
+                SplitterWidth = 4,
                 FixedPanel = FixedPanel.Panel2,
                 Panel2MinSize = 525,
                 SplitterDistance = 850
             };
+            mainSplit.Panel1.BackColor = Color.FromArgb(11, 15, 23);
             mainSplit.Panel1.Controls.Add(_canvas);
             mainSplit.Panel1.Controls.Add(canvasTools);
 
-            TabControl rightTabs = new TabControl { Dock = DockStyle.Fill };
+            TabControl rightTabs = new BufferedTabControl { Dock = DockStyle.Fill };
             rightTabs.TabPages.Add(BuildSamplingPage());
             rightTabs.TabPages.Add(BuildResultPage());
             rightTabs.TabPages.Add(BuildSettingsPage());
-            mainSplit.Panel2.Padding = new Padding(8);
+            mainSplit.Panel2.BackColor = Color.FromArgb(248, 250, 252);
+            mainSplit.Panel2.Padding = new Padding(10);
             mainSplit.Panel2.Controls.Add(rightTabs);
 
             FlowLayoutPanel footer = new FlowLayoutPanel
             {
                 Dock = DockStyle.Bottom,
-                Height = 54,
+                Height = 56,
                 FlowDirection = FlowDirection.RightToLeft,
                 WrapContents = false,
-                Padding = new Padding(8),
+                Padding = new Padding(12, 10, 12, 10),
                 BackColor = Color.White
+            };
+            footer.Paint += (s, pe) =>
+            {
+                using (Pen border = new Pen(Color.FromArgb(226, 232, 240), 1.0f))
+                    pe.Graphics.DrawLine(border, 0, 0, footer.Width, 0);
             };
             footer.Controls.Add(_cancelButton);
             footer.Controls.Add(_okButton);
@@ -433,12 +453,12 @@ namespace NinePointRotationCalibration.WinForms.Forms
             actions.Controls.Add(_addSampleButton);
             actions.Controls.Add(_replaceSampleButton);
             actions.Controls.Add(_deleteSampleButton);
-            Button clearButton = CreateButton("清空本组", ClearActiveSampleGroup, 92);
+            Button clearButton = CreateButton("清空本组", ClearActiveSampleGroup, 88, false, true);
             actions.Controls.Add(clearButton);
             actionBlock.Controls.Add(actions);
             actionBlock.Controls.Add(_currentMatchLabel);
 
-            TabControl sampleTabs = new TabControl { Dock = DockStyle.Fill };
+            TabControl sampleTabs = new BufferedTabControl { Dock = DockStyle.Fill };
             TabPage translationPage = new TabPage("九点样本");
             TabPage rotationPage = new TabPage("旋转样本");
             translationPage.Controls.Add(_translationGrid);
@@ -1084,7 +1104,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
                         {
                             Points = contour,
                             Color = Color.Cyan,
-                            Closed = true,
+                            Closed = false,
                             WidthPixels = 1.5f
                         });
                     }
@@ -1124,7 +1144,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 Label resetQuality;
                 if (_resultValues.TryGetValue("RmsQuality", out resetQuality))
                 {
-                    resetQuality.Font = SystemFonts.DefaultFont;
+                    resetQuality.Font = Font;
                 }
                 _pixelToStageText.Text = string.Empty;
                 _stageToPixelText.Text = string.Empty;
@@ -1149,11 +1169,11 @@ namespace NinePointRotationCalibration.WinForms.Forms
             Label qualityLabel;
             if (_resultValues.TryGetValue("RmsQuality", out qualityLabel))
             {
-                qualityLabel.Font = new Font(qualityLabel.Font, FontStyle.Bold);
-                qualityLabel.ForeColor = result.RmsScore >= 90 ? Color.FromArgb(15, 118, 110)
-                    : result.RmsScore >= 75 ? Color.FromArgb(30, 64, 175)
+                qualityLabel.Font = _boldResultFont ?? Font;
+                qualityLabel.ForeColor = result.RmsScore >= 90 ? Color.FromArgb(21, 128, 61)
+                    : result.RmsScore >= 75 ? Color.FromArgb(37, 99, 235)
                     : result.RmsScore >= 60 ? Color.FromArgb(180, 83, 9)
-                    : Color.Firebrick;
+                    : Color.FromArgb(185, 28, 28);
             }
             SetResultValue("RmsResidual", FormatValue(result.RmsResidualPixels, "px"));
             SetResultValue("RmsResidualStage", FormatValue(result.RmsResidualStage, _state.LinearUnit));
@@ -1469,9 +1489,22 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 RowHeadersVisible = false,
                 BackgroundColor = Color.White,
                 BorderStyle = BorderStyle.FixedSingle,
+                CellBorderStyle = DataGridViewCellBorderStyle.SingleHorizontal,
+                ColumnHeadersBorderStyle = DataGridViewHeaderBorderStyle.None,
+                EnableHeadersVisualStyles = false,
+                GridColor = Color.FromArgb(241, 245, 249),
+                ColumnHeadersHeight = 30,
+                ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing,
                 AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.None,
                 ClipboardCopyMode = DataGridViewClipboardCopyMode.EnableAlwaysIncludeHeaderText
             };
+            grid.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(248, 250, 252);
+            grid.ColumnHeadersDefaultCellStyle.ForeColor = Color.FromArgb(71, 85, 105);
+            grid.ColumnHeadersDefaultCellStyle.Font = new Font("Microsoft YaHei UI", 8.5f, FontStyle.Bold, GraphicsUnit.Point);
+            grid.AlternatingRowsDefaultCellStyle.BackColor = Color.FromArgb(250, 252, 255);
+            grid.DefaultCellStyle.SelectionBackColor = Color.FromArgb(239, 246, 255);
+            grid.DefaultCellStyle.SelectionForeColor = Color.FromArgb(29, 78, 216);
+            grid.RowTemplate.Height = 27;
             grid.Columns.Add(CreateCheckColumn("Enabled", "启用", 48));
             grid.Columns.Add(CreateTextColumn("Sequence", "序号", 48, "0", true));
             grid.Columns.Add(CreateTextColumn("Tag", "标签", 66, null, false));
@@ -1542,10 +1575,36 @@ namespace NinePointRotationCalibration.WinForms.Forms
             };
         }
 
-        private static Button CreateButton(string text, EventHandler click, int width)
+        private static Button CreateButton(string text, EventHandler click, int width, bool primary = false, bool danger = false)
         {
-            Button button = new Button { Text = text, Width = width, Height = 34 };
-            button.Click += click;
+            Button button = new Button
+            {
+                Text = text,
+                Width = width,
+                Height = 34,
+                FlatStyle = FlatStyle.Flat,
+                Cursor = Cursors.Hand,
+                BackColor = primary
+                    ? Color.FromArgb(37, 99, 235)
+                    : danger ? Color.FromArgb(254, 242, 242) : Color.White,
+                ForeColor = primary
+                    ? Color.White
+                    : danger ? Color.FromArgb(185, 28, 28) : Color.FromArgb(15, 23, 42),
+                Font = new Font("Microsoft YaHei UI", 8.75f, primary ? FontStyle.Bold : FontStyle.Regular, GraphicsUnit.Point),
+                UseVisualStyleBackColor = false,
+                Margin = new Padding(0, 0, 7, 0)
+            };
+            button.FlatAppearance.BorderColor = primary
+                ? Color.FromArgb(37, 99, 235)
+                : danger ? Color.FromArgb(254, 202, 202) : Color.FromArgb(203, 213, 225);
+            button.FlatAppearance.BorderSize = 1;
+            button.FlatAppearance.MouseOverBackColor = primary
+                ? Color.FromArgb(29, 78, 216)
+                : danger ? Color.FromArgb(254, 226, 226) : Color.FromArgb(241, 245, 249);
+            button.FlatAppearance.MouseDownBackColor = primary
+                ? Color.FromArgb(30, 64, 175)
+                : danger ? Color.FromArgb(254, 202, 202) : Color.FromArgb(226, 232, 240);
+            if (click != null) button.Click += click;
             return button;
         }
 
@@ -1554,7 +1613,8 @@ namespace NinePointRotationCalibration.WinForms.Forms
             ToolStripButton button = new ToolStripButton(text)
             {
                 ToolTipText = tooltip,
-                DisplayStyle = ToolStripItemDisplayStyle.Text
+                DisplayStyle = ToolStripItemDisplayStyle.Text,
+                ForeColor = Color.FromArgb(226, 232, 240)
             };
             button.Click += click;
             return button;

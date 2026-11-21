@@ -40,7 +40,18 @@ namespace NinePointRotationCalibration.Station.Services.Persistence
         {
             if (defaultFactory == null) throw new ArgumentNullException(nameof(defaultFactory));
             string fullPath = NormalizePath(path);
-            return File.Exists(fullPath) ? Load<T>(fullPath) : defaultFactory();
+            lock (_sync)
+            {
+                if (!File.Exists(fullPath)) return defaultFactory();
+                try
+                {
+                    return Load<T>(fullPath);
+                }
+                catch (FileNotFoundException)
+                {
+                    return defaultFactory();
+                }
+            }
         }
 
         /// <summary>尝试加载 JSON 文件，失败时不抛异常并返回错误信息。</summary>
@@ -100,8 +111,14 @@ namespace NinePointRotationCalibration.Station.Services.Persistence
         {
             if (!File.Exists(destinationPath))
             {
-                File.Move(tempPath, destinationPath);
-                return;
+                try
+                {
+                    File.Move(tempPath, destinationPath);
+                    return;
+                }
+                catch (IOException) when (File.Exists(destinationPath))
+                {
+                }
             }
 
             try

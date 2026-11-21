@@ -28,6 +28,7 @@ namespace NinePointRotationCalibration.Station.Services
         private readonly object _stateSync = new object();
         private readonly object _jobSaveSync = new object();
         private readonly object _postProcessingSync = new object();
+        private readonly object _seenMessagesSync = new object();
         private Task _postProcessingTail = Task.CompletedTask;
         private readonly string _optionsPath;
         private readonly AtomicJsonStore _jsonStore;
@@ -51,7 +52,8 @@ namespace NinePointRotationCalibration.Station.Services
         private TeachingData _teachingData;
         private string _calibrationCompletionConnectionId;
         private bool _started;
-        private bool _disposed;
+        private int _disposeRequested;
+        private volatile bool _disposed;
 
         private StationRuntime(string optionsPath, StationOptions options)
             : this(optionsPath, options, null)
@@ -604,14 +606,16 @@ namespace NinePointRotationCalibration.Station.Services
 
                 current.Template = result.Template.DeepClone();
                 current = _sdk.ClearSamples(current);
+                CalibrationResult recalculated = _sdk.Calculate(current);
+                SaveCalibrationJobAsync(current).GetAwaiter().GetResult();
                 lock (_stateSync)
                 {
                     _calibrationJob = current.DeepClone();
-                    _calibrationResult = _sdk.Calculate(_calibrationJob);
+                    _calibrationResult = recalculated == null ? null : recalculated.DeepClone();
                 }
                 _calibration.SetJob(current);
-                SaveCalibrationJobAsync(current).GetAwaiter().GetResult();
                 PublishCalibrationRecords();
+                OnCalibrationCalculationCompleted(this, new CalibrationResultEventArgs(recalculated));
                 LocalDebugLog.Write("INFO", "template.cal", "Calibration template saved: " + StationLogFormatter.FormatJob("CalibrationJob", current));
                 OnLog("INFO", "Calibration template updated; previous samples were cleared.");
                 return result;
@@ -630,7 +634,12 @@ namespace NinePointRotationCalibration.Station.Services
             try
             {
                 CalibrationJob current;
-                lock (_stateSync) current = _positioningJob.DeepClone();
+                string positioningPath;
+                lock (_stateSync)
+                {
+                    current = _positioningJob.DeepClone();
+                    positioningPath = _options.PositioningJobPath;
+                }
                 TemplateSetupResult result = _sdk.OpenTemplateDialog(referenceImage, current.Template, owner, true);
                 if (!result.Accepted || result.Template == null)
                 {
@@ -639,12 +648,12 @@ namespace NinePointRotationCalibration.Station.Services
                 }
 
                 current.Template = result.Template.DeepClone();
+                SaveJob(current, positioningPath);
                 lock (_stateSync)
                 {
                     _positioningJob = current.DeepClone();
                 }
-                SaveJob(current, _options.PositioningJobPath);
-                LocalDebugLog.Write("INFO", "template.pos", "Positioning template saved to '" + _options.PositioningJobPath + "': " + StationLogFormatter.FormatJob("PositioningJob", current));
+                LocalDebugLog.Write("INFO", "template.pos", "Positioning template saved to '" + positioningPath + "': " + StationLogFormatter.FormatJob("PositioningJob", current));
                 OnLog("INFO", "PCB positioning template updated.");
                 return result;
             }
@@ -706,7 +715,9 @@ namespace NinePointRotationCalibration.Station.Services
                 }
 
                 CalibrationJob loadedJob = loaded.Job.DeepClone();
-                bool migrated = MigrateLegacyDetectionRoi(loadedJob, _detectionProfile);
+                DetectionProfile profileSnapshot;
+                lock (_stateSync) profileSnapshot = CloneDetectionProfile(_detectionProfile);
+                bool migrated = MigrateLegacyDetectionRoi(loadedJob, profileSnapshot);
                 lock (_stateSync)
                 {
                     _positioningJob = loadedJob.DeepClone();
@@ -1303,22 +1314,28 @@ namespace NinePointRotationCalibration.Station.Services
         /// </summary>
         private bool RememberMessage(string messageId)
         {
-            if (!_seenMessages.TryAdd(messageId, 0)) return false;
-            _seenMessageOrder.Enqueue(messageId);
-            string evicted;
-            while (_seenMessageOrder.Count > SeenMessageLimit && _seenMessageOrder.TryDequeue(out evicted))
+            lock (_seenMessagesSync)
             {
-                byte ignored;
-                _seenMessages.TryRemove(evicted, out ignored);
+                if (!_seenMessages.TryAdd(messageId, 0)) return false;
+                _seenMessageOrder.Enqueue(messageId);
+                string evicted;
+                while (_seenMessageOrder.Count > SeenMessageLimit && _seenMessageOrder.TryDequeue(out evicted))
+                {
+                    byte ignored;
+                    _seenMessages.TryRemove(evicted, out ignored);
+                }
+                return true;
             }
-            return true;
         }
 
         private void ForgetSeenMessages()
         {
-            string ignored;
-            while (_seenMessageOrder.TryDequeue(out ignored)) { }
-            _seenMessages.Clear();
+            lock (_seenMessagesSync)
+            {
+                string ignored;
+                while (_seenMessageOrder.TryDequeue(out ignored)) { }
+                _seenMessages.Clear();
+            }
         }
 
         private void OnTcpConnected(object sender, TcpConnectionEventArgs e)
@@ -1342,6 +1359,20 @@ namespace NinePointRotationCalibration.Station.Services
                 return;
             }
 
+            bool clearedCalibrationConnection = false;
+            lock (_stateSync)
+            {
+                if (string.Equals(_calibrationCompletionConnectionId, e.ConnectionId, StringComparison.Ordinal))
+                {
+                    _calibrationCompletionConnectionId = null;
+                    clearedCalibrationConnection = true;
+                }
+            }
+            if (clearedCalibrationConnection)
+            {
+                _calibration.CancelPendingMoves("TCP disconnected: " + e.Reason);
+            }
+
             ForgetSeenMessages();
             LocalDebugLog.Write("WARN", "tcp.conn", "Disconnected: connId=" + e.ConnectionId + ", reason=" + e.Reason);
             OnStateChanged("host", false, e.Reason);
@@ -1350,6 +1381,7 @@ namespace NinePointRotationCalibration.Station.Services
 
         private async void OnTcpMessageReceived(object sender, ProtocolMessageEventArgs e)
         {
+            if (Volatile.Read(ref _disposeRequested) != 0 || _disposed) return;
             try
             {
                 ProtocolEnvelope envelope = e.Message;
@@ -1466,6 +1498,7 @@ namespace NinePointRotationCalibration.Station.Services
                 return;
             }
 
+            bool workflowGateHeld = true;
             try
             {
                 int defaultExpected;
@@ -1516,7 +1549,11 @@ namespace NinePointRotationCalibration.Station.Services
                 }
                 finally
                 {
-                    _workflowGate.Release();
+                    if (workflowGateHeld)
+                    {
+                        workflowGateHeld = false;
+                        _workflowGate.Release();
+                    }
                 }
 
                 if (response != null)
@@ -1529,9 +1566,13 @@ namespace NinePointRotationCalibration.Station.Services
                         ", " + StationLogFormatter.FormatInspectionResult(completedResult));
                 }
             }
-            catch
+            finally
             {
-                throw;
+                if (workflowGateHeld)
+                {
+                    workflowGateHeld = false;
+                    _workflowGate.Release();
+                }
             }
         }
 
@@ -1776,7 +1817,8 @@ namespace NinePointRotationCalibration.Station.Services
                 "tcp.cal.rx",
                 "motion.arrived conn=" + connectionId + ", handled=" + handled + ", payload=" +
                 StationLogFormatter.FormatEnvelope(envelope, _logCodec));
-            return handled;
+            // motion.arrived 属于已知标定消息类型，即使为迟到/重复包也不应误报 MESSAGE_TYPE_UNSUPPORTED。
+            return true;
         }
 
         private async Task SendCalibrationMessageAsync(
@@ -1798,7 +1840,16 @@ namespace NinePointRotationCalibration.Station.Services
                     throw new InvalidOperationException("Calibration request connection is already registered.");
 
                 lock (_stateSync) _calibrationCompletionConnectionId = connectionId;
-                await _tcpServer.SendAsync(connectionId, message, cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    await _tcpServer.SendAsync(connectionId, message, cancellationToken).ConfigureAwait(false);
+                }
+                catch
+                {
+                    string ignored;
+                    _calibrationRequestConnections.TryRemove(message.MessageId, out ignored);
+                    throw;
+                }
                 LocalDebugLog.Write("INFO", "tcp.cal.tx", "conn=" + connectionId + " " + StationLogFormatter.FormatEnvelope(message, _logCodec));
                 return;
             }
@@ -1912,9 +1963,9 @@ namespace NinePointRotationCalibration.Station.Services
         {
             try
             {
-                EventHandler<FrameEventArgs> handler = FrameReady;
-                // 事件订阅方会自行克隆所需图像，因此 ownedImage 所有权留在本方法内供后续归档并释放
-                if (handler != null) handler(this, new FrameEventArgs(ownedImage, "inspection"));
+                // 事件订阅方会自行克隆所需图像，因此 ownsImage 置 false 并将所有权留在本方法内供后续归档并释放，
+                // 同时通过 ForwardFrame 隔离单订阅方异常避免中断检测完成通知与归档。
+                ForwardFrame(this, new FrameEventArgs(ownedImage, "inspection", false));
                 OnInspectionCompleted(result);
                 if (archive) ArchiveFrame(ownedImage, capturedAtUtc);
             }
@@ -2023,9 +2074,10 @@ namespace NinePointRotationCalibration.Station.Services
         {
             if (options.TcpPort < 1 || options.TcpPort > 65535)
                 throw new ArgumentOutOfRangeException(nameof(options.TcpPort));
-            if (options.TranslationStepX <= 0.0 || options.TranslationStepY <= 0.0 ||
-                options.RotationStepDegrees <= 0.0)
-                throw new ArgumentOutOfRangeException("Calibration step values must be positive.");
+            if (double.IsNaN(options.TranslationStepX) || double.IsInfinity(options.TranslationStepX) || options.TranslationStepX <= 0.0 ||
+                double.IsNaN(options.TranslationStepY) || double.IsInfinity(options.TranslationStepY) || options.TranslationStepY <= 0.0 ||
+                double.IsNaN(options.RotationStepDegrees) || double.IsInfinity(options.RotationStepDegrees) || options.RotationStepDegrees <= 0.0)
+                throw new ArgumentOutOfRangeException("Calibration step values must be positive finite numbers.");
             if (options.ExpectedBoardCount <= 0)
                 throw new ArgumentOutOfRangeException(nameof(options.ExpectedBoardCount));
         }
@@ -2156,7 +2208,8 @@ namespace NinePointRotationCalibration.Station.Services
                 Kind = RegionKind.Rectangle2,
                 CenterRow = profile.Roi.ReferenceCenterRow,
                 CenterColumn = profile.Roi.ReferenceCenterColumn,
-                PhiRadians = profile.Roi.PhiDegrees * Math.PI / 180.0,
+                // DetectionRoi.PhiDegrees 在行向下屏幕坐标系中顺时针为正，RegionDefinition.PhiRadians 为 HALCON 逆时针弧度，需取反。
+                PhiRadians = -profile.Roi.PhiDegrees * Math.PI / 180.0,
                 Length1 = profile.Roi.HalfWidth,
                 Length2 = profile.Roi.HalfHeight
             };
@@ -2275,22 +2328,23 @@ namespace NinePointRotationCalibration.Station.Services
 
         private void ThrowIfDisposed()
         {
-            if (_disposed) throw new ObjectDisposedException(nameof(StationRuntime));
+            if (Volatile.Read(ref _disposeRequested) != 0 || _disposed)
+                throw new ObjectDisposedException(nameof(StationRuntime));
         }
 
         /// <summary>停止运行并等待在途工作流及后台归档队列收尾后释放所有服务资源。</summary>
         public void Dispose()
         {
-            if (_disposed) return;
+            if (Interlocked.Exchange(ref _disposeRequested, 1) != 0) return;
             LocalDebugLog.Write("INFO", "shutdown", "StationRuntime.Dispose begin.");
             try { StopAsync().GetAwaiter().GetResult(); } catch (Exception ex) { LocalDebugLog.WriteException("WARN", "shutdown", "StopAsync during Dispose", ex); }
             // 等待当前独占工作流和串行后处理队列退出后再销毁信号量与底层设备
-            _workflowGate.Wait();
-            _workflowGate.Release();
+            bool gateAcquired = _workflowGate.Wait(TimeSpan.FromSeconds(10));
+            _disposed = true;
+            if (gateAcquired) _workflowGate.Release();
             Task postProcessing;
             lock (_postProcessingSync) postProcessing = _postProcessingTail;
             try { postProcessing.Wait(TimeSpan.FromSeconds(5)); } catch { }
-            _disposed = true;
             _inspectionGate.Dispose();
             _workflowGate.Dispose();
             _teaching.Dispose();

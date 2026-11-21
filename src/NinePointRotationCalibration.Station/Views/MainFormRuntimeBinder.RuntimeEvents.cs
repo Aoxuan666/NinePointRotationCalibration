@@ -369,6 +369,10 @@ namespace NinePointRotationCalibration.Station.Views
                         .Where(item => item != null && item.DetectionRegion != null)
                         .Select(item => CloneDetectionRoi(item.DetectionRegion))
                         .ToList();
+                    _lastMatchedBoardPoses = result.Items
+                        .Where(item => item != null && item.DetectionRegion != null)
+                        .Select(item => new ImagePose(item.ImageRow, item.ImageColumn, item.ImageAngleDegrees))
+                        .ToList();
                     _lastInspectionBoardIndices = result.Items
                         .Where(item => item != null && item.DetectionRegion != null)
                         .Select(item => item.BoardIndex)
@@ -432,31 +436,36 @@ namespace NinePointRotationCalibration.Station.Views
                 okBoardCount,
                 ngBoardCount,
                 ngReason);
-                // 若当前处于检测双视图：开启局部二值时才在后台按缓存灰度图生成二值贴图；
-                // 未开启局部二值时直接复用上方已绘制完成的原图与轮廓叠加，避免检测完后再重复跑一次整帧 Blob。
+                // 若当前处于检测双视图：必须在 UI 线程读取复选框与参数控件，避免在线 TCP 触发在后台线程读取控件抛出跨线程异常。
                 if (_view.IsDetectionDualViewActive)
                 {
-                    if (IsBinaryPreviewEnabled())
+                    int contourCount = contours.Count;
+                    int expectedBoardCount = result.ExpectedCount;
+                    _view.RunOnUiThread(delegate
                     {
-                        TriggerEffectPreviewOnUi(false);
-                    }
-                    else
-                    {
-                        DetectionProfile currentProfile = ReadDetectionProfileFromView();
-                        string infoText = BuildEffectInfoText(currentProfile, false, contours.Count);
-                        _view.SetEffectViewportInformation(infoText);
-                        long gen;
-                        int regCount;
-                        lock (_displaySync)
+                        if (_disposed || !_view.IsDetectionDualViewActive) return;
+                        if (IsBinaryPreviewEnabled())
                         {
-                            gen = _displayGeneration;
-                            regCount = _lastDetectionRegions.Count;
+                            ScheduleBinaryPreview(false);
                         }
-                        _renderedEffectGeneration = gen;
-                        _renderedEffectKey = BuildEffectPreviewKey(
-                            gen, gen, regCount, currentProfile, false, result.ExpectedCount, _runtime.GetPositioningJobSnapshot());
-                        _renderedEffectInfoText = infoText;
-                    }
+                        else
+                        {
+                            DetectionProfile currentProfile = ReadDetectionProfileFromView();
+                            string infoText = BuildEffectInfoText(currentProfile, false, contourCount);
+                            _view.SetEffectViewportInformation(infoText);
+                            long gen;
+                            int regCount;
+                            lock (_displaySync)
+                            {
+                                gen = _displayGeneration;
+                                regCount = _lastDetectionRegions.Count;
+                            }
+                            _renderedEffectGeneration = gen;
+                            _renderedEffectKey = BuildEffectPreviewKey(
+                                gen, gen, regCount, currentProfile, false, expectedBoardCount, _runtime.GetPositioningJobSnapshot());
+                            _renderedEffectInfoText = infoText;
+                        }
+                    });
                 }
             }
             catch (Exception exception)

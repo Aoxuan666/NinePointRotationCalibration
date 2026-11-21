@@ -257,10 +257,18 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
             ImagePose reference = template.ModelReference ?? new ImagePose();
             ImagePose pose = match.ModelPose ?? new ImagePose(match.Row, match.Column, match.AngleDegrees);
             double deltaAngle = DegreesToRadians(pose.AngleDegrees - reference.AngleDegrees);
+            double sourceCenterRow = source.CenterRow;
+            double sourceCenterCol = source.CenterColumn;
+            if ((source.Kind == RegionKind.Polygon || source.Kind == RegionKind.Freehand) &&
+                source.Points != null && source.Points.Count > 0)
+            {
+                sourceCenterRow = (source.Points.Max(point => point.Row) + source.Points.Min(point => point.Row)) / 2.0;
+                sourceCenterCol = (source.Points.Max(point => point.Column) + source.Points.Min(point => point.Column)) / 2.0;
+            }
             ImagePoint center = HalconGeometry.TransformRigid(
                 reference,
                 pose,
-                new ImagePoint(source.CenterRow, source.CenterColumn));
+                new ImagePoint(sourceCenterRow, sourceCenterCol));
             double halfWidth;
             double halfHeight;
             double phi;

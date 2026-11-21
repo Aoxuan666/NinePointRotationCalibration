@@ -25,9 +25,14 @@ namespace NinePointRotationCalibration.Halcon
                         contour.GetContourXld(out rows, out columns);
                         int length = Math.Min(rows.Length, columns.Length);
                         List<ImagePoint> segment = new List<ImagePoint>(length);
-                        for (int pointIndex = 0; pointIndex < length; pointIndex++)
+                        if (length > 0)
                         {
-                            segment.Add(new ImagePoint(rows[pointIndex].D, columns[pointIndex].D));
+                            double[] rowArr = rows.ToDArr();
+                            double[] colArr = columns.ToDArr();
+                            for (int pointIndex = 0; pointIndex < length; pointIndex++)
+                            {
+                                segment.Add(new ImagePoint(rowArr[pointIndex], colArr[pointIndex]));
+                            }
                         }
 
                         if (segment.Count > 0) result.Add(segment);

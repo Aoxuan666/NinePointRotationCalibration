@@ -156,7 +156,12 @@ namespace NinePointRotationCalibration.Station.Devices
                 {
                     int cleanupError = ReleaseCameraCore();
                     if (cleanupError != IMVDefine.IMV_OK)
-                        throw new CameraDeviceException("Disconnect", cleanupError);
+                    {
+                        LocalDebugLog.Write(
+                            "WARN",
+                            "camera.dahua",
+                            "Disconnect cleanup returned SDK code " + cleanupError + "; handle has been released.");
+                    }
                     return true;
                 },
                 CancellationToken.None);
@@ -236,15 +241,30 @@ namespace NinePointRotationCalibration.Station.Devices
                     cancellationToken.ThrowIfCancellationRequested();
                     EnsureConnectedCore();
                     SetDoubleFeatureIfAvailable("ExposureTime", parameters.ExposureMicroseconds);
-                    SetDoubleFeatureIfAvailable("GainRaw", parameters.Gain);
-                    SetDoubleFeatureIfAvailable("Gamma", parameters.Gamma);
-                    SetIntFeatureIfAvailable("Saturation", (long)parameters.Saturation);
+                    if (!double.IsNaN(parameters.Gain) && !double.IsInfinity(parameters.Gain))
+                    {
+                        string gainNode = _camera.IMV_FeatureIsAvailable("Gain") ? "Gain" : "GainRaw";
+                        SetDoubleFeatureIfAvailable(gainNode, parameters.Gain);
+                    }
+                    if (!double.IsNaN(parameters.Gamma) && !double.IsInfinity(parameters.Gamma) && parameters.Gamma > 0.0)
+                    {
+                        SetDoubleFeatureIfAvailable("Gamma", parameters.Gamma);
+                    }
+                    if (!double.IsNaN(parameters.Saturation) && !double.IsInfinity(parameters.Saturation) &&
+                        parameters.Saturation >= 0.0 && parameters.Saturation <= long.MaxValue)
+                    {
+                        SetIntFeatureIfAvailable("Saturation", (long)Math.Round(parameters.Saturation, MidpointRounding.AwayFromZero));
+                    }
                     SetBoolFeatureIfAvailable("ReverseX", parameters.ReverseX);
                     SetBoolFeatureIfAvailable("ReverseY", parameters.ReverseY);
-                    SetTriggerMode(parameters.TriggerMode);
+                    if (!string.IsNullOrWhiteSpace(parameters.TriggerMode))
+                    {
+                        SetTriggerMode(parameters.TriggerMode);
+                    }
                     if (parameters.Features != null)
                         foreach (CameraFeatureValue feature in parameters.Features)
                             ApplyFeature(feature);
+                    _cachedTriggerMode = GetTriggerMode();
                     return true;
                 },
                 cancellationToken);
@@ -382,11 +402,18 @@ namespace NinePointRotationCalibration.Station.Devices
                 return;
             }
             double valueAsDouble;
-            if (!double.TryParse(feature.Value, NumberStyles.Float, CultureInfo.InvariantCulture, out valueAsDouble)) return;
+            if (!double.TryParse(feature.Value, NumberStyles.Float, CultureInfo.InvariantCulture, out valueAsDouble) ||
+                double.IsNaN(valueAsDouble) || double.IsInfinity(valueAsDouble)) return;
             if (feature.Kind == CameraFeatureKind.Integer)
-                SetIntFeatureIfAvailable(feature.Name, checked((long)Math.Round(valueAsDouble, MidpointRounding.AwayFromZero)));
+            {
+                double rounded = Math.Round(valueAsDouble, MidpointRounding.AwayFromZero);
+                if (rounded < long.MinValue || rounded > long.MaxValue) return;
+                SetIntFeatureIfAvailable(feature.Name, (long)rounded);
+            }
             else
+            {
                 SetDoubleFeatureIfAvailable(feature.Name, valueAsDouble);
+            }
         }
 
         private static string GetFeatureDisplayName(string name)
@@ -547,7 +574,6 @@ namespace NinePointRotationCalibration.Station.Devices
             finally
             {
                 _sdkGate.Release();
-                _sdkGate.Dispose();
             }
         }
 
@@ -602,7 +628,12 @@ namespace NinePointRotationCalibration.Station.Devices
 
             int previousCleanupError = ReleaseCameraCore();
             if (previousCleanupError != IMVDefine.IMV_OK)
-                throw new CameraDeviceException("Release previous camera", previousCleanupError);
+            {
+                LocalDebugLog.Write(
+                    "WARN",
+                    "camera.dahua",
+                    "Previous camera cleanup returned SDK code " + previousCleanupError + "; proceeding with reconnect.");
+            }
 
             ResolvedDevice resolved = ResolveDevice(requestedDeviceId, cancellationToken);
             _camera = new MyCamera();
@@ -713,14 +744,28 @@ namespace NinePointRotationCalibration.Station.Devices
 
         private bool IsSoftwareTriggerEnabled()
         {
-            if (!_camera.IMV_FeatureIsAvailable("TriggerMode")) return false;
+            if (!_camera.IMV_FeatureIsAvailable("TriggerMode"))
+            {
+                _cachedTriggerMode = "Continuous";
+                return false;
+            }
             IMVDefine.IMV_String mode = new IMVDefine.IMV_String();
             CheckResult(_camera.IMV_GetEnumFeatureSymbol("TriggerMode", ref mode), "Get TriggerMode before capture");
-            if (string.Equals(mode.str, "Off", StringComparison.OrdinalIgnoreCase)) return false;
-            if (!_camera.IMV_FeatureIsAvailable("TriggerSource")) return true;
+            if (string.Equals(mode.str, "Off", StringComparison.OrdinalIgnoreCase))
+            {
+                _cachedTriggerMode = "Continuous";
+                return false;
+            }
+            if (!_camera.IMV_FeatureIsAvailable("TriggerSource"))
+            {
+                _cachedTriggerMode = "Software";
+                return true;
+            }
             IMVDefine.IMV_String source = new IMVDefine.IMV_String();
             CheckResult(_camera.IMV_GetEnumFeatureSymbol("TriggerSource", ref source), "Get TriggerSource before capture");
-            return string.Equals(source.str, "Software", StringComparison.OrdinalIgnoreCase);
+            bool isSoftware = string.Equals(source.str, "Software", StringComparison.OrdinalIgnoreCase);
+            _cachedTriggerMode = isSoftware ? "Software" : "Hardware";
+            return isSoftware;
         }
 
         private Bitmap ConvertFrameToBitmap(IMVDefine.IMV_Frame frame)

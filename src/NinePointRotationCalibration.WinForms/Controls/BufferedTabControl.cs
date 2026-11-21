@@ -315,4 +315,71 @@ namespace NinePointRotationCalibration.WinForms.Controls
             }
         }
     }
+
+    /// <summary>深色图像视口工具栏扁平渲染器，避免 WinForms Professional 默认浅灰渐变遮挡浅色按钮文本。</summary>
+    internal sealed class DarkToolStripRenderer : ToolStripSystemRenderer
+    {
+        private static readonly Color BarBackground = Color.FromArgb(15, 23, 42);
+        private static readonly Color BarBorder = Color.FromArgb(30, 41, 59);
+        private static readonly Color HoverBackground = Color.FromArgb(51, 65, 85);
+        private static readonly Color PressedBackground = Color.FromArgb(37, 99, 235);
+        private static readonly Color SeparatorColor = Color.FromArgb(51, 65, 85);
+        private static readonly Color EnabledTextColor = Color.FromArgb(226, 232, 240);
+        private static readonly Color DisabledTextColor = Color.FromArgb(100, 116, 139);
+
+        protected override void OnRenderToolStripBackground(ToolStripRenderEventArgs e)
+        {
+            using (SolidBrush brush = new SolidBrush(BarBackground))
+            {
+                e.Graphics.FillRectangle(brush, e.AffectedBounds);
+            }
+        }
+
+        protected override void OnRenderToolStripBorder(ToolStripRenderEventArgs e)
+        {
+            using (Pen pen = new Pen(BarBorder, 1.0f))
+            {
+                int y = e.AffectedBounds.Bottom - 1;
+                e.Graphics.DrawLine(pen, e.AffectedBounds.Left, y, e.AffectedBounds.Right, y);
+            }
+        }
+
+        protected override void OnRenderButtonBackground(ToolStripItemRenderEventArgs e)
+        {
+            ToolStripButton button = e.Item as ToolStripButton;
+            if (button == null || !button.Enabled)
+            {
+                return;
+            }
+
+            if (!button.Selected && !button.Pressed && !button.Checked)
+            {
+                return;
+            }
+
+            Color fill = (button.Pressed || button.Checked) ? PressedBackground : HoverBackground;
+            Rectangle rect = new Rectangle(1, 1, Math.Max(1, button.Width - 2), Math.Max(1, button.Height - 2));
+            using (SolidBrush brush = new SolidBrush(fill))
+            {
+                e.Graphics.FillRectangle(brush, rect);
+            }
+        }
+
+        protected override void OnRenderItemText(ToolStripItemTextRenderEventArgs e)
+        {
+            e.TextColor = e.Item != null && !e.Item.Enabled
+                ? DisabledTextColor
+                : (e.Item != null && (e.Item.Selected || e.Item.Pressed) ? Color.White : EnabledTextColor);
+            base.OnRenderItemText(e);
+        }
+
+        protected override void OnRenderSeparator(ToolStripSeparatorRenderEventArgs e)
+        {
+            int x = e.Item.Width / 2;
+            using (Pen pen = new Pen(SeparatorColor, 1.0f))
+            {
+                e.Graphics.DrawLine(pen, x, 5, x, Math.Max(5, e.Item.Height - 6));
+            }
+        }
+    }
 }

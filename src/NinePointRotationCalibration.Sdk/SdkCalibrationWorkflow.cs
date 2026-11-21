@@ -23,10 +23,11 @@ namespace NinePointRotationCalibration
         private readonly CalibrationJob _baseline;
         private readonly object _grayCacheSync = new object();
         private HalconGrayImage _cachedGrayImage;
-        private Bitmap _cachedSourceBitmap;
+        private WeakReference<Bitmap> _cachedSourceBitmap;
         private int _cachedWidth;
         private int _cachedHeight;
         private ulong _cachedSignature;
+        private bool _disposed;
 
         public SdkCalibrationWorkflow(ITemplateMatchingEngine engine, CalibrationJob baseline)
         {
@@ -60,6 +61,10 @@ namespace NinePointRotationCalibration
                 {
                     lock (_grayCacheSync)
                     {
+                        if (_disposed || cancellationToken.IsCancellationRequested)
+                        {
+                            return new TemplateFeatureResult { Success = false, Message = "已取消" };
+                        }
                         HalconGrayImage gray = GetOrUpdateGrayCacheLocked(image);
                         build = previewEngine.PreviewFeatures(gray, template);
                     }
@@ -86,7 +91,7 @@ namespace NinePointRotationCalibration
                     FeaturePoints = SampleFeaturePoints(contours, 4000),
                     RecommendedParameters = MergeResolvedThresholds(state == null ? null : state.Parameters, build.Template)
                 };
-            });
+            }, cancellationToken);
         }
 
         /// <summary>根据编辑参数创建 HALCON 模板模型（回传实际生效的自适应阈值参数）。</summary>
@@ -202,6 +207,7 @@ namespace NinePointRotationCalibration
             // 共享引擎由 SDK 统一管理，关闭窗口时不能释放它；仅释放工作流局部持有的灰度缓存。
             lock (_grayCacheSync)
             {
+                _disposed = true;
                 if (_cachedGrayImage != null)
                 {
                     _cachedGrayImage.Dispose();
@@ -216,8 +222,11 @@ namespace NinePointRotationCalibration
 
         private HalconGrayImage GetOrUpdateGrayCacheLocked(Bitmap image)
         {
+            Bitmap cachedTarget;
             if (_cachedGrayImage != null &&
-                ReferenceEquals(image, _cachedSourceBitmap) &&
+                _cachedSourceBitmap != null &&
+                _cachedSourceBitmap.TryGetTarget(out cachedTarget) &&
+                ReferenceEquals(image, cachedTarget) &&
                 _cachedWidth == image.Width &&
                 _cachedHeight == image.Height)
             {
@@ -240,7 +249,7 @@ namespace NinePointRotationCalibration
             }
 
             _cachedGrayImage = HalconGrayImage.FromBitmap(image);
-            _cachedSourceBitmap = image;
+            _cachedSourceBitmap = new WeakReference<Bitmap>(image);
             _cachedWidth = image.Width;
             _cachedHeight = image.Height;
             _cachedSignature = signature;
@@ -256,11 +265,13 @@ namespace NinePointRotationCalibration
             hash = (hash ^ (ulong)image.Height) * fnvPrime;
             hash = (hash ^ (ulong)image.PixelFormat) * fnvPrime;
 
-            int bytesPerPixel = Math.Max(1, Image.GetPixelFormatSize(image.PixelFormat) / 8);
+            int bitsPerPixel = Math.Max(1, Image.GetPixelFormatSize(image.PixelFormat));
+            int sampleChannels = Math.Max(1, Math.Min(4, bitsPerPixel / 8));
             Rectangle bounds = new Rectangle(0, 0, image.Width, image.Height);
             BitmapData data = image.LockBits(bounds, ImageLockMode.ReadOnly, image.PixelFormat);
             try
             {
+                int absStride = Math.Abs(data.Stride);
                 int rows = Math.Min(16, image.Height);
                 int cols = Math.Min(16, image.Width);
                 for (int r = 0; r < rows; r++)
@@ -270,8 +281,14 @@ namespace NinePointRotationCalibration
                     for (int c = 0; c < cols; c++)
                     {
                         int x = (int)((long)c * image.Width / cols);
-                        byte sample = Marshal.ReadByte(rowPtr, x * bytesPerPixel);
-                        hash = (hash ^ sample) * fnvPrime;
+                        int byteOffset = (int)(((long)x * bitsPerPixel) >> 3);
+                        if (byteOffset < 0 || byteOffset >= absStride) continue;
+                        int endOffset = Math.Min(absStride, byteOffset + sampleChannels);
+                        for (int offset = byteOffset; offset < endOffset; offset++)
+                        {
+                            byte sample = Marshal.ReadByte(rowPtr, offset);
+                            hash = (hash ^ sample) * fnvPrime;
+                        }
                     }
                 }
             }

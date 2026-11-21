@@ -21,7 +21,7 @@ namespace NinePointRotationCalibration.Station.Devices
         private readonly SemaphoreSlim _sdkGate = new SemaphoreSlim(1, 1);
         private readonly object _stateSync = new object();
         private CameraMVS _camera;
-        private bool _disposed;
+        private volatile bool _disposed;
         private bool _reverseX;
         private bool _reverseY;
         private string _triggerMode = "Software";
@@ -146,28 +146,53 @@ namespace NinePointRotationCalibration.Station.Devices
         public Task SetParametersAsync(CameraParameterSet parameters, CancellationToken cancellationToken)
         {
             if (parameters == null) throw new ArgumentNullException(nameof(parameters));
-            if (parameters.Saturation < 0 || parameters.Saturation > uint.MaxValue)
+            if (double.IsNaN(parameters.ExposureMicroseconds) || double.IsInfinity(parameters.ExposureMicroseconds) ||
+                parameters.ExposureMicroseconds <= 0.0)
+                throw new ArgumentOutOfRangeException(nameof(parameters.ExposureMicroseconds));
+            if (!double.IsNaN(parameters.Saturation) &&
+                (double.IsInfinity(parameters.Saturation) || parameters.Saturation < 0 || parameters.Saturation > uint.MaxValue))
                 throw new ArgumentOutOfRangeException(nameof(parameters.Saturation));
             return RunSerializedAsync(() =>
             {
                 CameraMVS camera = GetConnectedCamera();
                 int error = 0;
                 EnsureSuccess(camera.SetExposureTime((float)parameters.ExposureMicroseconds, ref error), error, "Set exposure", camera);
-                TrySetOptionalFloat(camera, new[] { "SetGain", "SetGainValue" }, (float)parameters.Gain);
-                error = 0;
-                EnsureSuccess(camera.SetGamma((float)parameters.Gamma, ref error), error, "Set gamma", camera);
-                error = 0;
-                EnsureSuccess(camera.SetGammaEnable(true, ref error), error, "Enable gamma", camera);
-                error = 0;
-                EnsureSuccess(camera.SetSaturation((uint)parameters.Saturation, ref error), error, "Set saturation", camera);
+                if (!double.IsNaN(parameters.Gain) && !double.IsInfinity(parameters.Gain))
+                {
+                    if (!TrySetOptionalFloat(camera, new[] { "SetGain", "SetGainValue" }, (float)parameters.Gain))
+                    {
+                        try { GetMvsHandle(camera).MV_CC_SetFloatValue_NET("Gain", (float)parameters.Gain); }
+                        catch { }
+                    }
+                }
+                if (!double.IsNaN(parameters.Gamma) && !double.IsInfinity(parameters.Gamma) && parameters.Gamma > 0.0)
+                {
+                    // 先开启 Gamma 使能再写入 Gamma 值；黑白或不支持 Gamma 节点时容错跳过以免阻断后续配置。
+                    error = 0;
+                    if (camera.SetGammaEnable(true, ref error))
+                    {
+                        error = 0;
+                        camera.SetGamma((float)parameters.Gamma, ref error);
+                    }
+                }
+                if (!double.IsNaN(parameters.Saturation) && parameters.Saturation > 0.0)
+                {
+                    // 黑白工业相机通常不含 Saturation 节点，按可选特性写入避免导致整组参数下发失败。
+                    error = 0;
+                    camera.SetSaturation((uint)parameters.Saturation, ref error);
+                }
                 error = 0;
                 EnsureSuccess(camera.SetReverseX(parameters.ReverseX, ref error), error, "Set reverse X", camera);
                 error = 0;
                 EnsureSuccess(camera.SetReverseY(parameters.ReverseY, ref error), error, "Set reverse Y", camera);
-                SetTriggerModeCore(camera, parameters.TriggerMode);
+                if (!string.IsNullOrWhiteSpace(parameters.TriggerMode))
+                {
+                    SetTriggerModeCore(camera, parameters.TriggerMode);
+                }
                 lock (_stateSync)
                 {
-                    _triggerMode = NormalizeTriggerMode(parameters.TriggerMode);
+                    if (!string.IsNullOrWhiteSpace(parameters.TriggerMode))
+                        _triggerMode = NormalizeTriggerMode(parameters.TriggerMode);
                     _reverseX = parameters.ReverseX;
                     _reverseY = parameters.ReverseY;
                 }
@@ -216,7 +241,9 @@ namespace NinePointRotationCalibration.Station.Devices
         {
             foreach (string methodName in methodNames)
             {
-                MethodInfo method = camera.GetType().GetMethod(methodName);
+                MethodInfo method;
+                try { method = camera.GetType().GetMethod(methodName); }
+                catch (AmbiguousMatchException) { continue; }
                 if (method == null) continue;
                 ParameterInfo[] parameters = method.GetParameters();
                 if (parameters.Length != 2 || !parameters[1].ParameterType.IsByRef) continue;
@@ -224,7 +251,7 @@ namespace NinePointRotationCalibration.Station.Devices
                 try
                 {
                     object result = method.Invoke(camera, args);
-                    if (result is bool) return (bool)result;
+                    if (result is bool && !(bool)result) continue;
                     return true;
                 }
                 catch (TargetInvocationException) { }

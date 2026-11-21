@@ -21,7 +21,7 @@ namespace NinePointRotationCalibration
         private readonly ITemplateMatchingEngine _templateEngine;
         private readonly ICalibrationGeometryBackend _calibrationGeometryBackend;
         private readonly bool _ownsTemplateEngine;
-        private bool _disposed;
+        private int _disposed;
 
         /// <summary>使用内置 HALCON 模板引擎创建 SDK。</summary>
         public NinePointRotationCalibrationSdk()
@@ -147,6 +147,8 @@ namespace NinePointRotationCalibration
             {
                 // 优先走灰度图直通接口以复用前级图像转换；仅当引擎不支持时回退到 Bitmap。
                 Halcon.IGrayImageTemplateMatchingEngine grayEngine = _templateEngine as Halcon.IGrayImageTemplateMatchingEngine;
+                if ((gray == null || grayEngine == null) && image == null)
+                    return Halcon.TemplateMatchCollectionResult.Failure(CalibrationErrorCode.ParameterInvalid, "Input image is null.");
                 Halcon.TemplateMatchCollectionResult result = gray != null && grayEngine != null
                     ? grayEngine.LocateAll(gray, ownedTemplate, returnOverlay)
                     : _templateEngine.LocateAll(image, ownedTemplate, returnOverlay);
@@ -426,6 +428,23 @@ namespace NinePointRotationCalibration
                         baseline,
                         referenceImage.Width,
                         referenceImage.Height);
+                    if (updated != null && updated.SolverOptions != null && updated.Samples != null)
+                    {
+                        long templateRevision = updated.Template == null ? 0 : updated.Template.Revision;
+                        bool hasRotationSamples = false;
+                        foreach (CalibrationSample sample in updated.Samples)
+                        {
+                            if (sample != null &&
+                                sample.Enabled &&
+                                sample.Kind == CalibrationSampleKind.Rotation &&
+                                sample.TemplateRevision == templateRevision)
+                            {
+                                hasRotationSamples = true;
+                                break;
+                            }
+                        }
+                        updated.SolverOptions.RequireRotationCalibration = hasRotationSamples;
+                    }
                     return new CalibrationSetupResult
                     {
                         Accepted = true,
@@ -511,14 +530,13 @@ namespace NinePointRotationCalibration
         /// <summary>释放 SDK 持有的 HALCON 资源。</summary>
         public void Dispose()
         {
-            if (_disposed) return;
+            if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
             if (_ownsTemplateEngine) _templateEngine.Dispose();
-            _disposed = true;
         }
 
         private void ThrowIfDisposed()
         {
-            if (_disposed) throw new ObjectDisposedException(nameof(NinePointRotationCalibrationSdk));
+            if (Volatile.Read(ref _disposed) != 0) throw new ObjectDisposedException(nameof(NinePointRotationCalibrationSdk));
         }
 
         private static bool IsFinite(double value)

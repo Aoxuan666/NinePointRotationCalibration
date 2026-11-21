@@ -20,7 +20,8 @@ namespace NinePointRotationCalibration.Station.Services.Camera
         private CancellationTokenSource _previewCancellation;
         private Task _previewTask;
         private int _previewIntervalMilliseconds;
-        private bool _disposed;
+        private int _disposeRequested;
+        private volatile bool _disposed;
         private long _liveFrameCount;
         private long _liveDroppedFrameCount;
         private double _liveFps;
@@ -289,8 +290,6 @@ namespace NinePointRotationCalibration.Station.Services.Camera
             {
                 cancellation = _previewCancellation;
                 task = _previewTask;
-                _previewCancellation = null;
-                _previewTask = null;
                 _liveFps = 0.0;
             }
             if (cancellation == null) return;
@@ -314,12 +313,25 @@ namespace NinePointRotationCalibration.Station.Services.Camera
             }
             finally
             {
+                bool cleared = false;
+                lock (_sync)
+                {
+                    if (ReferenceEquals(_previewCancellation, cancellation))
+                    {
+                        _previewCancellation = null;
+                        _previewTask = null;
+                        cleared = true;
+                    }
+                }
                 cancellation.Dispose();
-                LocalDebugLog.Write(
-                    "INFO",
-                    "camera.preview",
-                    "Live preview loop stopped: totalFrames=" + LiveFrameCount + ", droppedFrames=" + LiveDroppedFrameCount + ".");
-                OnPreviewRunningChanged(false);
+                if (cleared)
+                {
+                    LocalDebugLog.Write(
+                        "INFO",
+                        "camera.preview",
+                        "Live preview loop stopped: totalFrames=" + LiveFrameCount + ", droppedFrames=" + LiveDroppedFrameCount + ".");
+                    OnPreviewRunningChanged(false);
+                }
             }
         }
 
@@ -518,20 +530,31 @@ namespace NinePointRotationCalibration.Station.Services.Camera
 
         private void ThrowIfDisposed()
         {
-            if (_disposed) throw new ObjectDisposedException(nameof(CameraAcquisitionService));
+            if (Volatile.Read(ref _disposeRequested) != 0 || _disposed)
+                throw new ObjectDisposedException(nameof(CameraAcquisitionService));
         }
 
         /// <summary>停止预览、断开设备并释放底层相机及信号量资源。</summary>
         public void Dispose()
         {
-            if (_disposed) return;
+            if (Interlocked.Exchange(ref _disposeRequested, 1) != 0) return;
             try { StopPreviewAsync().GetAwaiter().GetResult(); } catch { }
             try { DisconnectAsync().GetAwaiter().GetResult(); } catch { }
-            _disposed = true;
-            lock (_sync)
+            bool gateAcquired = _deviceGate.Wait(TimeSpan.FromSeconds(5));
+            try
             {
-                if (_device != null) _device.Dispose();
-                _device = null;
+                _disposed = true;
+                ICameraDevice device;
+                lock (_sync)
+                {
+                    device = _device;
+                    _device = null;
+                }
+                if (device != null) device.Dispose();
+            }
+            finally
+            {
+                if (gateAcquired) _deviceGate.Release();
             }
             _deviceGate.Dispose();
         }

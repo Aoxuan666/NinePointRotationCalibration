@@ -93,6 +93,7 @@ namespace NinePointRotationCalibration.Station.Views
             }
 
             Bitmap sourceCopy;
+            Bitmap sourcePreview;
             lock (_displaySync)
             {
                 if (_displayMode != DisplayMode.LockedFrame ||
@@ -101,11 +102,12 @@ namespace NinePointRotationCalibration.Station.Views
                 {
                     return;
                 }
-                sourceCopy = new Bitmap(_lockedDisplayImage);
+                sourceCopy = ImageViewport.CloneToPArgbFast(_lockedDisplayImage);
+                sourcePreview = ImageViewport.CreateFastPreview(sourceCopy);
             }
 
             // 缓存未命中时先秒速同步显示当前帧，切页绘制完成后再在后台生成最新分割效果与叠加层
-            _view.EffectViewport.SetImageOwned(sourceCopy);
+            _view.EffectViewport.SetImageOwned(sourceCopy, sourcePreview);
             if (hasCurrentOverlay)
             {
                 List<ViewportContourOverlay> combinedContours = new List<ViewportContourOverlay>(matchedContours.Count + cachedContours.Count);
@@ -213,6 +215,7 @@ namespace NinePointRotationCalibration.Station.Views
 
                 LockedFrameGrayCache grayCache = null;
                 List<DetectionRoi> regions;
+                List<ImagePose> boardPoses;
                 List<ViewportContourOverlay> matchedContours;
                 List<int> boardIndices;
                 int selectedBoardIndex;
@@ -222,12 +225,15 @@ namespace NinePointRotationCalibration.Station.Views
                 {
                     generation = _displayGeneration;
                     isLiveMode = _displayMode == DisplayMode.LivePreview;
-                    if (_lockedDisplayImage != null) source = new Bitmap(_lockedDisplayImage);
+                    if (_lockedDisplayImage != null) source = ImageViewport.CloneToPArgbFast(_lockedDisplayImage);
                     grayCache = _lockedGray;
                     bool hasOverlay = _lastInspectionOverlayGeneration == generation;
                     regions = hasOverlay
                         ? _lastDetectionRegions.Select(CloneDetectionRoi).ToList()
                         : new List<DetectionRoi>();
+                    boardPoses = hasOverlay
+                        ? _lastMatchedBoardPoses.Select(p => p == null ? null : new ImagePose(p.Row, p.Column, p.AngleDegrees)).ToList()
+                        : new List<ImagePose>();
                     matchedContours = hasOverlay
                         ? CloneContourList(_lastMatchedBoardContours)
                         : new List<ViewportContourOverlay>();
@@ -261,7 +267,8 @@ namespace NinePointRotationCalibration.Station.Views
                         if (stillCurrent && !cancellation.IsCancellationRequested && _view.IsDetectionDualViewActive)
                         {
                             InvalidateEffectRenderCache();
-                            _view.EffectViewport.SetImageOwned(source);
+                            Bitmap fastPreview = ImageViewport.CreateFastPreview(source);
+                            _view.EffectViewport.SetImageOwned(source, fastPreview);
                             source = null;
                             _view.EffectViewport.ClearOverlays();
                             _view.SetEffectViewportInformation(job == null || job.Template == null || !job.Template.HasUsableModel
@@ -282,13 +289,20 @@ namespace NinePointRotationCalibration.Station.Views
 
                     if (matchResult != null && matchResult.Success)
                     {
-                        List<TemplateMatchResult> validMatches = (matchResult.Matches ?? new List<TemplateMatchResult>())
-                            .Where(match => match != null && match.Success)
-                            .ToList();
-                        regions = validMatches
-                            .Select(match => _binaryAnalyzer.ResolveDetectionRoi(job.Template, match, profile))
-                            .Where(region => region != null)
-                            .ToList();
+                        // 与 BoardInspectionService 使用完全相同的行列聚类排序，避免预览与正式检测板号跳变
+                        List<TemplateMatchResult> validMatches = BoardInspectionService.OrderMatches(
+                            matchResult.Matches,
+                            job.Template,
+                            profile);
+                        regions = new List<DetectionRoi>(validMatches.Count);
+                        boardPoses = new List<ImagePose>(validMatches.Count);
+                        foreach (TemplateMatchResult match in validMatches)
+                        {
+                            DetectionRoi roi = _binaryAnalyzer.ResolveDetectionRoi(job.Template, match, profile);
+                            if (roi == null) continue;
+                            regions.Add(roi);
+                            boardPoses.Add(new ImagePose(match.Row, match.Column, match.AngleDegrees));
+                        }
                         matchedContours = BuildMatchedContours(validMatches);
                         boardIndices = Enumerable.Range(1, regions.Count).ToList();
                     }
@@ -300,7 +314,8 @@ namespace NinePointRotationCalibration.Station.Views
                         if (stillCurrent && !cancellation.IsCancellationRequested && _view.IsDetectionDualViewActive)
                         {
                             InvalidateEffectRenderCache();
-                            _view.EffectViewport.SetImageOwned(source);
+                            Bitmap fastPreview = ImageViewport.CreateFastPreview(source);
+                            _view.EffectViewport.SetImageOwned(source, fastPreview);
                             source = null;
                             _view.EffectViewport.ClearOverlays();
                             _view.SetEffectViewportInformation("未匹配到模板目标 · 当前显示原图");
@@ -320,6 +335,7 @@ namespace NinePointRotationCalibration.Station.Views
                         if (generation == _displayGeneration)
                         {
                             _lastDetectionRegions = regions.Select(CloneDetectionRoi).ToList();
+                            _lastMatchedBoardPoses = boardPoses.Select(p => p == null ? null : new ImagePose(p.Row, p.Column, p.AngleDegrees)).ToList();
                             _lastMatchedBoardContours = CloneContourList(matchedContours);
                             _lastInspectionBoardIndices = new List<int>(boardIndices);
                             _lastInspectionOverlayGeneration = generation;
@@ -334,6 +350,7 @@ namespace NinePointRotationCalibration.Station.Views
                         source,
                         grayCache,
                         regions,
+                        boardPoses,
                         boardIndices,
                         matchedContours,
                         profile,
@@ -416,7 +433,7 @@ namespace NinePointRotationCalibration.Station.Views
                     expectedCount, actualCount, pass, hasManualMarks, okCount, ngCount, ngReason);
 
                 string effectInfo = BuildEffectInfoText(profile, binaryEnabled, preview.BlobCount);
-                _view.EffectViewport.SetImageOwned(preview.TakeImage());
+                _view.EffectViewport.SetImageOwned(preview.TakeImage(), preview.TakePreviewImage());
                 _view.EffectViewport.SetPointOverlays(null);
                 _view.EffectViewport.SetContourOverlays(preview.EffectContours);
                 _view.EffectViewport.SetRoiOverlays(ApplySelectedRoiHighlight(
@@ -462,6 +479,7 @@ namespace NinePointRotationCalibration.Station.Views
             Bitmap source,
             LockedFrameGrayCache grayCache,
             IList<DetectionRoi> regions,
+            IList<ImagePose> boardPoses,
             IList<int> boardIndices,
             IList<ViewportContourOverlay> matchedContours,
             DetectionProfile profile,
@@ -472,7 +490,7 @@ namespace NinePointRotationCalibration.Station.Views
             if (cancellationToken.IsCancellationRequested) return null;
 
             EffectPreviewPayload payload = new EffectPreviewPayload();
-            Bitmap combined = CloneToFastPArgb(source);
+            Bitmap combined = ImageViewport.CloneToPArgbFast(source);
             payload.Image = combined;
             List<BlobAnalysisResult> analyses = null;
             try
@@ -592,13 +610,14 @@ namespace NinePointRotationCalibration.Station.Views
                         int boardNumber = boardIndices != null && index < boardIndices.Count
                             ? boardIndices[index]
                             : index + 1;
+                        ImagePose matchedPose = boardPoses != null && index < boardPoses.Count ? boardPoses[index] : null;
                         payload.BoardStatuses.Add(new PreviewBoardStatus
                         {
                             BoardIndex = boardNumber,
                             HasManualMark = roiHasDefect,
-                            Column = roi == null ? 0.0 : roi.ReferenceCenterColumn,
-                            Row = roi == null ? 0.0 : roi.ReferenceCenterRow,
-                            AngleDegrees = roi == null ? 0.0 : roi.PhiDegrees
+                            Column = matchedPose != null ? matchedPose.Column : (roi == null ? 0.0 : roi.ReferenceCenterColumn),
+                            Row = matchedPose != null ? matchedPose.Row : (roi == null ? 0.0 : roi.ReferenceCenterRow),
+                            AngleDegrees = matchedPose != null ? matchedPose.AngleDegrees : (roi == null ? 0.0 : -roi.PhiDegrees)
                         });
 
                         if (hasExplicitRegions && roi != null)
@@ -630,6 +649,8 @@ namespace NinePointRotationCalibration.Station.Views
                 {
                     if (graphics != null) graphics.Dispose();
                 }
+                // 在后台线程预先生成 1600px 快速预览帧，彻底消除效果图首次上屏时的 UI 主线程重采样卡顿
+                payload.PreviewImage = ImageViewport.CreateFastPreview(combined);
                 return payload;
             }
             catch (Exception exception)
@@ -649,17 +670,6 @@ namespace NinePointRotationCalibration.Station.Views
                     }
                 }
             }
-        }
-
-        private static Bitmap CloneToFastPArgb(Bitmap source)
-        {
-            Bitmap copy = new Bitmap(Math.Max(1, source.Width), Math.Max(1, source.Height), PixelFormat.Format32bppPArgb);
-            using (Graphics g = Graphics.FromImage(copy))
-            {
-                g.CompositingMode = CompositingMode.SourceCopy;
-                g.DrawImageUnscaled(source, 0, 0);
-            }
-            return copy;
         }
 
         private static GraphicsPath CreateRoiClipPath(DetectionRoi roi)
@@ -860,8 +870,10 @@ namespace NinePointRotationCalibration.Station.Views
             CancelBinaryPreview();
             int imageWidth = image.Width;
             int imageHeight = image.Height;
-            Bitmap displayCopy = new Bitmap(image);
-            Bitmap effectCopy = _view.IsDetectionDualViewActive ? new Bitmap(image) : null;
+            Bitmap displayCopy = ImageViewport.CloneToPArgbFast(image);
+            Bitmap displayPreview = ImageViewport.CreateFastPreview(displayCopy);
+            Bitmap effectCopy = _view.IsDetectionDualViewActive ? ImageViewport.CloneToPArgbFast(displayCopy) : null;
+            Bitmap effectPreview = effectCopy != null && displayPreview != null ? ImageViewport.CloneToPArgbFast(displayPreview) : null;
             Bitmap previous = null;
             bool scheduleEffect = false;
             long generation;
@@ -871,7 +883,9 @@ namespace NinePointRotationCalibration.Station.Views
                 {
                     image.Dispose();
                     displayCopy.Dispose();
+                    if (displayPreview != null) displayPreview.Dispose();
                     if (effectCopy != null) effectCopy.Dispose();
+                    if (effectPreview != null) effectPreview.Dispose();
                     return;
                 }
 
@@ -885,10 +899,10 @@ namespace NinePointRotationCalibration.Station.Views
                 _inspectionFrameGeneration = inspectionFrame ? _displayGeneration : -1;
                 ClearInspectionPreviewCache();
                 _view.Viewport.ClearOverlays();
-                DisplayImageCore(displayCopy, source, capturedAtUtc ?? DateTime.UtcNow);
+                DisplayImageCore(displayCopy, displayPreview, source, capturedAtUtc ?? DateTime.UtcNow);
                 if (effectCopy != null)
                 {
-                    _view.EffectViewport.SetImageOwned(effectCopy);
+                    _view.EffectViewport.SetImageOwned(effectCopy, effectPreview);
                     _view.EffectViewport.ClearOverlays();
                     _view.SetEffectViewportInformation(inspectionFrame ? "检测效果图计算中..." : "已载入图像，正在生成效果图...");
                     scheduleEffect = !inspectionFrame;
@@ -937,6 +951,7 @@ namespace NinePointRotationCalibration.Station.Views
         private void ClearInspectionPreviewCache()
         {
             _lastDetectionRegions = new List<DetectionRoi>();
+            _lastMatchedBoardPoses = new List<ImagePose>();
             _lastInspectionPoints = new List<ViewportPointOverlay>();
             _lastInspectionRois = new List<ViewportRoiOverlay>();
             _lastInspectionContours = new List<ViewportContourOverlay>();
@@ -991,9 +1006,9 @@ namespace NinePointRotationCalibration.Station.Views
                 templateRevision + ":" + modelHash);
         }
 
-        private void DisplayImageCore(Bitmap image, string source, DateTime capturedAtUtc)
+        private void DisplayImageCore(Bitmap image, Bitmap preview, string source, DateTime capturedAtUtc)
         {
-            _view.DisplayOwnedImage(image);
+            _view.Viewport.SetImageOwned(image, preview);
             _view.SetImageInformation(string.Format(
                 CultureInfo.InvariantCulture,
                 "{0} x {1}   {2}   {3:HH:mm:ss.fff}",
@@ -1015,6 +1030,7 @@ namespace NinePointRotationCalibration.Station.Views
             }
 
             public Bitmap Image { get; set; }
+            public Bitmap PreviewImage { get; set; }
             public string ErrorMessage { get; set; }
             public int BlobCount { get; set; }
             public double BlobElapsedMilliseconds { get; set; }
@@ -1035,11 +1051,21 @@ namespace NinePointRotationCalibration.Station.Views
                 return image;
             }
 
+            public Bitmap TakePreviewImage()
+            {
+                Bitmap preview = PreviewImage;
+                PreviewImage = null;
+                return preview;
+            }
+
             public void Dispose()
             {
                 Bitmap image = Image;
                 Image = null;
                 if (image != null) image.Dispose();
+                Bitmap preview = PreviewImage;
+                PreviewImage = null;
+                if (preview != null) preview.Dispose();
             }
         }
 

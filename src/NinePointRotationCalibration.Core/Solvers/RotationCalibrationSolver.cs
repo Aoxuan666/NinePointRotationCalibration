@@ -27,7 +27,7 @@ namespace NinePointRotationCalibration
             // 分别按同向 (+1) 与反向 (-1) 拟合图像角与机械角关系并择优。
             RotationAngleFit same = FitAngleDirection(observations, 1, options);
             RotationAngleFit opposite = FitAngleDirection(observations, -1, options);
-            RotationAngleFit angleFit = ChooseAngleFit(same, opposite, options.MinimumRotationInliers);
+            RotationAngleFit angleFit = ChooseAngleFit(same, opposite, options);
             if (angleFit == null)
             {
                 return Fail(rotation, CalibrationErrorCode.RotationDegenerate,
@@ -80,11 +80,19 @@ namespace NinePointRotationCalibration
                     "Final rotation inliers do not define a stable center.");
             }
 
+            bool[] originalAngleInliers = (bool[])angleFit.Inliers.Clone();
             angleFit = RefitFixedDirection(observations, combined, angleFit.Direction);
             if (angleFit == null)
             {
                 return Fail(rotation, CalibrationErrorCode.RotationDegenerate,
                     "Could not refit the final rotation angle relation.");
+            }
+            if (angleFit.Span < options.MinimumRotationSpanDegrees)
+            {
+                rotation.MachineAngleSpanDegrees = angleFit.Span;
+                return Fail(rotation, CalibrationErrorCode.RotationInsufficient,
+                    string.Format("Final rotation inlier span {0:0.###} degrees is below the configured minimum {1:0.###} degrees.",
+                        angleFit.Span, options.MinimumRotationSpanDegrees));
             }
 
             rotation.Direction = angleFit.Direction > 0 ? RotationDirection.Same : RotationDirection.Opposite;
@@ -112,8 +120,10 @@ namespace NinePointRotationCalibration
                 double phi = AngleMath.DegreesToRadians(angleFit.Direction * observation.MachineAngle);
                 double cos = Math.Cos(phi);
                 double sin = Math.Sin(phi);
-                double predictedNormalizedColumn = centerColumn + (cos * localX) - (sin * localY);
-                double predictedNormalizedRow = centerRow + (sin * localX) + (cos * localY);
+                // 图像坐标系中 Column 向右、Row 向下，HALCON 角度以逆时针为正：
+                // [dCol; dRow] = [cos, sin; -sin, cos] * [localX; localY]
+                double predictedNormalizedColumn = centerColumn + (cos * localX) + (sin * localY);
+                double predictedNormalizedRow = centerRow - (sin * localX) + (cos * localY);
                 Vector2D stageShift = geometryBackend == null
                     ? result.StageToPixelMatrix.TransformVector(
                         new Vector2D(observation.StageX - referenceStage.X, observation.StageY - referenceStage.Y))
@@ -130,7 +140,7 @@ namespace NinePointRotationCalibration
 
                 observation.AngleResidual = angleResidual;
                 observation.CenterResidual = centerResidual;
-                observation.AngleInlier = angleFit.Inliers[i];
+                observation.AngleInlier = originalAngleInliers[i];
                 observation.CenterInlier = centerInliers[i];
                 CalibrationSampleDiagnostic diagnostic = observation.Diagnostic;
                 diagnostic.IsInlier = combined[i];
@@ -146,7 +156,7 @@ namespace NinePointRotationCalibration
                 diagnostic.PredictedImageAngleDegrees = predictedAngle;
                 diagnostic.AngleResidualDegrees = angleResidual;
                 diagnostic.RotationCenterResidualPixels = centerResidual;
-                if (!angleFit.Inliers[i]) diagnostic.RejectionReason = "Rotation angle outlier";
+                if (!originalAngleInliers[i]) diagnostic.RejectionReason = "Rotation angle outlier";
                 else if (!centerInliers[i]) diagnostic.RejectionReason = "Rotation center outlier";
                 else diagnostic.RejectionReason = null;
 
@@ -364,12 +374,21 @@ namespace NinePointRotationCalibration
             return offsets.Count == 0 ? double.NaN : AngleMath.CircularMeanDegrees(offsets, weights);
         }
 
-        private static RotationAngleFit ChooseAngleFit(RotationAngleFit first, RotationAngleFit second, int minimumInliers)
+        private static RotationAngleFit ChooseAngleFit(RotationAngleFit first, RotationAngleFit second, CalibrationSolverOptions options)
         {
+            int minimumInliers = options.MinimumRotationInliers;
             bool firstValid = first != null && first.InlierCount >= minimumInliers;
             bool secondValid = second != null && second.InlierCount >= minimumInliers;
             if (!firstValid) return secondValid ? second : null;
             if (!secondValid) return first;
+
+            // 先按是否满足角度 RMS 上限分级，避免错误方向因 MAD 被大幅拉宽误纳全部样本而反超真实方向。
+            bool firstWithinRms = first.Rms <= options.MaxAngleRmsDegrees;
+            bool secondWithinRms = second.Rms <= options.MaxAngleRmsDegrees;
+            if (firstWithinRms != secondWithinRms) return firstWithinRms ? first : second;
+
+            // 两个方向均超差时直接选 RMS 显著更小者；均达标时再优先内点数更多、RMS 更小者。
+            if (!firstWithinRms) return first.Rms <= second.Rms ? first : second;
             if (first.InlierCount != second.InlierCount) return first.InlierCount > second.InlierCount ? first : second;
             return first.Rms <= second.Rms ? first : second;
         }
@@ -537,8 +556,9 @@ namespace NinePointRotationCalibration
                 double phi = AngleMath.DegreesToRadians(direction * observation.MachineAngle);
                 double cos = Math.Cos(phi);
                 double sin = Math.Sin(phi);
-                AddNormalEquation(normal, right, new[] { 1.0, 0.0, cos, -sin }, observation.NormalizedColumn, observation.Weight);
-                AddNormalEquation(normal, right, new[] { 0.0, 1.0, sin, cos }, observation.NormalizedRow, observation.Weight);
+                // 图像坐标系（Column 向右、Row 向下）中逆时针旋转 phi 对应矩阵 [cos, sin; -sin, cos]
+                AddNormalEquation(normal, right, new[] { 1.0, 0.0, cos, sin }, observation.NormalizedColumn, observation.Weight);
+                AddNormalEquation(normal, right, new[] { 0.0, 1.0, -sin, cos }, observation.NormalizedRow, observation.Weight);
                 count++;
             }
 
@@ -577,8 +597,8 @@ namespace NinePointRotationCalibration
             double phi = AngleMath.DegreesToRadians(direction * observation.MachineAngle);
             double cos = Math.Cos(phi);
             double sin = Math.Sin(phi);
-            double predictedColumn = centerColumn + (cos * localX) - (sin * localY);
-            double predictedRow = centerRow + (sin * localX) + (cos * localY);
+            double predictedColumn = centerColumn + (cos * localX) + (sin * localY);
+            double predictedRow = centerRow - (sin * localX) + (cos * localY);
             double dc = predictedColumn - observation.NormalizedColumn;
             double dr = predictedRow - observation.NormalizedRow;
             return Math.Sqrt((dc * dc) + (dr * dr));

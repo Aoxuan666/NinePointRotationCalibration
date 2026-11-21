@@ -250,30 +250,35 @@ namespace NinePointRotationCalibration.Station.Services.Communication
 
                 try
                 {
-                    if (listener != null) listener.Stop();
+                    if (lifetime != null) lifetime.Cancel();
+                    try
+                    {
+                        if (listener != null) listener.Stop();
+                    }
+                    catch (SocketException)
+                    {
+                        // 监听套接字已关闭。
+                    }
+
+                    CloseConnection(connection, "Server stopped.", null);
+
+                    await IgnoreExpectedShutdownAsync(acceptLoop).ConfigureAwait(false);
+
+                    Task[] receiveTasks;
+                    lock (_stateSync) receiveTasks = _receiveTasks.ToArray();
+                    await IgnoreExpectedShutdownAsync(Task.WhenAll(receiveTasks)).ConfigureAwait(false);
                 }
-                catch (SocketException)
+                finally
                 {
-                    // 监听套接字已关闭。
+                    lock (_stateSync)
+                    {
+                        if (ReferenceEquals(_listener, listener)) _listener = null;
+                        if (ReferenceEquals(_lifetimeCancellation, lifetime)) _lifetimeCancellation = null;
+                        if (ReferenceEquals(_acceptLoopTask, acceptLoop)) _acceptLoopTask = null;
+                    }
+
+                    if (lifetime != null) lifetime.Dispose();
                 }
-
-                CloseConnection(connection, "Server stopped.", null);
-                if (lifetime != null) lifetime.Cancel();
-
-                await IgnoreExpectedShutdownAsync(acceptLoop).ConfigureAwait(false);
-
-                Task[] receiveTasks;
-                lock (_stateSync) receiveTasks = _receiveTasks.ToArray();
-                await IgnoreExpectedShutdownAsync(Task.WhenAll(receiveTasks)).ConfigureAwait(false);
-
-                lock (_stateSync)
-                {
-                    if (ReferenceEquals(_listener, listener)) _listener = null;
-                    if (ReferenceEquals(_lifetimeCancellation, lifetime)) _lifetimeCancellation = null;
-                    if (ReferenceEquals(_acceptLoopTask, acceptLoop)) _acceptLoopTask = null;
-                }
-
-                if (lifetime != null) lifetime.Dispose();
             }
             finally
             {
@@ -406,6 +411,10 @@ namespace NinePointRotationCalibration.Station.Services.Communication
                 {
                     break;
                 }
+                catch (InvalidOperationException) when (cancellationToken.IsCancellationRequested || !IsRunning)
+                {
+                    break;
+                }
                 catch (SocketException exception) when (cancellationToken.IsCancellationRequested || !IsRunning)
                 {
                     RaiseLog("DEBUG", "TCP accept loop stopped: " + exception.Message);
@@ -426,8 +435,18 @@ namespace NinePointRotationCalibration.Station.Services.Communication
                     continue;
                 }
 
-                ConfigureClient(client);
-                ClientConnection connection = new ClientConnection(client, cancellationToken);
+                ClientConnection connection;
+                try
+                {
+                    ConfigureClient(client);
+                    connection = new ClientConnection(client, cancellationToken);
+                }
+                catch (Exception exception)
+                {
+                    try { client.Close(); } catch { }
+                    RaiseLog("WARN", "Accepted TCP client closed before initialization completed: " + exception.Message);
+                    continue;
+                }
                 bool accepted;
 
                 // 本服务仅维持单个上位机主连接，已有活跃连接时直接拒绝多余客户端

@@ -117,11 +117,16 @@ namespace NinePointRotationCalibration.Station.Services.Teaching
                     TeachingData snapshot;
                     lock (_sync)
                     {
-                        if (side == TeachingSide.Left) _data.Left = Clone(pose);
-                        else _data.Right = Clone(pose);
                         snapshot = Clone(_data);
+                        if (side == TeachingSide.Left) snapshot.Left = Clone(pose);
+                        else snapshot.Right = Clone(pose);
                     }
+                    // 先持久化成功后再提交内存状态，防止保存失败导致内存与磁盘不一致
                     if (_saveAsync != null) await _saveAsync(snapshot).ConfigureAwait(false);
+                    lock (_sync)
+                    {
+                        _data = Clone(snapshot);
+                    }
                     LocalDebugLog.Write(
                         "INFO",
                         "teaching",
@@ -140,27 +145,37 @@ namespace NinePointRotationCalibration.Station.Services.Teaching
 
         /// <summary>
         /// 在一拍多板治具中，左右吸嘴示教必须稳定锁定同一块基准板（按从上到下、从左到右排序的第 1 号板），
-        /// 防止因不同帧间最高匹配分数跳变导致左、右吸嘴示教锁定在不同板位上。
+        /// 防止因默认 NumMatches=1 时帧间最高匹配分数跳变导致左、右吸嘴示教锁定在不同板位上。
         /// </summary>
         private TemplateMatchResult LocateReferenceBoard(Bitmap image, CalibrationJob job)
         {
-            if (job != null && job.Template != null &&
-                job.Template.MatchParameters != null &&
-                job.Template.MatchParameters.NumMatches != 1)
+            if (job == null || job.Template == null) return _sdk.Locate(image, job, false);
+
+            CalibrationJob multiMatchJob = job.DeepClone();
+            if (multiMatchJob.Template.MatchParameters != null)
             {
-                TemplateMatchCollectionResult collection = _sdk.LocateAll(image, job, false);
-                if (collection != null && collection.Success &&
-                    collection.Matches != null && collection.Matches.Count > 0)
-                {
-                    List<TemplateMatchResult> ordered = BoardInspectionService.OrderMatches(
-                        collection.Matches,
-                        job.Template,
-                        null);
-                    if (ordered.Count > 0) return ordered[0];
-                }
+                multiMatchJob.Template.MatchParameters.NumMatches = 0;
             }
 
-            return _sdk.Locate(image, job, false);
+            TemplateMatchCollectionResult collection = _sdk.LocateAll(image, multiMatchJob, false);
+            if (collection != null && collection.Success &&
+                collection.Matches != null && collection.Matches.Count > 0)
+            {
+                List<TemplateMatchResult> ordered = BoardInspectionService.OrderMatches(
+                    collection.Matches,
+                    multiMatchJob.Template,
+                    null);
+                if (ordered.Count > 0) return ordered[0];
+            }
+
+            return new TemplateMatchResult
+            {
+                Success = false,
+                ErrorCode = collection == null ? CalibrationErrorCode.TemplateMatchFailed : collection.ErrorCode,
+                Message = collection == null || string.IsNullOrWhiteSpace(collection.Message)
+                    ? "Positioning template match was not found."
+                    : collection.Message
+            };
         }
 
         /// <summary>清除指定侧的示教姿态并保存修改。</summary>
@@ -183,12 +198,16 @@ namespace NinePointRotationCalibration.Station.Services.Teaching
                 TeachingData snapshot;
                 lock (_sync)
                 {
-                    if (side == TeachingSide.Left) _data.Left = Clone(cleared);
-                    else _data.Right = Clone(cleared);
                     snapshot = Clone(_data);
+                    if (side == TeachingSide.Left) snapshot.Left = Clone(cleared);
+                    else snapshot.Right = Clone(cleared);
                 }
 
                 if (_saveAsync != null) await _saveAsync(snapshot).ConfigureAwait(false);
+                lock (_sync)
+                {
+                    _data = Clone(snapshot);
+                }
                 LocalDebugLog.Write("INFO", "teaching", "Cleared teaching data for side=" + side + ".");
                 EventHandler<TeachingEventArgs> handler = TeachingChanged;
                 if (handler != null) handler(this, new TeachingEventArgs(cleared));

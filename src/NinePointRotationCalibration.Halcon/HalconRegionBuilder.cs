@@ -7,6 +7,19 @@ namespace NinePointRotationCalibration.Halcon
     /// <summary>将核心区域的几何定义（ROI、掩膜、擦除笔迹、搜索区）构造为 HALCON HRegion。</summary>
     internal static class HalconRegionBuilder
     {
+        static HalconRegionBuilder()
+        {
+            // 关闭 HALCON 全局 128x128 默认区域裁剪，避免在首次加载大图前构造 ROI/掩膜时被静默截断；
+            // 本类所有区域构建流程均显式与 imageBounds 求交。
+            try
+            {
+                HSystem.SetSystem("clip_region", "false");
+            }
+            catch
+            {
+            }
+        }
+
         /// <summary>生成模板有效区域：主 ROI 裁剪至图像边界后依次应用掩膜、笔迹与反选。</summary>
         public static HRegion BuildEffectiveRegion(TemplateDefinition definition, int imageWidth, int imageHeight)
         {
@@ -268,7 +281,7 @@ namespace NinePointRotationCalibration.Halcon
             {
                 lines.GenRegionLine(tr1, tc1, tr2, tc2);
                 using (HRegion centerline = lines.Union1())
-                    return centerline.DilationCircle(radius);
+                    return centerline.DilationCircle(Math.Max(0.5, radius));
             }
         }
 
@@ -482,7 +495,7 @@ namespace NinePointRotationCalibration.Halcon
             {
                 lines.GenRegionLine(r1, c1, r2, c2);
                 using (HRegion centerline = lines.Union1())
-                    return centerline.DilationCircle(radius);
+                    return centerline.DilationCircle(Math.Max(0.5, radius));
             }
         }
 

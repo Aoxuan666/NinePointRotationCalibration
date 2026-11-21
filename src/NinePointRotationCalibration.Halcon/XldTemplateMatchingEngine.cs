@@ -342,9 +342,10 @@ namespace NinePointRotationCalibration.Halcon
                 output.ReferenceImageWidth = grayImage.Width;
                 output.ReferenceImageHeight = grayImage.Height;
                 output.DomainCenter = new ImagePoint(domainRow, domainColumn);
-                ImagePoint templateCenter = new ImagePoint(
-                    output.TemplateRoi.CenterRow,
-                    output.TemplateRoi.CenterColumn);
+                bool useDomainCenter = output.TemplateRoi.Kind == RegionKind.Polygon || output.TemplateRoi.Kind == RegionKind.Freehand;
+                ImagePoint templateCenter = useDomainCenter
+                    ? new ImagePoint(domainRow, domainColumn)
+                    : new ImagePoint(output.TemplateRoi.CenterRow, output.TemplateRoi.CenterColumn);
                 output.ModelReference = new ImagePose(templateCenter.Row, templateCenter.Column, 0.0);
                 if (anchorWasUninitialized)
                 {
@@ -410,16 +411,22 @@ namespace NinePointRotationCalibration.Halcon
             {
                 region.GetRegionRuns(out runRows, out colBegins, out colEnds);
                 int runCount = Math.Min(runRows.Length, Math.Min(colBegins.Length, colEnds.Length));
-                for (int i = 0; i < runCount; i++)
+                if (runCount > 0)
                 {
-                    int localRow = runRows[i].I - r1;
-                    if (localRow < 0 || localRow >= height) continue;
-                    int startCol = Math.Max(0, colBegins[i].I - c1);
-                    int endCol = Math.Min(width - 1, colEnds[i].I - c1);
-                    int rowBase = localRow * width;
-                    for (int c = startCol; c <= endCol; c++)
+                    int[] rowsArr = runRows.ToIArr();
+                    int[] beginArr = colBegins.ToIArr();
+                    int[] endArr = colEnds.ToIArr();
+                    for (int i = 0; i < runCount; i++)
                     {
-                        mask[rowBase + c] = 1;
+                        int localRow = rowsArr[i] - r1;
+                        if (localRow < 0 || localRow >= height) continue;
+                        int startCol = Math.Max(0, beginArr[i] - c1);
+                        int endCol = Math.Min(width - 1, endArr[i] - c1);
+                        int rowBase = localRow * width;
+                        for (int c = startCol; c <= endCol; c++)
+                        {
+                            mask[rowBase + c] = 1;
+                        }
                     }
                 }
             }
@@ -568,11 +575,11 @@ namespace NinePointRotationCalibration.Halcon
                     output.ReferenceImageWidth = imageWidth;
                     output.ReferenceImageHeight = imageHeight;
                     output.DomainCenter = new ImagePoint(domainRow, domainColumn);
-                    // 模型参考中心必须固定为用户定义的 ROI 中心；
-                    // 旋转 ROI 被图像边缘裁剪或存在掩膜挖孔时，有效域质心会发生偏移，导致特征预览漂移。
-                    ImagePoint templateCenter = new ImagePoint(
-                        output.TemplateRoi.CenterRow,
-                        output.TemplateRoi.CenterColumn);
+                    // 模型参考中心对矩形/圆固定为用户定义的 ROI 中心；多边形/自由区域使用有效域质心。
+                    bool useDomainCenter = output.TemplateRoi.Kind == RegionKind.Polygon || output.TemplateRoi.Kind == RegionKind.Freehand;
+                    ImagePoint templateCenter = useDomainCenter
+                        ? new ImagePoint(domainRow, domainColumn)
+                        : new ImagePoint(output.TemplateRoi.CenterRow, output.TemplateRoi.CenterColumn);
                     output.ModelReference = new ImagePose(
                         templateCenter.Row,
                         templateCenter.Column,
@@ -806,12 +813,12 @@ namespace NinePointRotationCalibration.Halcon
         {
             if (!IsFinite(start)) throw new ArgumentOutOfRangeException("AngleStartRad");
             if (!IsFinite(extent)
-                || Math.Abs(extent) < 1e-12
-                || Math.Abs(extent) > Math.PI * 2.0 + 1e-9)
+                || extent < 1e-12
+                || extent > Math.PI * 2.0 + 1e-9)
             {
                 throw new ArgumentOutOfRangeException(
                     "AngleExtentRad",
-                    "Angle extent must be non-zero and no greater than 2 PI.");
+                    "Angle extent must be positive and no greater than 2 PI.");
             }
         }
 
@@ -926,6 +933,7 @@ namespace NinePointRotationCalibration.Halcon
             public double Length1;
             public double Length2;
             public double Radius;
+            public ulong PointsHash;
             public bool AutoThreshold;
             public double EdgeSigma;
             public double ManualLow;
@@ -940,6 +948,18 @@ namespace NinePointRotationCalibration.Halcon
                 ShapeFeatureExtractionSettings extraction,
                 bool autoThreshold)
             {
+                ulong pointsHash = 14695981039346656037UL;
+                if (roi.Points != null)
+                {
+                    pointsHash = (pointsHash ^ (ulong)roi.Points.Count) * 1099511628211UL;
+                    for (int i = 0; i < roi.Points.Count; i++)
+                    {
+                        long r = (long)Math.Round(roi.Points[i].Row * 1000.0);
+                        long c = (long)Math.Round(roi.Points[i].Column * 1000.0);
+                        pointsHash = (pointsHash ^ (ulong)r) * 1099511628211UL;
+                        pointsHash = (pointsHash ^ (ulong)c) * 1099511628211UL;
+                    }
+                }
                 return new PreviewCacheKey
                 {
                     ImageCacheId = grayImage.CacheId,
@@ -952,6 +972,7 @@ namespace NinePointRotationCalibration.Halcon
                     Length1 = Math.Round(roi.Length1, 4),
                     Length2 = Math.Round(roi.Length2, 4),
                     Radius = Math.Round(roi.Radius, 4),
+                    PointsHash = pointsHash,
                     AutoThreshold = autoThreshold,
                     EdgeSigma = Math.Round(extraction.EdgeSigma, 4),
                     ManualLow = autoThreshold ? 0.0 : Math.Round(extraction.EdgeLowThreshold, 4),
@@ -974,6 +995,7 @@ namespace NinePointRotationCalibration.Halcon
                        Length1 == other.Length1 &&
                        Length2 == other.Length2 &&
                        Radius == other.Radius &&
+                       PointsHash == other.PointsHash &&
                        AutoThreshold == other.AutoThreshold &&
                        EdgeSigma == other.EdgeSigma &&
                        ManualLow == other.ManualLow &&
@@ -1093,26 +1115,55 @@ namespace NinePointRotationCalibration.Halcon
                     continue;
                 }
 
-                List<ImagePoint> inside = new List<ImagePoint>();
+                // 轮廓离开 ROI 后重新进入时必须分段，避免将出入口两点直接连成伪直线边写入模板模型。
+                List<ImagePoint> currentSegment = null;
                 foreach (ImagePoint point in contour)
                 {
                     if (IsInsideRoi(point, roi))
                     {
-                        inside.Add(point);
+                        if (currentSegment == null) currentSegment = new List<ImagePoint>();
+                        currentSegment.Add(point);
+                    }
+                    else if (currentSegment != null)
+                    {
+                        if (currentSegment.Count >= 2) yield return currentSegment;
+                        currentSegment = null;
                     }
                 }
 
-                // HALCON 的缩减定义域通常已裁剪掉外部边缘；
-                // 当少数采样点略超出 ROI 时仍保留整条有序候选轮廓，避免在边界处切碎导致板边丢失。
-                if (inside.Count >= 2)
+                if (currentSegment != null && currentSegment.Count >= 2)
                 {
-                    yield return inside;
+                    yield return currentSegment;
                 }
             }
         }
 
         private static bool IsInsideRoi(ImagePoint point, RegionDefinition roi)
         {
+            const double tolerance = 1.5;
+            if (roi.Kind == RegionKind.Circle)
+            {
+                double dr = point.Row - roi.CenterRow;
+                double dc = point.Column - roi.CenterColumn;
+                double limit = roi.Radius + tolerance;
+                return (dr * dr) + (dc * dc) <= (limit * limit);
+            }
+
+            if (roi.Kind == RegionKind.Polygon || roi.Kind == RegionKind.Freehand)
+            {
+                if (roi.Points == null || roi.Points.Count < 3) return true;
+                bool inside = false;
+                for (int i = 0, j = roi.Points.Count - 1; i < roi.Points.Count; j = i++)
+                {
+                    ImagePoint a = roi.Points[i];
+                    ImagePoint b = roi.Points[j];
+                    bool intersect = ((a.Row > point.Row) != (b.Row > point.Row)) &&
+                        (point.Column < (((b.Column - a.Column) * (point.Row - a.Row)) / ((b.Row - a.Row) + 1e-12)) + a.Column);
+                    if (intersect) inside = !inside;
+                }
+                return inside;
+            }
+
             // 转换到 ROI 局部坐标系（PhiRadians 为 HALCON 逆时针弧度角）判断点是否落在容差范围内。
             double deltaRow = point.Row - roi.CenterRow;
             double deltaColumn = point.Column - roi.CenterColumn;
@@ -1120,7 +1171,6 @@ namespace NinePointRotationCalibration.Halcon
             double sine = Math.Sin(roi.PhiRadians);
             double localRow = (cosine * deltaRow) + (sine * deltaColumn);
             double localColumn = (-sine * deltaRow) + (cosine * deltaColumn);
-            const double tolerance = 1.5;
             return Math.Abs(localColumn) <= roi.Length1 + tolerance
                 && Math.Abs(localRow) <= roi.Length2 + tolerance;
         }

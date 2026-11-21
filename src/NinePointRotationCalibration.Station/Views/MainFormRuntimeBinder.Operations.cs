@@ -635,7 +635,12 @@ namespace NinePointRotationCalibration.Station.Views
                 try
                 {
                     using (Image source = Image.FromFile(dialog.FileName))
-                        imported = new Bitmap(source);
+                    {
+                        Bitmap sourceBitmap = source as Bitmap;
+                        imported = sourceBitmap != null
+                            ? ImageViewport.CloneToPArgbFast(sourceBitmap)
+                            : new Bitmap(source);
+                    }
 
                     int w = imported.Width;
                     int h = imported.Height;
@@ -749,26 +754,37 @@ namespace NinePointRotationCalibration.Station.Views
         {
             if (profile == null) profile = new DetectionProfile();
             if (profile.Roi == null) profile.Roi = new DetectionRoi();
-            SetNumeric("nudBrightThreshold", profile.BrightThreshold);
-            SetNumeric("nudMinimumBlobArea", profile.MinimumBlobArea);
-            SetNumeric("nudMaximumBlobArea", profile.MaximumBlobArea);
-            SetNumeric("nudRectangularity", profile.RectangleFillThreshold);
-            SetNumeric("nudMorphologyRadius", profile.MorphologyRadius);
-            FindControl<CheckBox>("chkAutoThreshold").Checked = profile.AutoThreshold;
-            FindControl<CheckBox>("chkDarkForeground").Checked = profile.DetectDarkForeground;
-            FindControl<NumericUpDown>("nudBrightThreshold").Enabled = !profile.AutoThreshold;
-            _view.RectangleFilterInput.Checked = profile.RectangleFilterEnabled;
-            CheckBox fillHoles = FindControl<CheckBox>("chkFillHoles");
-            fillHoles.Checked = profile.FillHoles;
-            fillHoles.Enabled = !profile.DetectDarkForeground;
-            CheckBox fillDarkHoles = FindControl<CheckBox>("chkFillDarkHoles");
-            if (fillDarkHoles != null)
+            _suppressDetectionEvents = true;
+            try
             {
-                fillDarkHoles.Checked = profile.FillDarkHoles;
-                fillDarkHoles.Enabled = profile.DetectDarkForeground;
+                SetNumeric("nudBrightThreshold", profile.BrightThreshold);
+                SetNumeric("nudMinimumBlobArea", profile.MinimumBlobArea);
+                SetNumeric("nudMaximumBlobArea", profile.MaximumBlobArea);
+                SetNumeric("nudRectangularity", profile.RectangleFillThreshold);
+                SetNumeric("nudMorphologyRadius", profile.MorphologyRadius);
+                FindControl<CheckBox>("chkAutoThreshold").Checked = profile.AutoThreshold;
+                FindControl<CheckBox>("chkDarkForeground").Checked = profile.DetectDarkForeground;
+                FindControl<NumericUpDown>("nudBrightThreshold").Enabled = !profile.AutoThreshold;
+                _view.RectangleFilterInput.Checked = profile.RectangleFilterEnabled;
+                FindControl<NumericUpDown>("nudRectangularity").Enabled = profile.RectangleFilterEnabled;
+                CheckBox fillHoles = FindControl<CheckBox>("chkFillHoles");
+                fillHoles.Checked = profile.FillHoles;
+                fillHoles.Enabled = !profile.DetectDarkForeground;
+                CheckBox fillDarkHoles = FindControl<CheckBox>("chkFillDarkHoles");
+                if (fillDarkHoles != null)
+                {
+                    fillDarkHoles.Checked = profile.FillDarkHoles;
+                    fillDarkHoles.Enabled = profile.DetectDarkForeground;
+                }
+                CheckBox affineWithTemplate = FindControl<CheckBox>("chkRoiAffineWithTemplate");
+                affineWithTemplate.Checked = profile.FollowTemplateTransform;
+                affineWithTemplate.Enabled = profile.TemplateMatchingEnabled;
+                _view.TemplateMatchingInput.Checked = profile.TemplateMatchingEnabled;
             }
-            FindControl<CheckBox>("chkRoiAffineWithTemplate").Checked = profile.FollowTemplateTransform;
-            _view.TemplateMatchingInput.Checked = profile.TemplateMatchingEnabled;
+            finally
+            {
+                _suppressDetectionEvents = false;
+            }
         }
 
         private void ImportConfigFolder()

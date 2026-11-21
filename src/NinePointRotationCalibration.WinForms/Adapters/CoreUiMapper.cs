@@ -413,7 +413,13 @@ namespace NinePointRotationCalibration.WinForms.Adapters
                 job.SolverOptions = new Core.CalibrationSolverOptions();
             }
             job.SolverOptions.MinimumTranslationSamples = state.MinimumTranslationSamples;
+            job.SolverOptions.MinimumTranslationInliers = Math.Min(
+                job.SolverOptions.MinimumTranslationInliers,
+                job.SolverOptions.MinimumTranslationSamples);
             job.SolverOptions.MinimumRotationSamples = state.MinimumRotationSamples;
+            job.SolverOptions.MinimumRotationInliers = Math.Min(
+                job.SolverOptions.MinimumRotationInliers,
+                job.SolverOptions.MinimumRotationSamples);
             job.Samples = (state.Samples ?? new List<CalibrationSampleRow>())
                 .Where(item => item != null)
                 .Select(ToCoreSample)

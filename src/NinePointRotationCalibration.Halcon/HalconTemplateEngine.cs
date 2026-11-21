@@ -940,11 +940,10 @@ namespace NinePointRotationCalibration.Halcon
 
         private void TrySetNativeTimeout(TemplateModelType modelType, int timeoutMilliseconds)
         {
-            if (timeoutMilliseconds <= 0) return;
             try
             {
                 using (HTuple name = new HTuple("timeout"))
-                using (HTuple value = new HTuple(timeoutMilliseconds))
+                using (HTuple value = timeoutMilliseconds <= 0 ? new HTuple("false") : new HTuple(timeoutMilliseconds))
                 {
                     if (modelType == TemplateModelType.Shape) _shapeModel.SetShapeModelParam(name, value);
                     else _nccModel.SetNccModelParam(name, value);
@@ -1015,9 +1014,9 @@ namespace NinePointRotationCalibration.Halcon
         private static void ValidateAngleRange(double start, double extent, string name)
         {
             if (!IsFinite(start)) throw new ArgumentOutOfRangeException(name + " angle start");
-            if (!IsFinite(extent) || Math.Abs(extent) < 1e-12 || Math.Abs(extent) > (Math.PI * 2.0 + 1e-9))
+            if (!IsFinite(extent) || extent < 1e-12 || extent > (Math.PI * 2.0 + 1e-9))
             {
-                throw new ArgumentOutOfRangeException(name + " angle extent", "Angle extent must be non-zero and no greater than 2 PI.");
+                throw new ArgumentOutOfRangeException(name + " angle extent", "Angle extent must be positive and no greater than 2 PI.");
             }
         }
 

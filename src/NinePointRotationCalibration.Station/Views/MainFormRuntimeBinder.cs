@@ -36,10 +36,12 @@ namespace NinePointRotationCalibration.Station.Views
         private readonly object _displaySync = new object();
         private readonly object _binaryPreviewSync = new object();
         private readonly BoardBlobAnalyzer _binaryAnalyzer = new BoardBlobAnalyzer();
+        private readonly Dictionary<string, Control> _controlCache = new Dictionary<string, Control>(StringComparer.OrdinalIgnoreCase);
         private Bitmap _lockedDisplayImage;
         private LockedFrameGrayCache _lockedGray;
         private CancellationTokenSource _binaryPreviewCancellation;
         private List<DetectionRoi> _lastDetectionRegions = new List<DetectionRoi>();
+        private List<ImagePose> _lastMatchedBoardPoses = new List<ImagePose>();
         private List<ViewportPointOverlay> _lastInspectionPoints = new List<ViewportPointOverlay>();
         private List<ViewportRoiOverlay> _lastInspectionRois = new List<ViewportRoiOverlay>();
         private List<ViewportContourOverlay> _lastInspectionContours = new List<ViewportContourOverlay>();
@@ -57,6 +59,7 @@ namespace NinePointRotationCalibration.Station.Views
         private long _displayGeneration;
         private long _inspectionFrameGeneration = -1;
         private bool _disposed;
+        private bool _suppressDetectionEvents;
         private decimal? _readExposure;
         private int _lastLiveInfoUpdateTick;
 
@@ -424,6 +427,7 @@ namespace NinePointRotationCalibration.Station.Views
                         if (_view.IsDetectionDualViewActive) ScheduleBinaryPreview(false);
                         return;
                     case "detection.previewParameters":
+                        if (_suppressDetectionEvents) return;
                         if (e.Source != null && string.Equals(
                             e.Source.Name,
                             "chkAutoThreshold",
@@ -441,6 +445,22 @@ namespace NinePointRotationCalibration.Station.Views
                             FindControl<CheckBox>("chkFillHoles").Enabled = !darkFg;
                             CheckBox darkHole = FindControl<CheckBox>("chkFillDarkHoles");
                             if (darkHole != null) darkHole.Enabled = darkFg;
+                        }
+                        else if (e.Source != null && string.Equals(
+                            e.Source.Name,
+                            "chkRectangleFilter",
+                            StringComparison.OrdinalIgnoreCase))
+                        {
+                            FindControl<NumericUpDown>("nudRectangularity").Enabled =
+                                _view.RectangleFilterInput.Checked;
+                        }
+                        else if (e.Source != null && string.Equals(
+                            e.Source.Name,
+                            "chkTemplateMatchingEnabled",
+                            StringComparison.OrdinalIgnoreCase))
+                        {
+                            FindControl<CheckBox>("chkRoiAffineWithTemplate").Enabled =
+                                _view.TemplateMatchingInput.Checked;
                         }
                         if (_view.IsDetectionDualViewActive) ScheduleBinaryPreview(true);
                         return;
@@ -639,8 +659,14 @@ namespace NinePointRotationCalibration.Station.Views
 
         private T FindControl<T>(string name) where T : Control
         {
+            Control cached;
+            if (_controlCache.TryGetValue(name, out cached) && cached is T && !cached.IsDisposed)
+            {
+                return (T)cached;
+            }
             T control = _view.Controls.Find(name, true).OfType<T>().FirstOrDefault();
             if (control == null) throw new InvalidOperationException("界面控件不存在：" + name);
+            _controlCache[name] = control;
             return control;
         }
 

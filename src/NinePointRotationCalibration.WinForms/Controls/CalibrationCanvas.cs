@@ -40,7 +40,10 @@ namespace NinePointRotationCalibration.WinForms.Controls
         private int _paintedInkPoints;
         private MaskStroke _inkOwner;
         private double _maskZoom, _maskX, _maskY;
+        private readonly Timer _maskRefreshTimer = new Timer { Interval = 90 };
+        private bool _maskRefreshPending;
         private Rectangle _lastActiveMaskRect;
+        private Rectangle _lastBrushCursorRect;
         private Bitmap _image;
         private Bitmap _interactivePreview;
         // 避免编辑 ROI 或平移时在每次鼠标移动重采样千万像素源图，按当前缩放率缓存一张降采样位图复用。
@@ -93,10 +96,19 @@ namespace NinePointRotationCalibration.WinForms.Controls
                 ControlStyles.ResizeRedraw |
                 ControlStyles.Selectable,
                 true);
-            BackColor = Color.FromArgb(22, 24, 27);
-            ForeColor = Color.WhiteSmoke;
+            BackColor = Color.FromArgb(11, 15, 23);
+            ForeColor = Color.FromArgb(226, 232, 240);
             TabStop = true;
             MinimumSize = new Size(240, 180);
+            _maskRefreshTimer.Tick += (sender, args) =>
+            {
+                _maskRefreshTimer.Stop();
+                if (_maskRefreshPending)
+                {
+                    _maskRefreshPending = false;
+                    Invalidate();
+                }
+            };
         }
 
         public event EventHandler<RoiChangedEventArgs> RoiChanged;
@@ -298,7 +310,19 @@ namespace NinePointRotationCalibration.WinForms.Controls
         /// </summary>
         public void SetImage(Bitmap image)
         {
-            Bitmap replacement = image == null ? null : new Bitmap(image);
+            SetImageInternal(image == null ? null : CloneToFastPArgb(image));
+        }
+
+        /// <summary>
+        /// 直接接管外部创建的图像所有权（不再额外拷贝 20MP 位图）并适应窗口显示。
+        /// </summary>
+        public void SetImageOwned(Bitmap ownedImage)
+        {
+            SetImageInternal(ownedImage);
+        }
+
+        private void SetImageInternal(Bitmap replacement)
+        {
             Bitmap previous = _image;
             InvalidateImageCache();
             if (_interactivePreview != null)
@@ -322,6 +346,20 @@ namespace NinePointRotationCalibration.WinForms.Controls
             }
 
             FitImage();
+        }
+
+        private static Bitmap CloneToFastPArgb(Bitmap source)
+        {
+            Bitmap copy = new Bitmap(Math.Max(1, source.Width), Math.Max(1, source.Height), PixelFormat.Format32bppPArgb);
+            copy.SetResolution(
+                source.HorizontalResolution > 0.0f ? source.HorizontalResolution : 96.0f,
+                source.VerticalResolution > 0.0f ? source.VerticalResolution : 96.0f);
+            using (Graphics graphics = Graphics.FromImage(copy))
+            {
+                graphics.CompositingMode = CompositingMode.SourceCopy;
+                graphics.DrawImageUnscaled(source, 0, 0);
+            }
+            return copy;
         }
 
         /// <summary>
@@ -465,6 +503,8 @@ namespace NinePointRotationCalibration.WinForms.Controls
         {
             if (disposing)
             {
+                _maskRefreshTimer.Stop();
+                _maskRefreshTimer.Dispose();
                 ClearMaskCache();
                 InvalidateImageCache();
                 if (_image != null)
@@ -569,6 +609,13 @@ namespace NinePointRotationCalibration.WinForms.Controls
             _offsetY = eventArgs.Y - (anchor.Row * _zoom);
             _autoFit = false;
             _viewInitialized = true;
+            _lastBrushCursorRect = Rectangle.Empty;
+            if (_maskHistory != null && _maskStrokes.Count > 0)
+            {
+                _maskRefreshPending = true;
+                _maskRefreshTimer.Stop();
+                _maskRefreshTimer.Start();
+            }
             OnViewChanged();
             Invalidate();
         }
@@ -854,11 +901,18 @@ namespace NinePointRotationCalibration.WinForms.Controls
 
             if (_dragOperation == DragOperation.None)
             {
-                Cursor = HitTestCursor(eventArgs.Location);
-                UpdateHoverState(eventArgs.Location);
-                if (_polygonDrawing || _tool == CanvasEditTool.EraseMask || _tool == CanvasEditTool.RestoreMask)
+                UpdateHoverAndCursor(eventArgs.Location);
+                if (_polygonDrawing)
                 {
                     Invalidate();
+                }
+                else if (_tool == CanvasEditTool.EraseMask || _tool == CanvasEditTool.RestoreMask)
+                {
+                    // 画笔悬停仅重绘上一帧与当前帧画笔圆圈的极小脏区，彻底消除整屏高频重绘卡顿
+                    Rectangle nextRect = GetBrushCursorDirtyRect(eventArgs.Location);
+                    Rectangle dirty = _lastBrushCursorRect.IsEmpty ? nextRect : Rectangle.Union(_lastBrushCursorRect, nextRect);
+                    _lastBrushCursorRect = nextRect;
+                    Invalidate(dirty);
                 }
                 return;
             }
@@ -870,6 +924,13 @@ namespace NinePointRotationCalibration.WinForms.Controls
                 _lastScreen = eventArgs.Location;
                 _autoFit = false;
                 _viewInitialized = true;
+                _lastBrushCursorRect = Rectangle.Empty;
+                if (_maskHistory != null && _maskStrokes.Count > 0)
+                {
+                    _maskRefreshPending = true;
+                    _maskRefreshTimer.Stop();
+                    _maskRefreshTimer.Start();
+                }
                 OnViewChanged();
                 Invalidate();
                 return;
@@ -936,12 +997,18 @@ namespace NinePointRotationCalibration.WinForms.Controls
         {
             base.OnMouseLeave(eventArgs);
             _hasHoverScreen = false;
-            if (_hoveredRoi != CanvasRoiTarget.None || _anchorHovered ||
-                _tool == CanvasEditTool.EraseMask || _tool == CanvasEditTool.RestoreMask)
+            if (_hoveredRoi != CanvasRoiTarget.None || _anchorHovered)
             {
                 _hoveredRoi = CanvasRoiTarget.None;
                 _anchorHovered = false;
+                _lastBrushCursorRect = Rectangle.Empty;
                 Invalidate();
+            }
+            else if (!_lastBrushCursorRect.IsEmpty)
+            {
+                Rectangle dirty = _lastBrushCursorRect;
+                _lastBrushCursorRect = Rectangle.Empty;
+                Invalidate(dirty);
             }
         }
 
@@ -1185,7 +1252,7 @@ namespace NinePointRotationCalibration.WinForms.Controls
             }
 
             InvalidateImageCache();
-            Bitmap scaled = new Bitmap(width, height, PixelFormat.Format24bppRgb);
+            Bitmap scaled = new Bitmap(width, height, PixelFormat.Format32bppPArgb);
             scaled.SetResolution(
                 _image.HorizontalResolution > 0.0f ? _image.HorizontalResolution : 96.0f,
                 _image.VerticalResolution > 0.0f ? _image.VerticalResolution : 96.0f);
@@ -1229,7 +1296,7 @@ namespace NinePointRotationCalibration.WinForms.Controls
             double scale = (double)maximumDimension / Math.Max(previewWidth, previewHeight);
             previewWidth = Math.Max(1, (int)Math.Round(previewWidth * scale));
             previewHeight = Math.Max(1, (int)Math.Round(previewHeight * scale));
-            Bitmap preview = new Bitmap(previewWidth, previewHeight, PixelFormat.Format24bppRgb);
+            Bitmap preview = new Bitmap(previewWidth, previewHeight, PixelFormat.Format32bppPArgb);
             using (Graphics graphics = Graphics.FromImage(preview))
             {
                 graphics.CompositingMode = CompositingMode.SourceCopy;
@@ -1293,6 +1360,31 @@ namespace NinePointRotationCalibration.WinForms.Controls
                     path.AddPolygon(clipPoints);
                     graphics.SetClip(path, CombineMode.Intersect);
                     if (ClientSize.Width <= 0 || ClientSize.Height <= 0) return;
+
+                    // 平移或连续滚轮缩放期间直接按增量变换贴图已有掩膜缓存，零重新栅格化开销，停顿 90ms 后自动高清重绘。
+                    bool canTransformCachedMask =
+                        _maskHistory != null &&
+                        _maskZoom > 0.0 &&
+                        _paintedStrokes == _maskStrokes.Count &&
+                        (_activeStroke == null || _activeStroke.Kind != MaskShapeKind.Brush) &&
+                        (_dragOperation == DragOperation.Pan || _maskRefreshPending);
+                    if (canTransformCachedMask)
+                    {
+                        float scaleRatio = (float)(_zoom / _maskZoom);
+                        RectangleF dstRect = new RectangleF(
+                            (float)(_offsetX - (_maskX * scaleRatio)),
+                            (float)(_offsetY - (_maskY * scaleRatio)),
+                            _maskHistory.Width * scaleRatio,
+                            _maskHistory.Height * scaleRatio);
+                        graphics.InterpolationMode = InterpolationMode.NearestNeighbor;
+                        graphics.DrawImage(
+                            _maskHistory,
+                            dstRect,
+                            new RectangleF(0.0f, 0.0f, _maskHistory.Width, _maskHistory.Height),
+                            GraphicsUnit.Pixel);
+                        return;
+                    }
+
                     UpdateMaskCache();
 
                     // 仅贴图模板 ROI 客户端外接框与当前脏区的交集，避免每次局部重绘对整屏 32bpp 位图做全量 Alpha 混合
@@ -1404,11 +1496,26 @@ namespace NinePointRotationCalibration.WinForms.Controls
         private void UpdateMaskCache()
         {
             // Coordinates are viewport-relative. The template ROI clips the layers at presentation.
-            if (_maskHistory == null || _maskHistory.Size != ClientSize ||
-                _maskZoom != _zoom || _maskX != _offsetX || _maskY != _offsetY)
+            bool sizeChanged = _maskHistory == null || _maskHistory.Size != ClientSize;
+            bool viewChanged = _maskZoom != _zoom || _maskX != _offsetX || _maskY != _offsetY;
+            if (sizeChanged)
             {
                 ClearMaskCache();
                 _maskHistory = new Bitmap(ClientSize.Width, ClientSize.Height, PixelFormat.Format32bppPArgb);
+                _maskZoom = _zoom;
+                _maskX = _offsetX;
+                _maskY = _offsetY;
+            }
+            else if (viewChanged)
+            {
+                // 客户区尺寸不变时复用已有 32bpp 位图直接清空重绘，消除反复分配 LOH 位图引发的 GC 卡顿
+                using (Graphics clearLayer = Graphics.FromImage(_maskHistory))
+                {
+                    clearLayer.Clear(Color.Transparent);
+                }
+                _paintedStrokes = 0;
+                _inkOwner = null;
+                _paintedInkPoints = 0;
                 _maskZoom = _zoom;
                 _maskX = _offsetX;
                 _maskY = _offsetY;
@@ -1853,9 +1960,10 @@ namespace NinePointRotationCalibration.WinForms.Controls
             PointF center = ImageToClient(pose.Position);
             double radians = pose.AngleDegrees * Math.PI / 180.0;
             const float length = 34.0f;
+            // HALCON 位姿角在行向下图像坐标系中以逆时针为正，因此 Y 分量需取负号
             PointF end = new PointF(
                 center.X + ((float)Math.Cos(radians) * length),
-                center.Y + ((float)Math.Sin(radians) * length));
+                center.Y - ((float)Math.Sin(radians) * length));
             using (Pen pen = new Pen(pose.Color, 2.0f))
             {
                 pen.EndCap = LineCap.ArrowAnchor;
@@ -2300,6 +2408,12 @@ namespace NinePointRotationCalibration.WinForms.Controls
                 return;
             }
 
+            if (operation == DragOperation.Pan && _maskRefreshPending)
+            {
+                _maskRefreshTimer.Stop();
+                _maskRefreshPending = false;
+            }
+
             if (!_transactionChanged)
             {
                 _activeStroke = null;
@@ -2614,31 +2728,85 @@ namespace NinePointRotationCalibration.WinForms.Controls
                 centerCol + (dc * cos) - (dr * sin));
         }
 
-        private void UpdateHoverState(Point location)
+        private Rectangle GetBrushCursorDirtyRect(Point location)
         {
-            CanvasRoiTarget nextRoi = CanvasRoiTarget.None;
-            bool nextAnchor = false;
-            if (_tool == CanvasEditTool.Select && _image != null)
+            int radius = (int)Math.Ceiling(Math.Max(2.0, BrushRadiusImage * _zoom)) + 4;
+            return new Rectangle(location.X - radius, location.Y - radius, (radius * 2) + 1, (radius * 2) + 1);
+        }
+
+        private void UpdateHoverAndCursor(Point location)
+        {
+            if (_image == null)
             {
-                RoiHit handleHit = HitSelectedHandle(location);
-                if (handleHit.Target != CanvasRoiTarget.None)
-                {
-                    nextRoi = handleHit.Target;
-                }
-                else if (HasVisibleAnchor && !AnchorLocked && HitAnchor(location))
-                {
-                    nextAnchor = true;
-                }
-                else
-                {
-                    nextRoi = HitTestRois(location).Target;
-                }
-            }
-            else if (_tool == CanvasEditTool.MoveAnchor && HasVisibleAnchor && !AnchorLocked)
-            {
-                nextAnchor = true;
+                Cursor = Cursors.Default;
+                SetHoverState(CanvasRoiTarget.None, false);
+                return;
             }
 
+            if (_tool == CanvasEditTool.EraseMask ||
+                _tool == CanvasEditTool.RestoreMask ||
+                _tool == CanvasEditTool.MaskRectangle ||
+                _tool == CanvasEditTool.MaskCircle ||
+                _tool == CanvasEditTool.MaskPolygon ||
+                _tool == CanvasEditTool.DrawTemplateRoi ||
+                _tool == CanvasEditTool.DrawSearchRoi ||
+                _tool == CanvasEditTool.DrawDetectionRoi)
+            {
+                Cursor = Cursors.Cross;
+                SetHoverState(CanvasRoiTarget.None, false);
+                return;
+            }
+
+            if (_tool == CanvasEditTool.MoveAnchor)
+            {
+                bool activeAnchor = HasVisibleAnchor && !AnchorLocked;
+                Cursor = activeAnchor ? Cursors.Cross : Cursors.Default;
+                SetHoverState(CanvasRoiTarget.None, activeAnchor);
+                return;
+            }
+
+            // 单次命中检测同时更新鼠标光标与悬停高亮状态，避免 MouseMove 重复计算 ROI 四角投影
+            RoiHit handleHit = HitSelectedHandle(location);
+            if (handleHit.Target != CanvasRoiTarget.None)
+            {
+                Cursor = handleHit.Handle.Kind == RoiHandleKind.Rotate
+                    ? Cursors.Cross
+                    : handleHit.Handle.Horizontal == 0 ? Cursors.SizeNS : Cursors.SizeWE;
+                SetHoverState(handleHit.Target, false);
+                return;
+            }
+
+            if (HasVisibleAnchor && !AnchorLocked && HitAnchor(location))
+            {
+                Cursor = Cursors.SizeAll;
+                SetHoverState(CanvasRoiTarget.None, true);
+                return;
+            }
+
+            RoiHit hit = HitTestRois(location);
+            SetHoverState(hit.Target, false);
+            if (hit.Target == CanvasRoiTarget.None || IsTargetLocked(hit.Target))
+            {
+                Cursor = Cursors.Default;
+                return;
+            }
+
+            if (hit.Handle.Kind == RoiHandleKind.Rotate)
+            {
+                Cursor = Cursors.Cross;
+            }
+            else if (hit.Handle.Kind == RoiHandleKind.Resize)
+            {
+                Cursor = hit.Handle.Horizontal == 0 ? Cursors.SizeNS : Cursors.SizeWE;
+            }
+            else
+            {
+                Cursor = Cursors.SizeAll;
+            }
+        }
+
+        private void SetHoverState(CanvasRoiTarget nextRoi, bool nextAnchor)
+        {
             if (nextRoi != _hoveredRoi || nextAnchor != _anchorHovered)
             {
                 _hoveredRoi = nextRoi;
@@ -2703,66 +2871,6 @@ namespace NinePointRotationCalibration.WinForms.Controls
             double deltaX = point.X - anchor.X;
             double deltaY = point.Y - anchor.Y;
             return (deltaX * deltaX) + (deltaY * deltaY) <= AnchorHitRadius * AnchorHitRadius;
-        }
-
-        private Cursor HitTestCursor(Point point)
-        {
-            if (_image == null)
-            {
-                return Cursors.Default;
-            }
-
-            if (_tool == CanvasEditTool.EraseMask ||
-                _tool == CanvasEditTool.RestoreMask ||
-                _tool == CanvasEditTool.MaskRectangle ||
-                _tool == CanvasEditTool.MaskCircle ||
-                _tool == CanvasEditTool.MaskPolygon)
-            {
-                return Cursors.Cross;
-            }
-
-            if (_tool == CanvasEditTool.DrawTemplateRoi ||
-                _tool == CanvasEditTool.DrawSearchRoi ||
-                _tool == CanvasEditTool.DrawDetectionRoi)
-            {
-                return Cursors.Cross;
-            }
-
-            if (_tool == CanvasEditTool.MoveAnchor)
-            {
-                return HasVisibleAnchor && !AnchorLocked ? Cursors.Cross : Cursors.Default;
-            }
-
-            RoiHit handleHit = HitSelectedHandle(point);
-            if (handleHit.Target != CanvasRoiTarget.None)
-            {
-                return handleHit.Handle.Kind == RoiHandleKind.Rotate
-                    ? Cursors.Cross
-                    : handleHit.Handle.Horizontal == 0 ? Cursors.SizeNS : Cursors.SizeWE;
-            }
-
-            if (HasVisibleAnchor && !AnchorLocked && HitAnchor(point))
-            {
-                return Cursors.SizeAll;
-            }
-
-            RoiHit hit = HitTestRois(point);
-            if (hit.Target == CanvasRoiTarget.None || IsTargetLocked(hit.Target))
-            {
-                return Cursors.Default;
-            }
-
-            if (hit.Handle.Kind == RoiHandleKind.Rotate)
-            {
-                return Cursors.Cross;
-            }
-
-            if (hit.Handle.Kind == RoiHandleKind.Resize)
-            {
-                return hit.Handle.Horizontal == 0 ? Cursors.SizeNS : Cursors.SizeWE;
-            }
-
-            return Cursors.SizeAll;
         }
 
         private Cursor GetDefaultCursor()

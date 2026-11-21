@@ -94,11 +94,9 @@ namespace NinePointRotationCalibration.Halcon
             try
             {
                 int packed = width * bytesPerPixel;
-                int alignment;
-                // HALCON 要求指定紧致(-1)或 4 字节对齐的扫描行步长，不匹配则回退到 GDI+ 重绘。
-                if (data.Stride == packed) alignment = -1;
-                else if (data.Stride == ((packed + 3) / 4) * 4) alignment = 4;
-                else return null;
+                // HALCON GenImageInterleaved 实测始终按紧致步长读取扫描行（忽略 4 字节对齐填充）；
+                // 当 24bpp 位图宽度非 4 的倍数存在行填充时必须回退至 32bpp 路径，避免图像斜切与通道错位。
+                if (data.Stride != packed) return null;
 
                 interleaved = new HImage();
                 interleaved.GenImageInterleaved(
@@ -106,7 +104,7 @@ namespace NinePointRotationCalibration.Halcon
                     colorFormat,
                     width,
                     height,
-                    alignment,
+                    -1,
                     "byte",
                     width,
                     height,

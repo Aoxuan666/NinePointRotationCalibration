@@ -211,6 +211,11 @@ namespace NinePointRotationCalibration.Station.Models
                 PreviewIntervalMilliseconds = Math.Max(16, Math.Min(5000, PreviewIntervalMilliseconds <= 0 ? 33 : PreviewIntervalMilliseconds));
                 changed = true;
             }
+            if (CameraTimeoutMilliseconds <= 0)
+            {
+                CameraTimeoutMilliseconds = 3000;
+                changed = true;
+            }
             string unified = GetUnifiedConfigDirectory();
             if (string.IsNullOrWhiteSpace(_configDirectory))
             {

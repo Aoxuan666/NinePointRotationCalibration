@@ -200,16 +200,35 @@ namespace NinePointRotationCalibration.Halcon
                         input.HalfWidth,
                         input.HalfHeight);
                     using (HImage reduced = gray.ReduceDomain(roi))
+                    using (HRegion reducedDomain = reduced.GetDomain())
                     {
+                        double domainRow, domainCol;
+                        int domainArea = reducedDomain.AreaCenter(out domainRow, out domainCol);
+                        if (domainArea <= 0)
+                        {
+                            result.EffectiveThreshold = Math.Max(0, Math.Min(255, parameters.Threshold));
+                            return result;
+                        }
+
                         Stopwatch stageWatch = Stopwatch.StartNew();
                         if (parameters.AutoThreshold)
                         {
-                            int usedThreshold;
-                            thresholded = reduced.BinaryThreshold(
-                                "max_separability",
-                                parameters.DetectDarkForeground ? "dark" : "light",
-                                out usedThreshold);
-                            result.EffectiveThreshold = Math.Max(0, Math.Min(255, usedThreshold));
+                            try
+                            {
+                                int usedThreshold;
+                                thresholded = reduced.BinaryThreshold(
+                                    "max_separability",
+                                    parameters.DetectDarkForeground ? "dark" : "light",
+                                    out usedThreshold);
+                                result.EffectiveThreshold = Math.Max(0, Math.Min(255, usedThreshold));
+                            }
+                            catch (HalconException)
+                            {
+                                // 纯色或无方差区域可能无法计算自动分割阈值，安全退化为空区域
+                                thresholded = new HRegion();
+                                thresholded.GenEmptyRegion();
+                                result.EffectiveThreshold = Math.Max(0, Math.Min(255, parameters.Threshold));
+                            }
                         }
                         else
                         {
@@ -248,44 +267,92 @@ namespace NinePointRotationCalibration.Halcon
                     return null;
                 Stopwatch componentWatch = Stopwatch.StartNew();
                 connected = filled.Connection();
-                // 仅保留面积最大的单个连通域作为候选目标，再判断面积与矩形度筛选条件。
-                selected = connected.CountObj() > 0
-                    ? connected.SelectShapeStd("max_area", 70.0)
-                    : new HRegion(connected);
+                int connectedCount = connected.CountObj();
+                double minArea = Math.Max(0.0, parameters.MinimumArea);
+                double maxArea = Math.Max(minArea, parameters.MaximumArea);
+                bool hasValidCandidate = false;
+                bool rejectedAsRectangle = false;
 
-                double row;
-                double column;
-                int area = selected.AreaCenter(out row, out column);
-                result.ActivePixelCount = Math.Max(0, area);
-                result.Area = area;
-                result.Row = row;
-                result.Column = column;
-                if (area > 0)
+                if (connectedCount > 0)
                 {
-                    using (HTuple rectangularity = selected.Rectangularity())
+                    // 先按面积范围筛选候选连通域，避免大面积背景亮斑或超大矩形干扰遮蔽真实的叉号缺陷（漏检）。
+                    using (HRegion areaFiltered = connected.SelectShape("area", "and", minArea, maxArea))
                     {
-                        result.Rectangularity = rectangularity.Length == 0 ? 0.0 : rectangularity[0].D;
+                        if (areaFiltered.CountObj() > 0)
+                        {
+                            hasValidCandidate = true;
+                            if (parameters.RectangleFilterEnabled)
+                            {
+                                double rectThreshold = Math.Max(0.0, Math.Min(1.0, parameters.RectangleFillThreshold));
+                                double nonRectMax = Math.Max(0.0, rectThreshold - 1e-6);
+                                using (HRegion nonRect = nonRectMax > 0.0
+                                    ? areaFiltered.SelectShape("rectangularity", "and", 0.0, nonRectMax)
+                                    : CreateEmptyRegion())
+                                {
+                                    if (nonRect.CountObj() > 0)
+                                    {
+                                        // 优先选择面积最大的非矩形合法目标，杜绝同 ROI 内较大矩形标签掩盖小面积 X 标记。
+                                        selected = SelectSingleLargest(nonRect);
+                                        rejectedAsRectangle = false;
+                                    }
+                                    else
+                                    {
+                                        selected = SelectSingleLargest(areaFiltered);
+                                        rejectedAsRectangle = true;
+                                    }
+                                }
+                            }
+                            else
+                            {
+                                selected = SelectSingleLargest(areaFiltered);
+                                rejectedAsRectangle = false;
+                            }
+                        }
+                        else
+                        {
+                            // 无满足面积区间的目标时回退到最大连通域供调试界面展示诊断面积，HasFinding 置 false。
+                            selected = SelectSingleLargest(connected);
+                        }
                     }
                 }
-                result.RejectedAsRectangle = parameters.RectangleFilterEnabled &&
-                    result.Rectangularity >= parameters.RectangleFillThreshold;
-                result.HasFinding = area >= parameters.MinimumArea && area <= parameters.MaximumArea;
-                if (result.HasFinding)
+
+                if (selected != null && selected.CountObj() > 0)
                 {
-                    using (HXLDCont contours = selected.GenContourRegionXld("border"))
+                    double row;
+                    double column;
+                    int area = selected.AreaCenter(out row, out column);
+                    result.ActivePixelCount = Math.Max(0, area);
+                    result.Area = area;
+                    result.Row = row;
+                    result.Column = column;
+                    if (area > 0)
                     {
-                        List<List<ImagePoint>> segments = HalconContourConverter.Extract(contours);
-                        List<ImagePoint> largest = segments.OrderByDescending(segment => segment.Count).FirstOrDefault();
-                        if (largest != null)
+                        using (HTuple rectangularity = selected.Rectangularity())
                         {
-                            result.Contour.AddRange(largest);
-                            // 确保边界轮廓首尾闭合以供绘制。
-                            if (largest.Count > 0)
+                            result.Rectangularity = rectangularity.Length == 0 ? 0.0 : rectangularity[0].D;
+                        }
+                    }
+                    result.RejectedAsRectangle = hasValidCandidate
+                        ? rejectedAsRectangle
+                        : (parameters.RectangleFilterEnabled && result.Rectangularity >= parameters.RectangleFillThreshold);
+                    result.HasFinding = hasValidCandidate && area >= minArea && area <= maxArea;
+                    if (result.HasFinding)
+                    {
+                        using (HXLDCont contours = selected.GenContourRegionXld("border"))
+                        {
+                            List<List<ImagePoint>> segments = HalconContourConverter.Extract(contours);
+                            List<ImagePoint> largest = segments.OrderByDescending(segment => segment.Count).FirstOrDefault();
+                            if (largest != null)
                             {
-                                ImagePoint first = largest[0];
-                                ImagePoint last = largest[largest.Count - 1];
-                                if (first.Row != last.Row || first.Column != last.Column)
-                                    result.Contour.Add(first);
+                                result.Contour.AddRange(largest);
+                                // 确保边界轮廓首尾闭合以供绘制。
+                                if (largest.Count > 0)
+                                {
+                                    ImagePoint first = largest[0];
+                                    ImagePoint last = largest[largest.Count - 1];
+                                    if (first.Row != last.Row || first.Column != last.Column)
+                                        result.Contour.Add(first);
+                                }
                             }
                         }
                     }
@@ -413,6 +480,27 @@ namespace NinePointRotationCalibration.Halcon
                 if (colEnds != null) colEnds.Dispose();
                 if (data != null) bitmap.UnlockBits(data);
             }
+        }
+
+        private static HRegion SelectSingleLargest(HRegion candidates)
+        {
+            if (candidates == null || candidates.CountObj() <= 0)
+                return CreateEmptyRegion();
+
+            using (HRegion maxAreaRegions = candidates.SelectShapeStd("max_area", 70.0))
+            {
+                if (maxAreaRegions.CountObj() <= 0)
+                    return CreateEmptyRegion();
+                // 两个连通域面积完全相等时 SelectShapeStd 会返回多对象元组，必须 SelectObj(1) 避免标量 AreaCenter 抛出异常。
+                return maxAreaRegions.SelectObj(1);
+            }
+        }
+
+        private static HRegion CreateEmptyRegion()
+        {
+            HRegion empty = new HRegion();
+            empty.GenEmptyRegion();
+            return empty;
         }
 
         private static bool CancellationRequested(
