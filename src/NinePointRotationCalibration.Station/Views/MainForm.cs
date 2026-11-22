@@ -63,9 +63,11 @@ namespace NinePointRotationCalibration.Station.Views
         private readonly Color _originPointColor = Color.FromArgb(239, 246, 255);
         private readonly Color _activePointColor = Color.FromArgb(37, 99, 235);
         private Color _hudAccentColor = Color.FromArgb(59, 130, 246);
+        private Color _cameraHeroAccentColor = Color.FromArgb(148, 163, 184);
+        private bool _cameraConnected;
+        private bool _liveStreamRunning;
         private bool _workflowBusy;
         private bool _suppressFeatureEvents;
-        private bool _syncingViewport;
         private int _lastCursorTextTick;
         private string _lastCursorText;
         private bool _leftTeachingValid;
@@ -146,12 +148,6 @@ namespace NinePointRotationCalibration.Station.Views
         public ImageViewport EffectViewport
         {
             get { return effectViewport; }
-        }
-
-        [Browsable(false)]
-        public ImageViewport CameraLiveViewport
-        {
-            get { return cameraLiveViewport; }
         }
 
         [Browsable(false)]
@@ -269,6 +265,12 @@ namespace NinePointRotationCalibration.Station.Views
         }
 
         [Browsable(false)]
+        public CheckBox InspectionEnabledInput
+        {
+            get { return chkInspectionEnabled; }
+        }
+
+        [Browsable(false)]
         public CheckBox ArchiveImagesInput
         {
             get { return chkArchiveImages; }
@@ -342,36 +344,81 @@ namespace NinePointRotationCalibration.Station.Views
             RunOnUiThread(delegate
             {
                 string stateText;
+                string heroStateText;
                 Color indicatorColor;
+                Color heroTextColor;
                 switch (state)
                 {
                     case CameraUiState.Disabled:
                         stateText = "相机已停用";
-                        indicatorColor = Color.FromArgb(145, 151, 158);
+                        heroStateText = "⊘ 相机已停用";
+                        indicatorColor = Color.FromArgb(148, 163, 184);
+                        heroTextColor = TextMutedColor;
                         break;
                     case CameraUiState.Connecting:
                         stateText = "相机连接中";
-                        indicatorColor = Color.FromArgb(230, 176, 47);
+                        heroStateText = "◐ 正在连接相机...";
+                        indicatorColor = Color.FromArgb(245, 158, 11);
+                        heroTextColor = Color.FromArgb(180, 83, 9);
                         break;
                     case CameraUiState.Connected:
                         stateText = "相机已连接";
-                        indicatorColor = Color.FromArgb(46, 190, 105);
+                        heroStateText = "● 相机已连接";
+                        indicatorColor = Color.FromArgb(34, 197, 94);
+                        heroTextColor = Color.FromArgb(21, 128, 61);
                         break;
                     case CameraUiState.Error:
                         stateText = "相机异常";
-                        indicatorColor = Color.FromArgb(222, 75, 75);
+                        heroStateText = "✕ 连接异常";
+                        indicatorColor = Color.FromArgb(239, 68, 68);
+                        heroTextColor = Color.FromArgb(185, 28, 28);
                         break;
                     default:
                         stateText = "相机未连接";
-                        indicatorColor = Color.FromArgb(145, 151, 158);
+                        heroStateText = "○ 相机未连接";
+                        indicatorColor = Color.FromArgb(148, 163, 184);
+                        heroTextColor = TextSecondaryColor;
                         break;
                 }
 
                 _cameraUiState = state;
+                _cameraConnected = state == CameraUiState.Connected;
+                _cameraHeroAccentColor = indicatorColor;
+                string cleanDetail = string.IsNullOrWhiteSpace(detail) ? string.Empty : detail.Trim();
                 lblCameraIndicator.ForeColor = indicatorColor;
-                lblCameraStatus.Text = stateText +
-                                       (string.IsNullOrWhiteSpace(detail) ? string.Empty : "  " + detail.Trim());
-                toolTip.SetToolTip(lblCameraStatus, lblCameraStatus.Text);
+                lblCameraStatus.Text = stateText;
+                toolTip.SetToolTip(lblCameraStatus, cleanDetail.Length == 0 ? stateText : stateText + "  " + cleanDetail);
+
+                if (lblCameraHeroState != null && !lblCameraHeroState.IsDisposed)
+                {
+                    lblCameraHeroState.Text = heroStateText;
+                    lblCameraHeroState.ForeColor = heroTextColor;
+                }
+                if (lblCameraHeroDetail != null && !lblCameraHeroDetail.IsDisposed)
+                {
+                    string providerLabel = cmbCameraProvider != null && cmbCameraProvider.SelectedItem != null
+                        ? Convert.ToString(cmbCameraProvider.SelectedItem, CultureInfo.InvariantCulture)
+                        : "工业相机";
+                    lblCameraHeroDetail.Text = cleanDetail.Length > 0
+                        ? cleanDetail
+                        : (state == CameraUiState.Disabled ? "请在下方勾选「启用相机」" : providerLabel + " · 当前未连接真实硬件");
+                }
+                if (pnlCameraHeroCard != null && !pnlCameraHeroCard.IsDisposed)
+                {
+                    pnlCameraHeroCard.Invalidate();
+                }
+            });
+        }
+
+        /// <summary>更新相机页遥测磁贴中的画面分辨率显示。</summary>
+        public void SetCameraResolution(int width, int height)
+        {
+            RunOnUiThread(delegate
+            {
+                if (lblCameraResolution == null || lblCameraResolution.IsDisposed) return;
+                lblCameraResolution.Text = (width > 0 && height > 0)
+                    ? string.Format(CultureInfo.InvariantCulture, "{0} × {1}", width, height)
+                    : "--";
             });
         }
 
@@ -380,7 +427,10 @@ namespace NinePointRotationCalibration.Station.Views
             RefreshFeatureAvailability(
                 cameraEnabled,
                 calibrationEnabled,
+                chkInspectionEnabled == null || chkInspectionEnabled.Checked,
+                _cameraConnected,
                 chkArchiveImages != null && chkArchiveImages.Checked,
+                chkLiveAcquisition == null || chkLiveAcquisition.Checked,
                 workflowBusy);
         }
 
@@ -393,6 +443,8 @@ namespace NinePointRotationCalibration.Station.Views
             RefreshFeatureAvailability(
                 cameraEnabled,
                 calibrationEnabled,
+                chkInspectionEnabled == null || chkInspectionEnabled.Checked,
+                _cameraConnected,
                 archiveImages,
                 chkLiveAcquisition == null || chkLiveAcquisition.Checked,
                 workflowBusy);
@@ -405,6 +457,25 @@ namespace NinePointRotationCalibration.Station.Views
             bool liveAcquisitionEnabled,
             bool workflowBusy)
         {
+            RefreshFeatureAvailability(
+                cameraEnabled,
+                calibrationEnabled,
+                chkInspectionEnabled == null || chkInspectionEnabled.Checked,
+                _cameraConnected,
+                archiveImages,
+                liveAcquisitionEnabled,
+                workflowBusy);
+        }
+
+        public void RefreshFeatureAvailability(
+            bool cameraEnabled,
+            bool calibrationEnabled,
+            bool inspectionEnabled,
+            bool cameraConnected,
+            bool archiveImages,
+            bool liveAcquisitionEnabled,
+            bool workflowBusy)
+        {
             RunOnUiThread(delegate
             {
                 _suppressFeatureEvents = true;
@@ -412,6 +483,7 @@ namespace NinePointRotationCalibration.Station.Views
                 {
                     chkCameraEnabled.Checked = cameraEnabled;
                     chkCalibrationEnabled.Checked = calibrationEnabled;
+                    if (chkInspectionEnabled != null) chkInspectionEnabled.Checked = inspectionEnabled;
                     if (chkArchiveImages != null) chkArchiveImages.Checked = archiveImages;
                     if (chkLiveAcquisition != null) chkLiveAcquisition.Checked = liveAcquisitionEnabled;
                 }
@@ -420,36 +492,58 @@ namespace NinePointRotationCalibration.Station.Views
                     _suppressFeatureEvents = false;
                 }
 
-                ApplyFeatureAvailability(cameraEnabled, calibrationEnabled, workflowBusy);
+                ApplyFeatureAvailability(cameraEnabled, calibrationEnabled, inspectionEnabled, cameraConnected, workflowBusy);
             });
         }
 
-        /// <summary>更新相机页实时采集窗口的运行状态文本与开始/停止按钮文案。</summary>
+        /// <summary>同步真实硬件连接状态并立即刷新相关按钮可用性（不覆盖当前工作流繁忙状态）。</summary>
+        public void UpdateCameraConnectionAvailability(bool cameraConnected)
+        {
+            RunOnUiThread(delegate
+            {
+                _cameraConnected = cameraConnected;
+                ApplyFeatureAvailability(
+                    chkCameraEnabled.Checked,
+                    chkCalibrationEnabled.Checked,
+                    chkInspectionEnabled == null || chkInspectionEnabled.Checked,
+                    cameraConnected,
+                    _workflowBusy);
+            });
+        }
+
+        /// <summary>更新相机页实时采集状态徽章与开始/停止按钮文案。</summary>
         public void SetCameraLiveStatus(bool running, string detail)
         {
             RunOnUiThread(delegate
             {
+                _liveStreamRunning = running;
                 if (btnToggleLiveStream != null && !btnToggleLiveStream.IsDisposed)
                 {
                     btnToggleLiveStream.Text = running ? "停止实时" : "开始实时";
-                    btnToggleLiveStream.BackColor = running
-                        ? Color.FromArgb(254, 242, 242)
-                        : AccentPrimaryColor;
-                    btnToggleLiveStream.ForeColor = running
-                        ? Color.FromArgb(185, 28, 28)
-                        : Color.White;
-                    btnToggleLiveStream.FlatAppearance.BorderColor = running
-                        ? Color.FromArgb(254, 202, 202)
-                        : AccentPrimaryColor;
+                    if (btnToggleLiveStream.Enabled)
+                    {
+                        btnToggleLiveStream.BackColor = running
+                            ? Color.FromArgb(254, 242, 242)
+                            : AccentPrimaryColor;
+                        btnToggleLiveStream.ForeColor = running
+                            ? Color.FromArgb(185, 28, 28)
+                            : Color.White;
+                        btnToggleLiveStream.FlatAppearance.BorderColor = running
+                            ? Color.FromArgb(254, 202, 202)
+                            : AccentPrimaryColor;
+                    }
                 }
 
                 if (lblCameraLiveStatus != null && !lblCameraLiveStatus.IsDisposed)
                 {
+                    lblCameraLiveStatus.BackColor = running
+                        ? Color.FromArgb(236, 253, 245)
+                        : Color.FromArgb(241, 245, 249);
                     lblCameraLiveStatus.ForeColor = running
                         ? Color.FromArgb(21, 128, 61)
                         : TextMutedColor;
                     lblCameraLiveStatus.Text = string.IsNullOrWhiteSpace(detail)
-                        ? (running ? "● 实时采集中" : "○ 实时采集已停止")
+                        ? (running ? "● 实时采集中" : "未采集")
                         : detail;
                 }
             });
@@ -459,7 +553,12 @@ namespace NinePointRotationCalibration.Station.Views
         {
             RunOnUiThread(delegate
             {
-                ApplyFeatureAvailability(chkCameraEnabled.Checked, chkCalibrationEnabled.Checked, workflowBusy);
+                ApplyFeatureAvailability(
+                    chkCameraEnabled.Checked,
+                    chkCalibrationEnabled.Checked,
+                    chkInspectionEnabled == null || chkInspectionEnabled.Checked,
+                    _cameraConnected,
+                    workflowBusy);
             });
         }
 
@@ -1039,6 +1138,19 @@ namespace NinePointRotationCalibration.Station.Views
             }
         }
 
+        private void PnlCameraHeroCard_Paint(object sender, PaintEventArgs e)
+        {
+            if (pnlCameraHeroCard == null || pnlCameraHeroCard.Width <= 1 || pnlCameraHeroCard.Height <= 1) return;
+            using (SolidBrush accent = new SolidBrush(_cameraHeroAccentColor))
+            {
+                e.Graphics.FillRectangle(accent, 0, 0, 5, pnlCameraHeroCard.Height);
+            }
+            using (Pen border = new Pen(CardBorderColor, 1.0F))
+            {
+                e.Graphics.DrawRectangle(border, 0, 0, pnlCameraHeroCard.Width - 1, pnlCameraHeroCard.Height - 1);
+            }
+        }
+
         public void SetInspectionHud(
             double totalMilliseconds,
             double matchMilliseconds,
@@ -1278,14 +1390,6 @@ namespace NinePointRotationCalibration.Station.Views
                 imageViewport.ShowActualPixels();
                 if (_dualViewActive && effectViewport.HasImage) effectViewport.ShowActualPixels();
             };
-            if (btnFitLivePreview != null)
-            {
-                btnFitLivePreview.Click += delegate
-                {
-                    if (cameraLiveViewport != null && cameraLiveViewport.HasImage)
-                        cameraLiveViewport.FitImage();
-                };
-            }
             btnClearLog.Click += delegate { rtbLog.Clear(); };
             if (btnToggleLog != null)
             {
@@ -1307,19 +1411,11 @@ namespace NinePointRotationCalibration.Station.Views
             tabWork.DrawItem += TabWork_DrawItem;
             imageViewport.ImagePositionChanged += ImageViewport_ImagePositionChanged;
             imageViewport.ImageAvailabilityChanged += ImageViewport_ImageAvailabilityChanged;
-            imageViewport.ViewChanged += delegate { SyncDualViewportView(imageViewport, effectViewport); };
             effectViewport.ImagePositionChanged += ImageViewport_ImagePositionChanged;
-            effectViewport.ViewChanged += delegate { SyncDualViewportView(effectViewport, imageViewport); };
-            if (chkSyncDualViewport != null)
-            {
-                chkSyncDualViewport.CheckedChanged += delegate
-                {
-                    if (chkSyncDualViewport.Checked) SyncDualViewportView(imageViewport, effectViewport);
-                };
-            }
             dgvDetectionResults.SelectionChanged += delegate { RaiseUiAction("detection.rowSelected", dgvDetectionResults); };
             chkCameraEnabled.CheckedChanged += FeatureToggle_CheckedChanged;
             chkCalibrationEnabled.CheckedChanged += FeatureToggle_CheckedChanged;
+            if (chkInspectionEnabled != null) chkInspectionEnabled.CheckedChanged += FeatureToggle_CheckedChanged;
 
             foreach (Button button in calibrationPointButtons)
             {
@@ -1340,7 +1436,8 @@ namespace NinePointRotationCalibration.Station.Views
                 CheckBox checkBox = control as CheckBox;
                 actionKey = checkBox == null ? null : checkBox.Tag as string;
                 if (checkBox != null && !string.IsNullOrWhiteSpace(actionKey) &&
-                    checkBox != chkCameraEnabled && checkBox != chkCalibrationEnabled)
+                    checkBox != chkCameraEnabled && checkBox != chkCalibrationEnabled &&
+                    checkBox != chkInspectionEnabled)
                 {
                     checkBox.CheckedChanged += CommandValue_Changed;
                 }
@@ -1412,22 +1509,6 @@ namespace NinePointRotationCalibration.Station.Views
             SelectCalibrationPoint(pointNumber);
             EventHandler<CalibrationPointRequestedEventArgs> handler = CalibrationPointRequested;
             if (handler != null) handler(this, new CalibrationPointRequestedEventArgs(pointNumber));
-        }
-
-        private void SyncDualViewportView(ImageViewport origin, ImageViewport target)
-        {
-            if (!_dualViewActive || _syncingViewport ||
-                (chkSyncDualViewport != null && !chkSyncDualViewport.Checked) ||
-                origin == null || target == null || !target.HasImage) return;
-            _syncingViewport = true;
-            try
-            {
-                target.SyncViewFrom(origin);
-            }
-            finally
-            {
-                _syncingViewport = false;
-            }
         }
 
         private void TabWork_DrawItem(object sender, DrawItemEventArgs e)
@@ -1502,7 +1583,12 @@ namespace NinePointRotationCalibration.Station.Views
         {
             if (_suppressFeatureEvents) return;
 
-            ApplyFeatureAvailability(chkCameraEnabled.Checked, chkCalibrationEnabled.Checked, _workflowBusy);
+            ApplyFeatureAvailability(
+                chkCameraEnabled.Checked,
+                chkCalibrationEnabled.Checked,
+                chkInspectionEnabled == null || chkInspectionEnabled.Checked,
+                _cameraConnected,
+                _workflowBusy);
             EventHandler handler = FeatureAvailabilityChanged;
             if (handler != null) handler(this, EventArgs.Empty);
         }
@@ -1531,8 +1617,12 @@ namespace NinePointRotationCalibration.Station.Views
         {
             RunOnUiThread(delegate
             {
-                btnDetectCurrentImage.Enabled = !_workflowBusy && imageViewport.HasImage;
-                SetActionControlEnabled("detection.debug", !_workflowBusy && imageViewport.HasImage);
+                ApplyFeatureAvailability(
+                    chkCameraEnabled.Checked,
+                    chkCalibrationEnabled.Checked,
+                    chkInspectionEnabled == null || chkInspectionEnabled.Checked,
+                    _cameraConnected,
+                    _workflowBusy);
             });
         }
 
@@ -1546,28 +1636,33 @@ namespace NinePointRotationCalibration.Station.Views
             });
         }
 
-        private void ApplyFeatureAvailability(bool cameraEnabled, bool calibrationEnabled, bool workflowBusy)
+        private void ApplyFeatureAvailability(
+            bool cameraEnabled,
+            bool calibrationEnabled,
+            bool inspectionEnabled,
+            bool cameraConnected,
+            bool workflowBusy)
         {
             _workflowBusy = workflowBusy;
+            _cameraConnected = cameraEnabled && cameraConnected;
 
             chkCameraEnabled.Enabled = !workflowBusy;
             chkCalibrationEnabled.Enabled = !workflowBusy;
+            if (chkInspectionEnabled != null) chkInspectionEnabled.Enabled = !workflowBusy;
             if (chkArchiveImages != null) chkArchiveImages.Enabled = !workflowBusy;
             if (chkLiveAcquisition != null) chkLiveAcquisition.Enabled = cameraEnabled && !workflowBusy;
             cmbCameraProvider.Enabled = cameraEnabled && !workflowBusy;
             cmbCameraDevice.Enabled = cameraEnabled && !workflowBusy;
-            string[] cameraParameterControls =
-            {
-                "nudCameraExposure"
-            };
-            foreach (string controlName in cameraParameterControls)
-                SetControlEnabled(controlName, cameraEnabled && !workflowBusy);
 
-            string[] cameraActions =
+            bool cameraReady = cameraEnabled && _cameraConnected && !workflowBusy;
+            SetControlEnabled("nudCameraExposure", cameraReady);
+
+            // 枚举与连接仅要求相机模块已启用；所有实际取流、拍照与参数读写均严格要求真实相机已连接
+            SetActionControlEnabled("camera.enumerate", cameraEnabled && !workflowBusy);
+            SetActionControlEnabled("camera.connect", cameraEnabled && !workflowBusy);
+            string[] connectedCameraActions =
             {
                 "camera.snapshot",
-                "camera.enumerate",
-                "camera.connect",
                 "camera.disconnect",
                 "camera.apply",
                 "camera.read",
@@ -1575,17 +1670,53 @@ namespace NinePointRotationCalibration.Station.Views
                 "camera.liveStreamToggle",
                 "camera.resumeMainLive"
             };
-            foreach (string action in cameraActions) SetActionControlEnabled(action, cameraEnabled && !workflowBusy);
-            if (btnResumeLive != null) btnResumeLive.Enabled = cameraEnabled && !workflowBusy;
-            if (btnSyncLiveToMain != null) btnSyncLiveToMain.Enabled = cameraEnabled && !workflowBusy;
-            if (btnFitLivePreview != null) btnFitLivePreview.Enabled = !workflowBusy;
+            foreach (string action in connectedCameraActions) SetActionControlEnabled(action, cameraReady);
+            if (btnResumeLive != null) btnResumeLive.Enabled = cameraReady;
+            if (btnSyncLiveToMain != null) btnSyncLiveToMain.Enabled = cameraReady;
+            if (btnToggleLiveStream != null && btnToggleLiveStream.Enabled)
+            {
+                btnToggleLiveStream.BackColor = _liveStreamRunning
+                    ? Color.FromArgb(254, 242, 242)
+                    : AccentPrimaryColor;
+                btnToggleLiveStream.ForeColor = _liveStreamRunning
+                    ? Color.FromArgb(185, 28, 28)
+                    : Color.White;
+                btnToggleLiveStream.FlatAppearance.BorderColor = _liveStreamRunning
+                    ? Color.FromArgb(254, 202, 202)
+                    : AccentPrimaryColor;
+            }
+            if (btnSnapshot != null)
+            {
+                btnSnapshot.Enabled = cameraReady;
+                toolTip.SetToolTip(
+                    btnSnapshot,
+                    !cameraEnabled
+                        ? "相机已停用，请先在「相机」页启用相机"
+                        : !_cameraConnected
+                            ? "相机未连接，请先在「相机」页连接真实相机"
+                            : "触发已连接相机采集单帧图像");
+            }
 
             btnImportImage.Enabled = !workflowBusy;
-            btnDetectCurrentImage.Enabled = !workflowBusy && imageViewport.HasImage;
-            SetActionControlEnabled("detection.debug", !workflowBusy && imageViewport.HasImage);
 
+            // 检测模块与标定模块完全独立：不开启标定（或未标定）时仍可独立执行视觉检测
+            if (tabDetection != null) tabDetection.Enabled = inspectionEnabled;
+            bool hasImage = imageViewport.HasImage;
+            btnDetectCurrentImage.Enabled = !workflowBusy && inspectionEnabled && hasImage;
+            SetActionControlEnabled("detection.debug", !workflowBusy && inspectionEnabled && hasImage);
+            SetActionControlEnabled("detection.save", !workflowBusy && inspectionEnabled);
+            SetActionControlEnabled("detection.test", !workflowBusy && inspectionEnabled && (cameraReady || hasImage));
+            SetActionToolTip(
+                "detection.test",
+                !inspectionEnabled
+                    ? "请先在「相机」页开启「启用检测」"
+                    : (cameraReady || hasImage)
+                        ? "执行视觉检测（有锁定图像时检测锁定图，实时预览时抓取相机新帧，无需先完成标定）"
+                        : "请先连接相机或点击「导入图片」后再执行检测");
+
+            // 标定与示教模块独立受“启用标定”控制；涉及硬件采图时额外要求真实相机已连接
             if (tabCalibration != null) tabCalibration.Enabled = calibrationEnabled;
-            bool acquisitionCalibrationAvailable = cameraEnabled && calibrationEnabled && !workflowBusy;
+            bool acquisitionCalibrationAvailable = cameraReady && calibrationEnabled;
             foreach (Button button in calibrationPointButtons)
             {
                 button.Enabled = acquisitionCalibrationAvailable;
@@ -1596,15 +1727,15 @@ namespace NinePointRotationCalibration.Station.Views
             SetActionControlEnabled("calibration.cancel", calibrationEnabled && workflowBusy);
             SetActionControlEnabled("teaching.left.capture", acquisitionCalibrationAvailable);
             SetActionControlEnabled("teaching.right.capture", acquisitionCalibrationAvailable);
-            SetActionControlEnabled(
-                "detection.test",
-                !workflowBusy && (acquisitionCalibrationAvailable || imageViewport.HasImage));
+            SetActionControlEnabled("teaching.left.clear", calibrationEnabled && !workflowBusy);
+            SetActionControlEnabled("teaching.right.clear", calibrationEnabled && !workflowBusy);
 
             // 标定模板相关按钮受运行时标定开关保护，需与后台守卫保持同步，避免点击后无响应；
             // 模板创建与测试可使用本地导入图像，因此不依赖相机开关。
             bool calibrationTemplateAvailable = calibrationEnabled && !workflowBusy;
             bool positioningTemplateAvailable = !workflowBusy;
             SetActionControlEnabled("template.calibration.create", calibrationTemplateAvailable);
+            SetActionControlEnabled("template.calibration.browse", calibrationTemplateAvailable);
             SetActionControlEnabled("template.calibration.load", calibrationTemplateAvailable);
             SetActionControlEnabled("template.calibration.test", calibrationTemplateAvailable);
             SetActionControlEnabled("template.positioning.create", positioningTemplateAvailable);
@@ -1635,6 +1766,7 @@ namespace NinePointRotationCalibration.Station.Views
             {
                 SetCameraStatus(CameraUiState.Disconnected, string.Empty);
             }
+            if (tabWork != null) tabWork.Invalidate();
         }
 
         private void SetActionControlEnabled(string actionKey, bool enabled)

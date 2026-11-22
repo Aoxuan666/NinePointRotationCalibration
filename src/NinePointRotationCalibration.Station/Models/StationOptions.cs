@@ -21,6 +21,12 @@ namespace NinePointRotationCalibration.Station.Models
         private bool _calibrationEnabled;
 
         [OptionalField]
+        private bool _inspectionEnabled;
+
+        [OptionalField]
+        private bool _hasInspectionSetting;
+
+        [OptionalField]
         private string _configDirectory;
 
         [OptionalField]
@@ -34,6 +40,8 @@ namespace NinePointRotationCalibration.Station.Models
             _configurationVersion = CurrentConfigurationVersion;
             _cameraEnabled = true;
             _calibrationEnabled = true;
+            _inspectionEnabled = true;
+            _hasInspectionSetting = true;
             _liveAcquisitionEnabled = true;
             _hasLiveAcquisitionSetting = true;
             TcpBindAddress = "0.0.0.0";
@@ -83,6 +91,17 @@ namespace NinePointRotationCalibration.Station.Models
         {
             get { return _calibrationEnabled; }
             set { _calibrationEnabled = value; }
+        }
+
+        /// <summary>是否启用视觉检测功能（与相机、标定开关独立，关闭标定时仍可单独执行检测）。</summary>
+        public bool InspectionEnabled
+        {
+            get { return _hasInspectionSetting ? _inspectionEnabled : true; }
+            set
+            {
+                _inspectionEnabled = value;
+                _hasInspectionSetting = true;
+            }
         }
 
         /// <summary>是否兼容并启用相机实时采集流（默认开启，可随时在相机页开关）。</summary>
@@ -180,9 +199,25 @@ namespace NinePointRotationCalibration.Station.Models
         public bool NormalizeAfterLoad()
         {
             bool changed = false;
-            if (string.IsNullOrWhiteSpace(CameraProvider))
+            bool validRealProvider =
+                string.Equals(CameraProvider, "Dahua", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(CameraProvider, "DH", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(CameraProvider, "Hikvision", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(CameraProvider, "MVS", StringComparison.OrdinalIgnoreCase);
+            if (!validRealProvider)
             {
                 CameraProvider = "Dahua";
+                changed = true;
+            }
+            if (string.Equals(CameraSerialNumber, "MOCK-PCB-01", StringComparison.OrdinalIgnoreCase))
+            {
+                CameraSerialNumber = string.Empty;
+                changed = true;
+            }
+            if (!_hasInspectionSetting)
+            {
+                _inspectionEnabled = true;
+                _hasInspectionSetting = true;
                 changed = true;
             }
             if (CameraGamma <= 0.0)
@@ -252,6 +287,8 @@ namespace NinePointRotationCalibration.Station.Models
             // V0 旧版配置不含相机与标定启用开关，迁移时默认置为启用，避免升级后误关闭原有站点功能。
             _cameraEnabled = true;
             _calibrationEnabled = true;
+            _inspectionEnabled = true;
+            _hasInspectionSetting = true;
             _configurationVersion = CurrentConfigurationVersion;
             return true;
         }

@@ -150,6 +150,8 @@ namespace NinePointRotationCalibration.Station.Models
         public bool HasManualMarks { get; set; }
         /// <summary>是否综合通过（定位成功、数量匹配且无人工坏板标记）。</summary>
         public bool Pass { get; set; }
+        /// <summary>本次检测是否已结合标定与示教结果完成机械坐标映射。</summary>
+        public bool CoordinateMappingApplied { get; set; }
         public string ErrorCode { get; set; }
         public string Message { get; set; }
         public int ExpectedCount { get; set; }

@@ -147,7 +147,7 @@ namespace NinePointRotationCalibration.Station.Models
         }
     }
 
-    /// <summary>相机硬件驱动与模拟相机的统一控制接口。</summary>
+    /// <summary>工业相机硬件驱动的统一控制接口。</summary>
     public interface ICameraDevice : IDisposable
     {
         string ProviderName { get; }

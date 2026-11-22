@@ -655,6 +655,7 @@ namespace NinePointRotationCalibration.Station.Controls
                 _isPanning = false;
                 Capture = false;
                 Cursor = Cursors.Default;
+                Invalidate();
             }
         }
 

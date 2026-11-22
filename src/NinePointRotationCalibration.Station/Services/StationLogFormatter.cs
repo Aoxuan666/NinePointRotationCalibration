@@ -18,10 +18,11 @@ namespace NinePointRotationCalibration.Station.Services
             int featureCount = options.CameraFeatures == null ? 0 : options.CameraFeatures.Count;
             return string.Format(
                 CultureInfo.InvariantCulture,
-                "ver={0}, camEn={1}, calEn={2}, liveAcq={3}, archive={4}, tcp={5}:{6} (maxBytes={7}, motionTimeout={8}ms), provider={9}, sn='{10}', exp={11:0.##}us, gain={12:0.###}, gamma={13:0.###}, trig={14}, camTimeout={15}ms, previewMs={16}, features={17}, step=({18:0.###},{19:0.###},{20:0.###}deg), expectedCount={21}, configDir='{22}', calJob='{23}', posJob='{24}', teach='{25}', profile='{26}', archiveDir='{27}'",
+                "ver={0}, camEn={1}, calEn={2}, inspEn={3}, liveAcq={4}, archive={5}, tcp={6}:{7} (maxBytes={8}, motionTimeout={9}ms), provider={10}, sn='{11}', exp={12:0.##}us, gain={13:0.###}, gamma={14:0.###}, trig={15}, camTimeout={16}ms, previewMs={17}, features={18}, step=({19:0.###},{20:0.###},{21:0.###}deg), expectedCount={22}, configDir='{23}', calJob='{24}', posJob='{25}', teach='{26}', profile='{27}', archiveDir='{28}'",
                 options.ConfigurationVersion,
                 options.CameraEnabled,
                 options.CalibrationEnabled,
+                options.InspectionEnabled,
                 options.LiveAcquisitionEnabled,
                 options.ArchiveImages,
                 options.TcpBindAddress,

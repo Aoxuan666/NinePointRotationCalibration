@@ -81,24 +81,25 @@ R 轴使用标定出的方向系数修正图像角度差，同时返回 `rOffset
 
 ## 5. 相机适配
 
-`MockCameraDevice` 是默认驱动，用于无硬件开发和 TCP 联调。`DahuaCameraDevice` 直接封装大华 `MVSDK_Net`，严格执行枚举、创建、打开、软触发、取帧、释放帧和销毁流程。选择哪个驱动在运行时组合根创建时决定，所以修改相机驱动后必须重启工作站。
+仅保留真实工业相机驱动：`DahuaCameraDevice`（大华 `MVSDK_Net`）与 `HikvisionCameraDevice`（海康 `MVS`），不再包含模拟相机；支持在相机页热切换驱动，状态如实反映真实硬件连接情况（连上即已连接，未连上即未连接）。
 
-工作站启动时始终先启动 TCP Server。`CameraEnabled=true` 时随后自动枚举相机，优先连接 `CameraSerialNumber`，未配置时连接枚举到的第一台设备，再设置曝光并启动预览。自动连接失败只把相机状态置为异常，不终止 TCP 服务。运行中关闭相机使能会先停预览并断开设备；重新打开时会自动尝试连接。
+工作站启动时始终先启动 TCP Server。`CameraEnabled=true` 时随后自动枚举在线相机并尝试连接，未检测到设备时如实置为未连接状态，不终止 TCP 服务。运行中关闭相机使能会先停预览并断开设备；仅在“启用相机”从关闭切为开启时自动尝试发现并连接硬件。
 
 ## 6. 使能与图像来源
 
-`CameraEnabled` 与 `CalibrationEnabled` 是相互独立且持久化的运行开关：
+`CameraEnabled`、`CalibrationEnabled` 与 `InspectionEnabled` 是相互独立且持久化的三大运行开关：
 
-| 相机 | 标定 | 本地图检测 | 生产 TCP 检测 |
-| --- | --- | --- | --- |
-| 开 | 开 | 完整视觉检测和 XY/R/左右目标映射 | 允许，相机软触发并返回完整结果 |
-| 关 | 开 | 不访问相机；已有标定和左右示教有效时可映射坐标 | 拒绝，返回 `CAMERA_DISABLED` |
-| 开 | 关 | 只做定位、数量、ROI、Blob；每块板 `Targets` 为空 | 拒绝，返回 `CALIBRATION_DISABLED` |
-| 关 | 关 | 只做定位、数量、ROI、Blob；每块板 `Targets` 为空 | 拒绝，优先返回 `CAMERA_DISABLED` |
+| 相机 | 标定 | 检测 | 本地图检测 | 生产 TCP 检测 |
+| --- | --- | --- | --- | --- |
+| 开（已连） | 开（已标定示教） | 开 | 完整视觉检测 + 坐标映射 | 允许，软触发拍照并输出完整目标坐标 |
+| 开（已连） | 关 / 未标定 | 开 | 完整视觉定位与瑕疵检测，`Targets` 为空 | 允许，正常执行视觉检测（`coordinateMapped=false`） |
+| 关 | 任意 | 开 | 允许离线检测本地导入图 | 拒绝，返回 `CAMERA_DISABLED` |
+| 开（未连） | 任意 | 开 | 允许离线检测本地导入图 | 拒绝，返回 `CAMERA_NOT_CONNECTED` |
+| 任意 | 任意 | 关 | 禁用 | 拒绝，返回 `INSPECTION_DISABLED` |
 
-本地图路径由 UI 保有当前图像，再调用 `RunOfflineInspectionAsync`。它与生产检测共用同一个工作流互斥门和检测算法，但不调用 `CameraAcquisitionService.CaptureAsync`，也不读取任何相机缓冲。关闭标定时使用 `InspectWithoutMapping`，不要求 XY/R 标定和左右示教，且绝不生成猜测的机械坐标。
+本地图路径由 UI 保有当前图像，再调用 `RunOfflineInspectionAsync`。它与生产检测共用同一个工作流互斥门和检测算法，但不调用 `CameraAcquisitionService.CaptureAsync`，也不读取任何相机缓冲。关闭标定或尚未完成标定/示教时，均跳过坐标映射且绝不生成猜测的机械坐标。
 
-`inspection.trigger` 只代表实时生产拍照，不能复用 UI 当前图；这样可避免上位机误把调试图片的结果用于运动。`CAMERA_DISABLED` 和 `CALIBRATION_DISABLED` 均不可自动重试，必须由操作员恢复对应使能。
+`inspection.trigger` 只代表实时生产拍照，不能复用 UI 当前图；这样可避免上位机误把调试图片的结果用于运动。`INSPECTION_DISABLED` 和 `CAMERA_DISABLED` 均不可自动重试，必须由操作员恢复对应使能。
 
 ## 7. UI 与线程
 

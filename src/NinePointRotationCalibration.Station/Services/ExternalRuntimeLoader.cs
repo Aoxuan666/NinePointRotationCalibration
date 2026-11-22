@@ -22,6 +22,9 @@ namespace NinePointRotationCalibration.Station.Services
         private static bool _initialized;
         private static string[] _probeDirectories = new string[0];
 
+        [ThreadStatic]
+        private static HashSet<string> _resolvingAssemblies;
+
         /// <summary>初始化外部库解析器与原生 DLL/GenTL 搜索目录（必须在任何 HALCON/相机类型加载前调用）。</summary>
         public static void Initialize()
         {
@@ -79,16 +82,25 @@ namespace NinePointRotationCalibration.Station.Services
             }
             if (string.IsNullOrWhiteSpace(shortName)) return null;
 
-            for (int i = 0; i < _probeDirectories.Length; i++)
+            if (_resolvingAssemblies == null)
+                _resolvingAssemblies = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (!_resolvingAssemblies.Add(shortName)) return null;
+            try
             {
-                string candidate = Path.Combine(_probeDirectories[i], shortName + ".dll");
-                if (File.Exists(candidate))
+                for (int i = 0; i < _probeDirectories.Length; i++)
                 {
-                    return Assembly.LoadFrom(candidate);
+                    string candidate = Path.Combine(_probeDirectories[i], shortName + ".dll");
+                    if (File.Exists(candidate))
+                    {
+                        return Assembly.LoadFrom(candidate);
+                    }
                 }
+                return null;
             }
-
-            return null;
+            finally
+            {
+                _resolvingAssemblies.Remove(shortName);
+            }
         }
 
         private static void PrependEnvironmentPath(string variableName, IEnumerable<string> directories)

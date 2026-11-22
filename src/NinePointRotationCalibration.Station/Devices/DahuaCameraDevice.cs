@@ -196,6 +196,15 @@ namespace NinePointRotationCalibration.Station.Devices
                                 maximum));
                     }
 
+                    if (!_camera.IMV_FeatureIsWriteable("ExposureTime") &&
+                        _camera.IMV_FeatureIsAvailable("ExposureAuto") &&
+                        _camera.IMV_FeatureIsWriteable("ExposureAuto"))
+                    {
+                        int autoOffResult = _camera.IMV_SetEnumFeatureSymbol("ExposureAuto", "Off");
+                        if (autoOffResult != IMVDefine.IMV_OK)
+                            LocalDebugLog.Write("WARN", "camera.dahua", "Failed to turn off ExposureAuto before setting exposure: " + autoOffResult);
+                    }
+
                     if (!_camera.IMV_FeatureIsWriteable("ExposureTime"))
                         throw new InvalidOperationException("当前曝光不可写，请检查相机的自动曝光设置。");
 
@@ -222,7 +231,15 @@ namespace NinePointRotationCalibration.Station.Devices
                     double value;
                     parameters.Gain = gain != null && double.TryParse(gain.Value, NumberStyles.Float,
                         CultureInfo.InvariantCulture, out value) ? value : double.NaN;
-                    parameters.TriggerMode = _cachedTriggerMode = GetTriggerMode();
+                    try
+                    {
+                        parameters.TriggerMode = _cachedTriggerMode = GetTriggerMode();
+                    }
+                    catch (Exception ex)
+                    {
+                        LocalDebugLog.WriteException("WARN", "camera.dahua", "Failed to read TriggerMode", ex);
+                        parameters.TriggerMode = "Unknown";
+                    }
                     return parameters;
                 },
                 cancellationToken);

@@ -40,7 +40,6 @@ namespace NinePointRotationCalibration.Station.Views
         private int _releaseStarted;
         private int _resourcesDisposed;
         private bool _loadingControls;
-        private bool _syncingViewport;
         private volatile bool _closing;
 
         public BlobDebugForm(
@@ -76,7 +75,6 @@ namespace NinePointRotationCalibration.Station.Views
             toolTip.SetToolTip(cmbHoleFillMode, "选择是否填充检出目标内部的封闭空洞（自动按当前检测极性处理）。");
             toolTip.SetToolTip(nudMorphologyRadius, "形态学开运算去噪半径（像素），设为 0 表示关闭去噪。");
             toolTip.SetToolTip(nudRectangularity, "面积与最小外接矩形之比上限，达到该值的规整矩形将被判定为标签干扰并过滤。");
-            toolTip.SetToolTip(chkSyncViewport, "开启时原图与二值效果图同步缩放平移；取消勾选后可各自独立查看不同区域。");
             toolTip.SetToolTip(btnRefresh, "立即使用当前参数刷新预览。");
             toolTip.SetToolTip(btnFit, "使当前图像适应窗口。");
             toolTip.SetToolTip(btnActualPixels, "以一个图像像素对应一个屏幕像素显示。");
@@ -132,31 +130,6 @@ namespace NinePointRotationCalibration.Station.Views
             btnApply.Click += BtnApply_Click;
             btnToggleLayout.Click += delegate { TogglePreviewLayout(); };
             previewSplit.SizeChanged += delegate { BalancePreviewSplit(); };
-            sourceViewport.ViewChanged += delegate { SyncViewportView(sourceViewport, binaryViewport); };
-            binaryViewport.ViewChanged += delegate { SyncViewportView(binaryViewport, sourceViewport); };
-            if (chkSyncViewport != null)
-            {
-                chkSyncViewport.CheckedChanged += delegate
-                {
-                    if (chkSyncViewport.Checked) SyncViewportView(sourceViewport, binaryViewport);
-                };
-            }
-        }
-
-        private void SyncViewportView(ImageViewport origin, ImageViewport target)
-        {
-            if (_syncingViewport || _closing ||
-                (chkSyncViewport != null && !chkSyncViewport.Checked) ||
-                origin == null || target == null || !target.HasImage) return;
-            _syncingViewport = true;
-            try
-            {
-                target.SyncViewFrom(origin);
-            }
-            finally
-            {
-                _syncingViewport = false;
-            }
         }
 
         private void BlobDebugForm_Shown(object sender, EventArgs e)
@@ -717,7 +690,6 @@ namespace NinePointRotationCalibration.Station.Views
             Bitmap binaryImage = payload.TakeBinaryImage();
             Bitmap previewImage = payload.TakePreviewImage();
             binaryViewport.SetImageOwned(binaryImage, previewImage);
-            SyncViewportView(sourceViewport, binaryViewport);
             sourceViewport.ClearOverlays();
             binaryViewport.SetPointOverlays(null);
             binaryViewport.SetRoiOverlays(payload.Regions);

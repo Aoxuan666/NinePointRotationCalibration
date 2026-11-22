@@ -254,36 +254,48 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
                         profile,
                         false,
                         CancellationToken.None);
-                    if (analyses == null || analyses.Count != orderedMatches.Count)
+                    try
                     {
-                        return Failure(result, "BLOB_ANALYSIS_FAILED",
-                            "Blob 分析没有为每个定位到的板件返回结果。");
-                    }
-                    for (int index = 0; index < orderedMatches.Count; index++)
-                    {
-                        TemplateMatchResult match = orderedMatches[index];
-                        BoardInspectionItem item = new BoardInspectionItem
+                        if (analyses == null || analyses.Count != orderedMatches.Count)
                         {
-                            BoardIndex = index + 1,
-                            ImageRow = match.Row,
-                            ImageColumn = match.Column,
-                            ImageAngleDegrees = match.AngleDegrees,
-                            MatchScore = match.Score
-                        };
-                        CopyContourSegments(match, item);
-                        using (BlobAnalysisResult analysis = analyses[index])
+                            return Failure(result, "BLOB_ANALYSIS_FAILED",
+                                "Blob 分析没有为每个定位到的板件返回结果。");
+                        }
+                        for (int index = 0; index < orderedMatches.Count; index++)
                         {
+                            TemplateMatchResult match = orderedMatches[index];
+                            BoardInspectionItem item = new BoardInspectionItem
+                            {
+                                BoardIndex = index + 1,
+                                ImageRow = match.Row,
+                                ImageColumn = match.Column,
+                                ImageAngleDegrees = match.AngleDegrees,
+                                MatchScore = match.Score
+                            };
+                            CopyContourSegments(match, item);
+                            BlobAnalysisResult analysis = analyses[index];
                             item.DetectionRegion = analysis.Roi;
                             item.Blobs.AddRange(analysis.Findings);
                             result.BlobElapsedMilliseconds += analysis.ElapsedMilliseconds;
                             AccumulateAnalysisTiming(result, analysis);
                             item.HasManualMark = item.Blobs.Exists(blob => !blob.RejectedAsRectangle);
                             LogBoardBlobDetail(item.BoardIndex, analysis, item.HasManualMark);
+                            if (mapTargets)
+                                item.Targets.AddRange(_poseMapper.Map(calibration, teaching, match, currentR));
+                            result.Items.Add(item);
                         }
-                        if (mapTargets)
-                            item.Targets.AddRange(_poseMapper.Map(calibration, teaching, match, currentR));
-                        result.Items.Add(item);
                     }
+                    finally
+                    {
+                        if (analyses != null)
+                        {
+                            foreach (BlobAnalysisResult analysis in analyses)
+                            {
+                                if (analysis != null) analysis.Dispose();
+                            }
+                        }
+                    }
+                    result.CoordinateMappingApplied = mapTargets;
                 }
 
                 // 直接整图检测模式不校验目标板数；模板匹配模式要求实际板数与预期一致，Pass 还要求全板均无不良标记

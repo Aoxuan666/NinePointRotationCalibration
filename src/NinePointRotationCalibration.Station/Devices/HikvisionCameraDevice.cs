@@ -68,26 +68,50 @@ namespace NinePointRotationCalibration.Station.Devices
         /// <summary>按序列号连接并读取设备的触发模式。</summary>
         public Task ConnectAsync(string deviceId, CancellationToken cancellationToken)
         {
-            if (string.IsNullOrWhiteSpace(deviceId)) throw new ArgumentException("A camera serial number is required.", nameof(deviceId));
             return RunSerializedAsync(() =>
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 DisconnectCore();
+                string targetSerial = string.IsNullOrWhiteSpace(deviceId) ? null : deviceId.Trim();
+                if (string.IsNullOrWhiteSpace(targetSerial))
+                {
+                    CameraMVS enumerator = new CameraMVS();
+                    try
+                    {
+                        int enumError = 0;
+                        List<string> serialNumbers = enumerator.EnumCamrea(ref enumError);
+                        EnsureSuccess(serialNumbers != null, enumError, "Enumerate cameras before connect", enumerator);
+                        foreach (string serial in serialNumbers)
+                        {
+                            if (!string.IsNullOrWhiteSpace(serial))
+                            {
+                                targetSerial = serial.Trim();
+                                break;
+                            }
+                        }
+                    }
+                    finally
+                    {
+                        enumerator.FreeHGlobal();
+                    }
+                    if (string.IsNullOrWhiteSpace(targetSerial))
+                        throw new InvalidOperationException("未发现海康相机设备。");
+                }
                 CameraMVS camera = new CameraMVS();
                 try
                 {
                     int error = 0;
-                    EnsureSuccess(camera.Open(deviceId.Trim(), ref error), error, "Open camera", camera);
-                    string mode = ReadTriggerMode(camera);
+                    EnsureSuccess(camera.Open(targetSerial, ref error), error, "Open camera", camera);
+                    string mode = TryReadTriggerMode(camera);
                     lock (_stateSync)
                     {
                         _camera = camera;
-                        _connectedDeviceId = deviceId.Trim();
+                        _connectedDeviceId = targetSerial;
                         _triggerMode = mode;
                         _reverseX = false;
                         _reverseY = false;
                     }
-                    LocalDebugLog.Write("INFO", "camera.hikvision", "Connected Hikvision camera: serial='" + deviceId.Trim() + "'.");
+                    LocalDebugLog.Write("INFO", "camera.hikvision", "Connected Hikvision camera: serial='" + targetSerial + "'.");
                     return true;
                 }
                 catch (Exception exception)
@@ -129,14 +153,24 @@ namespace NinePointRotationCalibration.Station.Devices
                 int error = 0;
                 float exposure = 0;
                 EnsureSuccess(camera.GetExposureTime(ref exposure, ref error), error, "Get exposure", camera);
-                MvsCamera.MVCC_FLOATVALUE gain = new MvsCamera.MVCC_FLOATVALUE();
-                int gainResult = GetMvsHandle(camera).MV_CC_GetFloatValue_NET("Gain", ref gain);
-                string triggerMode = ReadTriggerMode(camera);
-                lock (_stateSync) _triggerMode = triggerMode;
+                double gainValue = double.NaN;
+                try
+                {
+                    MvsCamera.MVCC_FLOATVALUE gain = new MvsCamera.MVCC_FLOATVALUE();
+                    if (GetMvsHandle(camera).MV_CC_GetFloatValue_NET("Gain", ref gain) == 0)
+                        gainValue = gain.fCurValue;
+                }
+                catch (Exception ex)
+                {
+                    LocalDebugLog.WriteException("WARN", "camera.hikvision", "Failed to read Gain via MVS node", ex);
+                }
+                string triggerMode = TryReadTriggerMode(camera);
+                if (!string.Equals(triggerMode, "Unknown", StringComparison.OrdinalIgnoreCase))
+                    lock (_stateSync) _triggerMode = triggerMode;
                 return new CameraParameterSet
                 {
                     ExposureMicroseconds = exposure,
-                    Gain = gainResult == 0 ? gain.fCurValue : double.NaN,
+                    Gain = gainValue,
                     TriggerMode = triggerMode
                 };
             }, cancellationToken);
@@ -362,6 +396,19 @@ namespace NinePointRotationCalibration.Station.Devices
             MvsCamera handle = field == null ? null : field.GetValue(camera) as MvsCamera;
             if (handle == null) throw new NotSupportedException("当前海康相机组件无法读取 MVS 设备节点。");
             return handle;
+        }
+
+        private static string TryReadTriggerMode(CameraMVS camera)
+        {
+            try
+            {
+                return ReadTriggerMode(camera);
+            }
+            catch (Exception ex)
+            {
+                LocalDebugLog.WriteException("WARN", "camera.hikvision", "Failed to read TriggerMode", ex);
+                return "Unknown";
+            }
         }
 
         private static string ReadTriggerMode(CameraMVS camera)

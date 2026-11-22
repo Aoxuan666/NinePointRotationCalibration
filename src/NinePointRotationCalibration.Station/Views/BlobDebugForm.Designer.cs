@@ -36,7 +36,6 @@ namespace NinePointRotationCalibration.Station.Views
         private ComboBox cmbDetectionPolarity;
         private ComboBox cmbHoleFillMode;
         private CheckBox chkAutoThreshold;
-        private CheckBox chkSyncViewport;
         private Label lblModeStatus;
         private Label lblPreviewStatus;
         private Label lblSummary;
@@ -236,9 +235,8 @@ namespace NinePointRotationCalibration.Station.Views
 
             TableLayoutPanel toolbar = new TableLayoutPanel();
             toolbar.BackColor = HeaderDarkColor;
-            toolbar.ColumnCount = 5;
+            toolbar.ColumnCount = 4;
             toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100.0F));
-            toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 86.0F));
             toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 96.0F));
             toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 68.0F));
             toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 58.0F));
@@ -256,18 +254,6 @@ namespace NinePointRotationCalibration.Station.Views
             lblPreviewStatus.Name = "lblPreviewStatus";
             lblPreviewStatus.Text = "等待更新";
             lblPreviewStatus.TextAlign = ContentAlignment.MiddleLeft;
-            chkSyncViewport = new CheckBox();
-            chkSyncViewport.AutoSize = true;
-            chkSyncViewport.BackColor = HeaderDarkColor;
-            chkSyncViewport.Checked = true;
-            chkSyncViewport.Cursor = Cursors.Hand;
-            chkSyncViewport.Dock = DockStyle.Fill;
-            chkSyncViewport.Font = new Font("Microsoft YaHei UI", 8.25F, FontStyle.Regular, GraphicsUnit.Point, 134);
-            chkSyncViewport.ForeColor = Color.FromArgb(226, 232, 240);
-            chkSyncViewport.Margin = new Padding(4, 0, 4, 0);
-            chkSyncViewport.Name = "chkSyncViewport";
-            chkSyncViewport.Text = "双窗联动";
-            chkSyncViewport.UseVisualStyleBackColor = false;
             btnToggleLayout = CreateDarkButton("btnToggleLayout", "⇄ 切换左右", 88, 26);
             btnToggleLayout.Dock = DockStyle.Fill;
             btnToggleLayout.Margin = new Padding(4, 0, 4, 0);
@@ -278,10 +264,9 @@ namespace NinePointRotationCalibration.Station.Views
             btnActualPixels.Dock = DockStyle.Fill;
             btnActualPixels.Margin = new Padding(4, 0, 0, 0);
             toolbar.Controls.Add(lblPreviewStatus, 0, 0);
-            toolbar.Controls.Add(chkSyncViewport, 1, 0);
-            toolbar.Controls.Add(btnToggleLayout, 2, 0);
-            toolbar.Controls.Add(btnFit, 3, 0);
-            toolbar.Controls.Add(btnActualPixels, 4, 0);
+            toolbar.Controls.Add(btnToggleLayout, 1, 0);
+            toolbar.Controls.Add(btnFit, 2, 0);
+            toolbar.Controls.Add(btnActualPixels, 3, 0);
 
             previewSplit = new SplitContainer();
             previewSplit.BackColor = HeaderSurfaceColor;
@@ -349,7 +334,7 @@ namespace NinePointRotationCalibration.Station.Views
             resultHint.Dock = DockStyle.Fill;
             resultHint.Font = new Font("Microsoft YaHei UI", 8.5F, FontStyle.Regular, GraphicsUnit.Point, 134);
             resultHint.ForeColor = TextMutedColor;
-            resultHint.Text = "提示：预览显示完整阈值分割；检测时优先在面积区间内检出非矩形不良标记，滚轮/拖拽支持双视口同步缩放。";
+            resultHint.Text = "提示：预览显示完整阈值分割；检测时优先在面积区间内检出非矩形不良标记，原图与二值视口支持各自独立滚轮缩放与拖拽。";
             resultHint.TextAlign = ContentAlignment.MiddleLeft;
 
             FlowLayoutPanel actions = new FlowLayoutPanel();
@@ -533,6 +518,22 @@ namespace NinePointRotationCalibration.Station.Views
             button.Size = new Size(width, height);
             button.Text = text;
             button.UseVisualStyleBackColor = false;
+            button.Paint += delegate(object sender, PaintEventArgs e)
+            {
+                if (button.Enabled) return;
+                Rectangle bounds = new Rectangle(0, 0, button.Width, button.Height);
+                using (SolidBrush bg = new SolidBrush(Color.FromArgb(26, 36, 54)))
+                    e.Graphics.FillRectangle(bg, bounds);
+                using (Pen border = new Pen(Color.FromArgb(51, 65, 85), 1.0F))
+                    e.Graphics.DrawRectangle(border, 0, 0, button.Width - 1, button.Height - 1);
+                TextRenderer.DrawText(
+                    e.Graphics,
+                    button.Text,
+                    button.Font,
+                    bounds,
+                    Color.FromArgb(148, 163, 184),
+                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine);
+            };
             return button;
         }
 

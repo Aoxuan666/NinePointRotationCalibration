@@ -164,29 +164,32 @@ namespace NinePointRotationCalibration.Station.Services
         public bool IsTcpListening { get { return _tcpServer.IsRunning; } }
         public bool IsHostConnected { get { return _tcpServer.IsClientConnected; } }
         public bool IsCameraConnected { get { return _camera.IsConnected; } }
+        public string CameraProviderName { get { return _camera.ProviderName; } }
+        public string ConnectedCameraDeviceId { get { return _camera.ConnectedDeviceId; } }
         public bool IsCameraEnabled { get { lock (_stateSync) return _options.CameraEnabled; } }
         public bool IsCalibrationEnabled { get { lock (_stateSync) return _options.CalibrationEnabled; } }
+        public bool IsInspectionEnabled { get { lock (_stateSync) return _options.InspectionEnabled; } }
         public bool IsArchiveImagesEnabled { get { lock (_stateSync) return _options.ArchiveImages; } }
         public bool IsLiveAcquisitionEnabled { get { lock (_stateSync) return _options.LiveAcquisitionEnabled; } }
         public bool IsCameraPreviewRunning { get { return _camera.IsPreviewRunning; } }
         public double LivePreviewFps { get { return _camera.LiveFps; } }
         public long LivePreviewFrameCount { get { return _camera.LiveFrameCount; } }
         public long LivePreviewDroppedFrameCount { get { return _camera.LiveDroppedFrameCount; } }
+        public bool IsCalibrationReady
+        {
+            get
+            {
+                lock (_stateSync)
+                {
+                    return IsCalibrationValid(_calibrationResult) && IsTeachingValid(_teaching.GetSnapshot());
+                }
+            }
+        }
 
         /// <summary>注册实时预览 UI 渲染背压检测委托，避免高帧率预览在界面端堆积。</summary>
         public void SetPreviewConsumerBusyCallback(Func<bool> callback)
         {
             _camera.PreviewConsumerBusy = callback;
-        }
-        public bool IsMockCamera
-        {
-            get
-            {
-                string provider;
-                lock (_stateSync) provider = _options.CameraProvider;
-                return string.Equals(provider, "Mock", StringComparison.OrdinalIgnoreCase) ||
-                       (_camera.ProviderName ?? string.Empty).StartsWith("Mock", StringComparison.OrdinalIgnoreCase);
-            }
         }
 
         public StationOptions GetOptionsSnapshot()
@@ -273,8 +276,9 @@ namespace NinePointRotationCalibration.Station.Services
             catch (Exception exception)
             {
                 LocalDebugLog.WriteException("WARN", "camera.autoconnect", "Camera did not auto-connect", exception);
-                OnLog("WARN", "Camera did not auto-connect: " + exception.Message);
-                OnStateChanged("camera", false, exception.Message);
+                bool noDevice = IsNoCameraFoundMessage(exception.Message);
+                OnLog("WARN", noDevice ? "启动时未检测到在线相机，当前为未连接状态。" : "相机自动连接失败：" + exception.Message);
+                OnStateChanged("camera", false, noDevice ? "未检测到在线相机" : exception.Message);
             }
         }
 
@@ -343,11 +347,11 @@ namespace NinePointRotationCalibration.Station.Services
             LocalDebugLog.Write("INFO", "tcp", "TCP server stopped by user.");
         }
 
-        /// <summary>热切换相机驱动类型（大华 / 海康 / 模拟相机），无需重启程序。</summary>
+        /// <summary>热切换真实工业相机驱动类型（大华 / 海康），无需重启程序。</summary>
         public async Task SwitchCameraProviderAsync(string provider, CancellationToken cancellationToken)
         {
             ThrowIfDisposed();
-            string normalized = string.IsNullOrWhiteSpace(provider) ? "Mock" : provider.Trim();
+            string normalized = NormalizeCameraProvider(provider);
             StationOptions nextOptions;
             lock (_stateSync)
             {
@@ -367,9 +371,10 @@ namespace NinePointRotationCalibration.Station.Services
                 nextOptions = _options.DeepClone();
             }
             _jsonStore.Save(_optionsPath, nextOptions);
-            OnStateChanged("camera", false, string.Equals(normalized, "Mock", StringComparison.OrdinalIgnoreCase)
-                ? "等待手动导入图像"
-                : "已切换驱动：" + normalized);
+            string label = string.Equals(normalized, "Hikvision", StringComparison.OrdinalIgnoreCase)
+                ? "海康 (MVS)"
+                : "大华 (CameraDH)";
+            OnStateChanged("camera", false, "已切换驱动：" + label);
             LocalDebugLog.Write("INFO", "camera.provider", "Switched camera provider to '" + normalized + "'.");
         }
 
@@ -395,8 +400,7 @@ namespace NinePointRotationCalibration.Station.Services
                 "Connecting camera deviceId='" + deviceId + "', provider=" + _camera.ProviderName);
             await _camera.StopPreviewAsync().ConfigureAwait(false);
             await _camera.ConnectAsync(deviceId, cancellationToken).ConfigureAwait(false);
-            // 仅真实相机且开启“兼容相机实时采集”选项时自动开启实时预览流；模拟相机启动时不自动推送默认测试图
-            bool autoStartPreview = options.LiveAcquisitionEnabled && !IsMockCamera;
+            bool autoStartPreview = options.LiveAcquisitionEnabled;
             if (autoStartPreview)
             {
                 _camera.StartPreview();
@@ -441,16 +445,14 @@ namespace NinePointRotationCalibration.Station.Services
             }
         }
 
-        /// <summary>主动开启相机实时采集流；若尚未连接相机则尝试按配置自动连接。</summary>
+        /// <summary>主动开启已连接相机的实时采集流（未连接时直接报错，不做隐式连接或模拟）。</summary>
         public async Task StartLivePreviewAsync(CancellationToken cancellationToken)
         {
             ThrowIfDisposed();
             EnsureCameraEnabled();
-            LocalDebugLog.Write("INFO", "camera.live", "StartLivePreviewAsync requested (connected=" + _camera.IsConnected + ", mock=" + IsMockCamera + ").");
+            LocalDebugLog.Write("INFO", "camera.live", "StartLivePreviewAsync requested (connected=" + _camera.IsConnected + ").");
             if (!_camera.IsConnected)
-            {
-                await ConnectConfiguredCameraAsync(cancellationToken).ConfigureAwait(false);
-            }
+                throw new InvalidOperationException("相机未连接，请先连接相机后再开启实时预览。");
 
             StationOptions snapshot;
             bool needSave = false;
@@ -466,6 +468,7 @@ namespace NinePointRotationCalibration.Station.Services
             if (needSave) _jsonStore.Save(_optionsPath, snapshot);
 
             _camera.StartPreview();
+            await Task.CompletedTask.ConfigureAwait(false);
             OnLog("INFO", "相机实时采集已启动：" + _camera.ProviderName + " / " + _camera.ConnectedDeviceId);
         }
 
@@ -1191,7 +1194,7 @@ namespace NinePointRotationCalibration.Station.Services
             CancellationToken cancellationToken)
         {
             EnsureCameraEnabled();
-            EnsureCalibrationEnabled();
+            EnsureInspectionEnabled();
             return RunExclusiveAsync(
                 "inspection",
                 () => ExecuteInspectionAsync(expectedCount, currentR, null, cancellationToken),
@@ -1212,6 +1215,7 @@ namespace NinePointRotationCalibration.Station.Services
             double currentR, CancellationToken cancellationToken, LockedFrameGrayCache frameCache)
         {
             if (image == null) throw new ArgumentNullException(nameof(image));
+            EnsureInspectionEnabled();
             return RunExclusiveAsync(
                 "offline inspection",
                 () => ExecuteOfflineInspectionAsync(image, expectedCount, currentR, cancellationToken, frameCache),
@@ -1219,9 +1223,19 @@ namespace NinePointRotationCalibration.Station.Services
         }
 
         /// <summary>切换相机或标定功能开关并持久化；关闭相机时立即断开，开启且已启动时自动重连。</summary>
+        public Task ApplyEnablementAsync(
+            bool cameraEnabled,
+            bool calibrationEnabled,
+            CancellationToken cancellationToken)
+        {
+            return ApplyEnablementAsync(cameraEnabled, calibrationEnabled, IsInspectionEnabled, cancellationToken);
+        }
+
+        /// <summary>独立切换相机、标定、检测三大模块开关并持久化；彼此完全解耦互不影响。</summary>
         public async Task ApplyEnablementAsync(
             bool cameraEnabled,
             bool calibrationEnabled,
+            bool inspectionEnabled,
             CancellationToken cancellationToken)
         {
             ThrowIfDisposed();
@@ -1231,14 +1245,17 @@ namespace NinePointRotationCalibration.Station.Services
             try
             {
                 StationOptions snapshot;
-                bool shouldConnect;
+                bool cameraJustEnabled;
                 lock (_stateSync)
                 {
+                    bool previousCameraEnabled = _options.CameraEnabled;
                     _options.CameraEnabled = cameraEnabled;
                     _options.CalibrationEnabled = calibrationEnabled;
+                    _options.InspectionEnabled = inspectionEnabled;
                     _options.ConfigurationVersion = StationOptions.CurrentConfigurationVersion;
                     snapshot = _options.DeepClone();
-                    shouldConnect = cameraEnabled && _started && !_camera.IsConnected;
+                    // 仅在“启用相机”从关闭切换为开启时尝试自动发现并连接，切换标定/检测开关绝不触发相机重连
+                    cameraJustEnabled = !previousCameraEnabled && cameraEnabled && _started && !_camera.IsConnected;
                 }
 
                 if (!cameraEnabled)
@@ -1250,17 +1267,21 @@ namespace NinePointRotationCalibration.Station.Services
                 _jsonStore.Save(_optionsPath, snapshot);
                 _calibration.UpdateOptions(snapshot);
 
-                if (shouldConnect)
+                if (cameraJustEnabled)
                 {
                     try
                     {
                         await ConnectConfiguredCameraAsync(cancellationToken).ConfigureAwait(false);
                     }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    {
+                        throw;
+                    }
                     catch (Exception exception)
                     {
-                        OnStateChanged("camera", false, exception.Message);
-                        OnLog("WARN", "Camera did not auto-connect after being enabled: " + exception.Message);
-                        throw;
+                        bool noDevice = IsNoCameraFoundMessage(exception.Message);
+                        OnStateChanged("camera", false, noDevice ? "未检测到在线相机" : exception.Message);
+                        OnLog("WARN", noDevice ? "已启用相机，但未检测到在线设备，请连接硬件后点击「连接相机」。" : "启用相机后自动连接失败：" + exception.Message);
                     }
                 }
 
@@ -1268,10 +1289,15 @@ namespace NinePointRotationCalibration.Station.Services
                     "calibration",
                     calibrationEnabled,
                     calibrationEnabled ? "Enabled" : "Disabled");
+                OnStateChanged(
+                    "inspection",
+                    inspectionEnabled,
+                    inspectionEnabled ? "Enabled" : "Disabled");
                 OnLog(
                     "INFO",
                     "Station enablement updated: camera=" + cameraEnabled +
-                    ", calibration=" + calibrationEnabled + ".");
+                    ", calibration=" + calibrationEnabled +
+                    ", inspection=" + inspectionEnabled + ".");
             }
             finally
             {
@@ -1303,20 +1329,22 @@ namespace NinePointRotationCalibration.Station.Services
             LocalDebugLog.Write("INFO", "config.profile", "DetectionProfile updated: " + StationLogFormatter.FormatDetectionProfile(copy));
         }
 
-        /// <summary>校验并保存工作站配置（相机/标定开关变更须通过 ApplyEnablementAsync 执行）。</summary>
+        /// <summary>校验并保存工作站配置（相机/标定/检测开关变更须通过 ApplyEnablementAsync 执行）。</summary>
         public void UpdateOptions(StationOptions options)
         {
             if (options == null) throw new ArgumentNullException(nameof(options));
             StationOptions copy = options.DeepClone();
             ValidateOptions(copy);
+            copy.CameraProvider = NormalizeCameraProvider(copy.CameraProvider);
             copy.ConfigurationVersion = StationOptions.CurrentConfigurationVersion;
             lock (_stateSync)
             {
                 if (copy.CameraEnabled != _options.CameraEnabled ||
-                    copy.CalibrationEnabled != _options.CalibrationEnabled)
+                    copy.CalibrationEnabled != _options.CalibrationEnabled ||
+                    copy.InspectionEnabled != _options.InspectionEnabled)
                 {
                     throw new InvalidOperationException(
-                        "Use ApplyEnablementAsync to change camera or calibration enablement.");
+                        "Use ApplyEnablementAsync to change camera, calibration, or inspection enablement.");
                 }
                 _options = copy;
             }
@@ -1335,7 +1363,7 @@ namespace NinePointRotationCalibration.Station.Services
                 : string.Join("; ", devices.Select(d => d == null ? "<null>" : d.Id + "(" + d.DisplayName + ")"));
             LocalDebugLog.Write("INFO", "camera.autoconnect", "Enumerated devices for provider '" + _camera.ProviderName + "': [" + deviceSummary + "]");
             if (devices == null || devices.Count == 0)
-                throw new InvalidOperationException("No camera device was found.");
+                throw new InvalidOperationException("未检测到在线相机设备。");
 
             string configured;
             lock (_stateSync) configured = _options.CameraSerialNumber;
@@ -1488,9 +1516,12 @@ namespace NinePointRotationCalibration.Station.Services
                     ProtocolEnvelope ack = ProtocolEnvelope.Create(ProtocolMessageTypes.Acknowledge);
                     ack.CorrelationId = envelope.MessageId;
                     ack.Data["role"] = "vision";
-                    ack.Data["ready"] = IsCameraEnabled && IsCalibrationEnabled && IsCameraConnected;
+                    ack.Data["ready"] = IsCameraEnabled && IsCameraConnected && (IsInspectionEnabled || IsCalibrationEnabled);
                     ack.Data["cameraEnabled"] = IsCameraEnabled;
+                    ack.Data["cameraConnected"] = IsCameraConnected;
                     ack.Data["calibrationEnabled"] = IsCalibrationEnabled;
+                    ack.Data["calibrationReady"] = IsCalibrationReady;
+                    ack.Data["inspectionEnabled"] = IsInspectionEnabled;
                     ack.Data["protocolVersion"] = "1.0";
                     await _tcpServer.SendAsync(e.ConnectionId, ack).ConfigureAwait(false);
                     LocalDebugLog.Write(
@@ -1534,10 +1565,23 @@ namespace NinePointRotationCalibration.Station.Services
         {
             bool cameraEnabled;
             bool calibrationEnabled;
+            bool inspectionEnabled;
             lock (_stateSync)
             {
                 cameraEnabled = _options.CameraEnabled;
                 calibrationEnabled = _options.CalibrationEnabled;
+                inspectionEnabled = _options.InspectionEnabled;
+            }
+            if (!inspectionEnabled)
+            {
+                LocalDebugLog.Write("WARN", "tcp.inspect", "Rejected inspection.trigger (INSPECTION_DISABLED): conn=" + connectionId + ", msgId=" + request.MessageId);
+                await SendErrorAsync(
+                    connectionId,
+                    request.MessageId,
+                    ProtocolErrorCodes.InspectionDisabled,
+                    "Production inspection is unavailable because inspection is disabled.",
+                    false).ConfigureAwait(false);
+                return;
             }
             if (!cameraEnabled)
             {
@@ -1550,15 +1594,15 @@ namespace NinePointRotationCalibration.Station.Services
                     false).ConfigureAwait(false);
                 return;
             }
-            if (!calibrationEnabled)
+            if (!IsCameraConnected)
             {
-                LocalDebugLog.Write("WARN", "tcp.inspect", "Rejected inspection.trigger (CALIBRATION_DISABLED): conn=" + connectionId + ", msgId=" + request.MessageId);
+                LocalDebugLog.Write("WARN", "tcp.inspect", "Rejected inspection.trigger (CAMERA_NOT_CONNECTED): conn=" + connectionId + ", msgId=" + request.MessageId);
                 await SendErrorAsync(
                     connectionId,
                     request.MessageId,
-                    ProtocolErrorCodes.CalibrationDisabled,
-                    "Production inspection is unavailable because calibration use is disabled.",
-                    false).ConfigureAwait(false);
+                    ProtocolErrorCodes.CameraNotConnected,
+                    "Production inspection is unavailable because the camera is not connected.",
+                    true).ConfigureAwait(false);
                 return;
             }
 
@@ -1581,11 +1625,26 @@ namespace NinePointRotationCalibration.Station.Services
                 int defaultExpected;
                 lock (_stateSync) defaultExpected = _options.ExpectedBoardCount;
                 int expected = ProtocolValue.Integer(request.Data, "expectedCount", defaultExpected);
-                double currentR;
-                if (!ProtocolValue.TryDouble(request.Data, "currentR", out currentR) ||
-                    double.IsNaN(currentR) || double.IsInfinity(currentR))
+                double currentR = 0.0;
+                bool hasCurrentR = request.Data != null && request.Data.ContainsKey("currentR");
+                if (hasCurrentR)
                 {
-                    LocalDebugLog.Write("WARN", "tcp.inspect", "Rejected inspection.trigger (PROTOCOL_INVALID currentR): conn=" + connectionId + ", msgId=" + request.MessageId);
+                    if (!ProtocolValue.TryDouble(request.Data, "currentR", out currentR) ||
+                        double.IsNaN(currentR) || double.IsInfinity(currentR))
+                    {
+                        LocalDebugLog.Write("WARN", "tcp.inspect", "Rejected inspection.trigger (PROTOCOL_INVALID currentR): conn=" + connectionId + ", msgId=" + request.MessageId);
+                        await SendErrorAsync(
+                            connectionId,
+                            request.MessageId,
+                            "PROTOCOL_INVALID",
+                            "inspection.trigger requires a finite currentR value.",
+                            false).ConfigureAwait(false);
+                        return;
+                    }
+                }
+                else if (calibrationEnabled && IsCalibrationReady)
+                {
+                    LocalDebugLog.Write("WARN", "tcp.inspect", "Rejected inspection.trigger (missing currentR while calibration mapping is ready): conn=" + connectionId + ", msgId=" + request.MessageId);
                     await SendErrorAsync(
                         connectionId,
                         request.MessageId,
@@ -1664,18 +1723,29 @@ namespace NinePointRotationCalibration.Station.Services
             try
             {
                 EnsureCameraEnabled();
-                EnsureCalibrationEnabled();
+                EnsureInspectionEnabled();
+                if (!_camera.IsConnected)
+                    throw new InvalidOperationException("相机未连接，请先连接相机后再执行在线检测。");
                 CalibrationJob positioning;
                 CalibrationResult calibration;
                 DetectionProfile profile;
                 TeachingData teaching;
+                bool calibrationEnabled;
                 lock (_stateSync)
                 {
                     positioning = _positioningJob.DeepClone();
                     calibration = _calibrationResult == null ? null : _calibrationResult.DeepClone();
                     profile = CloneDetectionProfile(_detectionProfile);
                     teaching = _teaching.GetSnapshot();
+                    calibrationEnabled = _options.CalibrationEnabled;
                 }
+
+                bool calValid = IsCalibrationValid(calibration);
+                bool teachValid = IsTeachingValid(teaching);
+                bool canMapTargets = calibrationEnabled &&
+                    calValid &&
+                    teachValid &&
+                    !double.IsNaN(currentR) && !double.IsInfinity(currentR);
 
                 using (CameraFrame frame = await _camera.CaptureAsync(cancellationToken).ConfigureAwait(false))
                 {
@@ -1684,20 +1754,29 @@ namespace NinePointRotationCalibration.Station.Services
                         "inspection.capture",
                         string.Format(
                             CultureInfo.InvariantCulture,
-                            "Captured online frame: seq={0}, size={1}, expected={2}, currentR={3:0.###}, tcpMode={4}",
+                            "Captured online frame: seq={0}, size={1}, expected={2}, currentR={3:0.###}, calEn={4}, canMap={5}, tcpMode={6}",
                             frame.Sequence,
                             frame.Image == null ? "null" : frame.Image.Width + "x" + frame.Image.Height,
                             expectedCount,
                             currentR,
+                            calibrationEnabled,
+                            canMapTargets,
                             sendResponse != null));
-                    InspectionResult result = await Task.Run(() => _inspection.Inspect(
+                    InspectionResult result = await Task.Run(() => _inspection.InspectCore(
                         frame.Image,
                         positioning,
                         calibration,
                         teaching,
                         profile,
                         expectedCount,
-                        currentR), cancellationToken).ConfigureAwait(false);
+                        canMapTargets ? currentR : 0.0,
+                        canMapTargets), cancellationToken).ConfigureAwait(false);
+                    if (calibrationEnabled && !canMapTargets && result != null && result.Executed)
+                    {
+                        result.Message = string.IsNullOrWhiteSpace(result.Message)
+                            ? "标定或左右示教未完成，当前仅输出视觉定位与瑕疵检测结果。"
+                            : result.Message + "（标定或左右示教未完成，当前仅输出视觉检测结果）";
+                    }
 
                     if (sendResponse == null)
                     {
@@ -1748,12 +1827,8 @@ namespace NinePointRotationCalibration.Station.Services
                     calibrationEnabled = _options.CalibrationEnabled;
                 }
 
-                bool calValid = calibration != null && calibration.TranslationSuccess &&
-                    calibration.Rotation != null && calibration.Rotation.Success &&
-                    calibration.Rotation.IsAvailable && Math.Abs(calibration.Rotation.DirectionMultiplier) >= 0.5;
-                bool teachValid = teaching != null &&
-                    teaching.Left != null && teaching.Left.IsValid &&
-                    teaching.Right != null && teaching.Right.IsValid;
+                bool calValid = IsCalibrationValid(calibration);
+                bool teachValid = IsTeachingValid(teaching);
                 bool canMapTargets = calibrationEnabled &&
                     calValid &&
                     teachValid &&
@@ -1803,6 +1878,7 @@ namespace NinePointRotationCalibration.Station.Services
             data["executed"] = result.Executed;
             data["success"] = result.Success;
             data["pass"] = result.Pass;
+            data["coordinateMapped"] = result.CoordinateMappingApplied;
             data["errorCode"] = result.ErrorCode ?? string.Empty;
             data["message"] = result.Message ?? string.Empty;
             data["expectedCount"] = result.ExpectedCount;
@@ -2134,17 +2210,43 @@ namespace NinePointRotationCalibration.Station.Services
 
         private static ICameraDevice CreateCameraDevice(StationOptions options)
         {
-            if (string.Equals(options.CameraProvider, "Dahua", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(options.CameraProvider, "DH", StringComparison.OrdinalIgnoreCase))
-            {
-                return new DahuaCameraDevice(options.CameraTimeoutMilliseconds);
-            }
             if (string.Equals(options.CameraProvider, "Hikvision", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(options.CameraProvider, "MVS", StringComparison.OrdinalIgnoreCase))
             {
                 return new HikvisionCameraDevice();
             }
-            return new MockCameraDevice();
+            return new DahuaCameraDevice(options.CameraTimeoutMilliseconds);
+        }
+
+        private static string NormalizeCameraProvider(string provider)
+        {
+            if (string.Equals(provider, "Hikvision", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(provider, "MVS", StringComparison.OrdinalIgnoreCase))
+                return "Hikvision";
+            return "Dahua";
+        }
+
+        private static bool IsNoCameraFoundMessage(string message)
+        {
+            if (string.IsNullOrWhiteSpace(message)) return false;
+            return message.IndexOf("No camera", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   message.IndexOf("not found", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   message.IndexOf("未检测到在线相机", StringComparison.Ordinal) >= 0 ||
+                   message.IndexOf("未发现", StringComparison.Ordinal) >= 0;
+        }
+
+        private static bool IsCalibrationValid(CalibrationResult calibration)
+        {
+            return calibration != null && calibration.TranslationSuccess &&
+                   calibration.Rotation != null && calibration.Rotation.Success &&
+                   calibration.Rotation.IsAvailable && Math.Abs(calibration.Rotation.DirectionMultiplier) >= 0.5;
+        }
+
+        private static bool IsTeachingValid(TeachingData teaching)
+        {
+            return teaching != null &&
+                   teaching.Left != null && teaching.Left.IsValid &&
+                   teaching.Right != null && teaching.Right.IsValid;
         }
 
         private static void ValidateOptions(StationOptions options)
@@ -2173,6 +2275,14 @@ namespace NinePointRotationCalibration.Station.Services
             lock (_stateSync) enabled = _options.CalibrationEnabled;
             if (!enabled)
                 throw new InvalidOperationException("Calibration use is disabled in station settings.");
+        }
+
+        private void EnsureInspectionEnabled()
+        {
+            bool enabled;
+            lock (_stateSync) enabled = _options.InspectionEnabled;
+            if (!enabled)
+                throw new InvalidOperationException("检测功能已在设置中关闭，请先在「相机」页开启「启用检测」。");
         }
 
         private async Task<T> RunExclusiveAsync<T>(

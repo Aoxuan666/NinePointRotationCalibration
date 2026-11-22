@@ -23,7 +23,9 @@ namespace NinePointRotationCalibration.Station.Models
     public static class ProtocolErrorCodes
     {
         public const string CameraDisabled = "CAMERA_DISABLED";
+        public const string CameraNotConnected = "CAMERA_NOT_CONNECTED";
         public const string CalibrationDisabled = "CALIBRATION_DISABLED";
+        public const string InspectionDisabled = "INSPECTION_DISABLED";
     }
 
     /// <summary>TCP 协议通用 JSON 消息信封。</summary>

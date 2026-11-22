@@ -123,15 +123,15 @@
 }
 ```
 
-`currentR` 必填且必须是有限 JSON number；缺失或非法时返回 `system.error / PROTOCOL_INVALID`。`expectedCount` 可选，缺失或无法转换时使用工作站配置值。`archiveImage` 可选，覆盖工作站默认归档开关。
+当标定开关开启且标定与示教已就绪时，`currentR` 必填且必须是有限 JSON number；纯视觉检测模式（未启用标定或尚未完成标定/示教）下可省略 `currentR`（默认 `0.0`，传值时仍须为有限数值）。`expectedCount` 可选，缺失或无法转换时使用工作站配置值。`archiveImage` 可选，覆盖工作站默认归档开关。
 
-`inspection.trigger` 是生产实时拍照指令，只有相机使能与标定使能同时打开时才允许执行。收到触发后，视觉串行执行一次软触发、多模板定位、逐板 ROI/Blob 检测和左右坐标映射。
+`inspection.trigger` 是生产实时拍照检测指令，相机、标定、检测三大开关保持独立；关闭标定（或尚未完成标定）时仍可正常执行视觉定位与瑕疵检测（此时 `coordinateMapped=false`，`targets` 为空）。
 
-- 相机使能关闭：返回 `system.error / CAMERA_DISABLED`。
-- 相机使能打开但标定使能关闭：返回 `system.error / CALIBRATION_DISABLED`。
-- 两者都关闭：优先返回 `CAMERA_DISABLED`。
+- 检测使能关闭：返回 `system.error / INSPECTION_DISABLED`（`retryable=false`）。
+- 相机使能关闭：返回 `system.error / CAMERA_DISABLED`（`retryable=false`）。
+- 真实相机未连接：返回 `system.error / CAMERA_NOT_CONNECTED`（`retryable=true`）。
 
-上述错误的 `retryable=false`。上位机应等待操作员恢复使能，不能自动重试。UI 中“导入图片/检测当前图”是独立的本地调试流程，TCP 触发永远不会读取或复用操作员导入的图像。
+`INSPECTION_DISABLED` 与 `CAMERA_DISABLED` 的 `retryable=false`，上位机应等待操作员恢复使能，不能自动重试。UI 中“导入图片/检测当前图”是独立的本地调试流程，TCP 触发永远不会读取或复用操作员导入的图像。
 
 ### Vision -> Host: `inspection.result`
 
@@ -140,6 +140,7 @@
   "executed": true,
   "success": true,
   "pass": false,
+  "coordinateMapped": true,
   "errorCode": "MANUAL_MARK_FOUND",
   "message": "Manual white mark detected.",
   "expectedCount": 6,
@@ -190,8 +191,10 @@
 | 错误码 | 含义 |
 | --- | --- |
 | `PROTOCOL_INVALID` | 业务字段无效，当前用于 `inspection.trigger.currentR` |
+| `INSPECTION_DISABLED` | 检测使能关闭，生产检测不可用；`retryable=false` |
 | `CAMERA_DISABLED` | 相机使能关闭，生产拍照不可用；`retryable=false` |
-| `CALIBRATION_DISABLED` | 标定与坐标换算关闭，生产目标坐标不可用；`retryable=false` |
+| `CAMERA_NOT_CONNECTED` | 真实相机未连接，无法拍照；`retryable=true` |
+| `CALIBRATION_DISABLED` | 标定功能已关闭（仅用于标定相关请求）；`retryable=false` |
 | `BUSY` | 正在标定/检测，不能并发拍照 |
 | `DUPLICATE_MESSAGE` | 当前连接内的 `messageId` 重复 |
 | `MESSAGE_TYPE_UNSUPPORTED` | 未支持的 `type` |

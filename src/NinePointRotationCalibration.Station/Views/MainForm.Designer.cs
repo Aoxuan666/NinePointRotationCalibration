@@ -31,16 +31,17 @@ namespace NinePointRotationCalibration.Station.Views
         private SplitContainer imageSplit;
         private ImageViewport imageViewport;
         private ImageViewport effectViewport;
-        private ImageViewport cameraLiveViewport;
         private Panel pnlSourceViewportHeader;
         private Panel pnlEffectViewportHeader;
         private Label lblEffectViewportInfo;
+        private Panel pnlCameraHeroCard;
+        private Label lblCameraHeroState;
+        private Label lblCameraHeroDetail;
         private Label lblCameraLiveStatus;
+        private Label lblCameraResolution;
         private Button btnToggleDualLayout;
-        private CheckBox chkSyncDualViewport;
         private Button btnToggleLiveStream;
         private Button btnSyncLiveToMain;
-        private Button btnFitLivePreview;
         private Button btnResumeLive;
         private TableLayoutPanel logLayout;
         private Button btnToggleLog;
@@ -58,6 +59,7 @@ namespace NinePointRotationCalibration.Station.Views
         private ComboBox cmbCameraDevice;
         private CheckBox chkCameraEnabled;
         private CheckBox chkCalibrationEnabled;
+        private CheckBox chkInspectionEnabled;
         private CheckBox chkLiveAcquisition;
         private CheckBox chkArchiveImages;
         private TextBox txtTcpBindAddress;
@@ -86,6 +88,7 @@ namespace NinePointRotationCalibration.Station.Views
         private Label lblDualNozzleSummary;
         private Label lblCalibrationRmsSummary;
         private TabPage tabCalibration;
+        private TabPage tabDetection;
         private ToolTip toolTip;
 
         protected override void Dispose(bool disposing)
@@ -163,7 +166,7 @@ namespace NinePointRotationCalibration.Station.Views
             cameraStatus.Margin = new Padding(0, 1, 8, 1);
             cameraStatus.Name = "cameraStatusPanel";
             cameraStatus.Padding = new Padding(8, 0, 8, 0);
-            cameraStatus.Size = new Size(208, 34);
+            cameraStatus.Size = new Size(138, 34);
             cameraStatus.WrapContents = false;
 
             lblCameraIndicator = new Label();
@@ -181,7 +184,7 @@ namespace NinePointRotationCalibration.Station.Views
             lblCameraStatus.ForeColor = Color.FromArgb(241, 245, 249);
             lblCameraStatus.Margin = new Padding(2, 0, 0, 0);
             lblCameraStatus.Name = "lblCameraStatus";
-            lblCameraStatus.Size = new Size(172, 34);
+            lblCameraStatus.Size = new Size(102, 34);
             lblCameraStatus.Text = "相机未连接";
             lblCameraStatus.TextAlign = ContentAlignment.MiddleLeft;
             cameraStatus.Controls.Add(lblCameraIndicator);
@@ -319,28 +322,14 @@ namespace NinePointRotationCalibration.Station.Views
             btnToggleDualLayout.Text = "⇄ 切换左右";
             btnToggleDualLayout.Width = 88;
             toolTip.SetToolTip(btnToggleDualLayout, "切换原图与检测效果图窗口的上下 / 左右排列方式");
-            chkSyncDualViewport = new CheckBox();
-            chkSyncDualViewport.AutoSize = false;
-            chkSyncDualViewport.BackColor = ViewportHeaderColor;
-            chkSyncDualViewport.Checked = true;
-            chkSyncDualViewport.Cursor = Cursors.Hand;
-            chkSyncDualViewport.Dock = DockStyle.Right;
-            chkSyncDualViewport.Font = new Font("Microsoft YaHei UI", 8.0F, FontStyle.Regular, GraphicsUnit.Point, 134);
-            chkSyncDualViewport.ForeColor = Color.FromArgb(203, 213, 225);
-            chkSyncDualViewport.Name = "chkSyncDualViewport";
-            chkSyncDualViewport.Padding = new Padding(0, 0, 6, 0);
-            chkSyncDualViewport.Text = "双窗联动";
-            chkSyncDualViewport.UseVisualStyleBackColor = false;
-            chkSyncDualViewport.Width = 80;
-            toolTip.SetToolTip(chkSyncDualViewport, "开启时原图与效果图同步缩放平移；取消勾选可各自独立查看不同区域");
             Label lblSourceViewportTitle = new Label();
             lblSourceViewportTitle.Dock = DockStyle.Fill;
             lblSourceViewportTitle.Font = new Font("Microsoft YaHei UI", 8.25F, FontStyle.Bold, GraphicsUnit.Point, 134);
             lblSourceViewportTitle.ForeColor = Color.FromArgb(203, 213, 225);
-            lblSourceViewportTitle.Text = "原图视口";
+            lblSourceViewportTitle.Text = "原图视口（独立缩放）";
             lblSourceViewportTitle.TextAlign = ContentAlignment.MiddleLeft;
+            toolTip.SetToolTip(lblSourceViewportTitle, "原图与检测效果视口各自独立滚轮缩放与拖拽平移，双击视口恢复适应");
             pnlSourceViewportHeader.Controls.Add(lblSourceViewportTitle);
-            pnlSourceViewportHeader.Controls.Add(chkSyncDualViewport);
             pnlSourceViewportHeader.Controls.Add(btnToggleDualLayout);
 
             imageViewport = new ImageViewport();
@@ -731,7 +720,8 @@ namespace NinePointRotationCalibration.Station.Views
         // 构建板件与标记检测参数页、调试入口及检测结果表
         private TabPage BuildDetectionTab()
         {
-            TabPage page = CreateTabPage("tabDetection", "检测");
+            tabDetection = CreateTabPage("tabDetection", "检测");
+            TabPage page = tabDetection;
             TableLayoutPanel layout = new TableLayoutPanel();
             layout.BackColor = PageBackgroundColor;
             layout.ColumnCount = 1;
@@ -824,7 +814,7 @@ namespace NinePointRotationCalibration.Station.Views
             NumericUpDown currentR = CreateDecimalInput("nudInspectionCurrentR", 0.0M, -360.0M, 360.0M, 2, 1.0M, false);
             currentR.Margin = new Padding(0, 4, 10, 0);
             currentR.Size = new Size(76, 27);
-            toolTip.SetToolTip(currentR, "离线或手动测试检测时模拟机台当前 R 轴角度（度）");
+            toolTip.SetToolTip(currentR, "手动测试检测时使用的当前 R 轴角度（度，仅在启用标定且已完成标定示教时参与坐标换算）");
             actions.Controls.Add(currentRLabel);
             actions.Controls.Add(currentR);
             actions.Controls.Add(CreateButton("btnTestDetection", "测试检测", 84, 34, true, "detection.test"));
@@ -859,146 +849,353 @@ namespace NinePointRotationCalibration.Station.Views
             return page;
         }
 
-        // 构建相机开关、实时采集窗口、驱动连接与采集参数页
+        // 构建重新设计的现代工业相机控制台：状态横幅卡 + 独立功能开关 + 真实设备连接 + 采集与核心参数
         private TabPage BuildCameraTab()
         {
             TabPage page = CreateTabPage("tabCamera", "相机");
             TableLayoutPanel layout = CreateScrollableStack(page);
-            layout.RowCount = 5;
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 114.0F));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 316.0F));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 162.0F));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 152.0F));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 44.0F));
+            layout.RowCount = 4;
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 84.0F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 134.0F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 156.0F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 232.0F));
 
-            FlowLayoutPanel modeOptions = new FlowLayoutPanel();
-            modeOptions.Dock = DockStyle.Fill;
-            modeOptions.FlowDirection = FlowDirection.LeftToRight;
-            modeOptions.Margin = Padding.Empty;
-            modeOptions.Padding = new Padding(0, 2, 0, 2);
-            modeOptions.WrapContents = true;
+            // 1. 顶部相机连接状态横幅卡（带彩色左侧指示条与实时采集遥测徽章）
+            pnlCameraHeroCard = new Panel();
+            pnlCameraHeroCard.BackColor = CardBackgroundColor;
+            pnlCameraHeroCard.Dock = DockStyle.Fill;
+            pnlCameraHeroCard.Margin = new Padding(0, 0, 0, 10);
+            pnlCameraHeroCard.Name = "pnlCameraHeroCard";
+            pnlCameraHeroCard.Padding = new Padding(16, 10, 12, 10);
+            pnlCameraHeroCard.Paint += PnlCameraHeroCard_Paint;
 
-            chkCameraEnabled = CreateCheckBox("chkCameraEnabled", "启用相机", true, null);
-            chkCameraEnabled.Dock = DockStyle.None;
-            chkCameraEnabled.Margin = new Padding(0, 4, 16, 4);
+            TableLayoutPanel heroGrid = new TableLayoutPanel();
+            heroGrid.BackColor = CardBackgroundColor;
+            heroGrid.ColumnCount = 2;
+            heroGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 60.0F));
+            heroGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40.0F));
+            heroGrid.Dock = DockStyle.Fill;
+            heroGrid.Margin = Padding.Empty;
+            heroGrid.RowCount = 2;
+            heroGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 28.0F));
+            heroGrid.RowStyles.Add(new RowStyle(SizeType.Percent, 100.0F));
 
-            chkCalibrationEnabled = CreateCheckBox("chkCalibrationEnabled", "启用标定与坐标换算", true, null);
-            chkCalibrationEnabled.Dock = DockStyle.None;
-            chkCalibrationEnabled.Margin = new Padding(0, 4, 16, 4);
+            lblCameraHeroState = new Label();
+            lblCameraHeroState.AutoEllipsis = true;
+            lblCameraHeroState.Dock = DockStyle.Fill;
+            lblCameraHeroState.Font = new Font("Microsoft YaHei UI", 10.5F, FontStyle.Bold, GraphicsUnit.Point, 134);
+            lblCameraHeroState.ForeColor = TextSecondaryColor;
+            lblCameraHeroState.Name = "lblCameraHeroState";
+            lblCameraHeroState.Text = "○ 未连接";
+            lblCameraHeroState.TextAlign = ContentAlignment.MiddleLeft;
 
-            chkLiveAcquisition = CreateCheckBox("chkLiveAcquisition", "兼容相机实时采集", true, "camera.liveToggle");
-            chkLiveAcquisition.Dock = DockStyle.None;
-            chkLiveAcquisition.Margin = new Padding(0, 4, 16, 4);
-            toolTip.SetToolTip(chkLiveAcquisition, "开启后兼容大华/海康/模拟相机平滑实时采集流，并自动在生产抓拍时无冲突让出相机");
-
-            chkArchiveImages = CreateCheckBox("chkArchiveImages", "保存生产原图", false, "camera.archiveImages");
-            chkArchiveImages.Dock = DockStyle.None;
-            chkArchiveImages.Margin = new Padding(0, 4, 0, 4);
-            toolTip.SetToolTip(chkArchiveImages, "开启后自动保存每次检测原图到归档目录（默认关闭以节省磁盘空间）");
-
-            modeOptions.Controls.Add(chkCameraEnabled);
-            modeOptions.Controls.Add(chkCalibrationEnabled);
-            modeOptions.Controls.Add(chkLiveAcquisition);
-            modeOptions.Controls.Add(chkArchiveImages);
-            Panel mode = CreateCard("运行开关", modeOptions);
-
-            TableLayoutPanel liveLayout = new TableLayoutPanel();
-            liveLayout.ColumnCount = 1;
-            liveLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100.0F));
-            liveLayout.Dock = DockStyle.Fill;
-            liveLayout.Margin = Padding.Empty;
-            liveLayout.Padding = Padding.Empty;
-            liveLayout.RowCount = 3;
-            liveLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 36.0F));
-            liveLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100.0F));
-            liveLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 22.0F));
-
-            FlowLayoutPanel liveToolbar = new FlowLayoutPanel();
-            liveToolbar.Dock = DockStyle.Fill;
-            liveToolbar.FlowDirection = FlowDirection.LeftToRight;
-            liveToolbar.Margin = Padding.Empty;
-            liveToolbar.Padding = new Padding(0, 2, 0, 2);
-            liveToolbar.WrapContents = false;
-
-            btnToggleLiveStream = CreateButton("btnToggleLiveStream", "开始实时", 84, 30, true, "camera.liveStreamToggle");
-            btnSyncLiveToMain = CreateButton("btnSyncLiveToMain", "主窗实时", 84, 30, false, "camera.resumeMainLive");
-            btnFitLivePreview = CreateButton("btnFitLivePreview", "适应", 58, 30, false, null);
-            toolTip.SetToolTip(btnToggleLiveStream, "启动或停止后台相机实时采集流");
-            toolTip.SetToolTip(btnSyncLiveToMain, "解除主图锁定，将实时采集画面同步显示到左侧主视口");
-            toolTip.SetToolTip(btnFitLivePreview, "使实时画面适应本预览窗口");
-            liveToolbar.Controls.Add(btnToggleLiveStream);
-            liveToolbar.Controls.Add(btnSyncLiveToMain);
-            liveToolbar.Controls.Add(btnFitLivePreview);
-
-            cameraLiveViewport = new ImageViewport();
-            cameraLiveViewport.Dock = DockStyle.Fill;
-            cameraLiveViewport.Margin = new Padding(0, 3, 0, 3);
-            cameraLiveViewport.MinimumSize = new Size(160, 140);
-            cameraLiveViewport.Name = "cameraLiveViewport";
+            lblCameraHeroDetail = new Label();
+            lblCameraHeroDetail.AutoEllipsis = true;
+            lblCameraHeroDetail.Dock = DockStyle.Fill;
+            lblCameraHeroDetail.Font = new Font("Microsoft YaHei UI", 8.25F, FontStyle.Regular, GraphicsUnit.Point, 134);
+            lblCameraHeroDetail.ForeColor = TextMutedColor;
+            lblCameraHeroDetail.Name = "lblCameraHeroDetail";
+            lblCameraHeroDetail.Text = "大华 (CameraDH) · 未检测到在线相机";
+            lblCameraHeroDetail.TextAlign = ContentAlignment.MiddleLeft;
 
             lblCameraLiveStatus = new Label();
             lblCameraLiveStatus.AutoEllipsis = true;
+            lblCameraLiveStatus.BackColor = Color.FromArgb(241, 245, 249);
             lblCameraLiveStatus.Dock = DockStyle.Fill;
-            lblCameraLiveStatus.Font = new Font("Microsoft YaHei UI", 8.25F, FontStyle.Regular, GraphicsUnit.Point, 134);
+            lblCameraLiveStatus.Font = new Font("Microsoft YaHei UI", 8.0F, FontStyle.Bold, GraphicsUnit.Point, 134);
             lblCameraLiveStatus.ForeColor = TextMutedColor;
+            lblCameraLiveStatus.Margin = new Padding(8, 2, 0, 2);
             lblCameraLiveStatus.Name = "lblCameraLiveStatus";
-            lblCameraLiveStatus.Text = "○ 实时采集未启动（连接相机后点击「开始实时」即可流畅预览）";
-            lblCameraLiveStatus.TextAlign = ContentAlignment.MiddleLeft;
+            lblCameraLiveStatus.Padding = new Padding(8, 4, 8, 4);
+            lblCameraLiveStatus.Text = "未连接\r\n未采集";
+            lblCameraLiveStatus.TextAlign = ContentAlignment.MiddleCenter;
 
-            liveLayout.Controls.Add(liveToolbar, 0, 0);
-            liveLayout.Controls.Add(cameraLiveViewport, 0, 1);
-            liveLayout.Controls.Add(lblCameraLiveStatus, 0, 2);
-            Panel livePreviewGroup = CreateCard("相机实时采集窗口", liveLayout);
-            livePreviewGroup.Name = "grpCameraLivePreview";
+            heroGrid.Controls.Add(lblCameraHeroState, 0, 0);
+            heroGrid.Controls.Add(lblCameraHeroDetail, 0, 1);
+            heroGrid.Controls.Add(lblCameraLiveStatus, 1, 0);
+            heroGrid.SetRowSpan(lblCameraLiveStatus, 2);
+            pnlCameraHeroCard.Controls.Add(heroGrid);
 
+            // 2. 独立功能开关卡（相机连接 / 标定 / 检测 相互独立，外加预览与归档选项）
+            TableLayoutPanel switchesRoot = new TableLayoutPanel();
+            switchesRoot.BackColor = CardBackgroundColor;
+            switchesRoot.ColumnCount = 1;
+            switchesRoot.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100.0F));
+            switchesRoot.Dock = DockStyle.Fill;
+            switchesRoot.Margin = Padding.Empty;
+            switchesRoot.RowCount = 2;
+            switchesRoot.RowStyles.Add(new RowStyle(SizeType.Absolute, 42.0F));
+            switchesRoot.RowStyles.Add(new RowStyle(SizeType.Percent, 100.0F));
+
+            Panel coreSwitchesStrip = new Panel();
+            coreSwitchesStrip.BackColor = PageBackgroundColor;
+            coreSwitchesStrip.Dock = DockStyle.Fill;
+            coreSwitchesStrip.Margin = new Padding(0, 0, 0, 6);
+            coreSwitchesStrip.Padding = new Padding(10, 4, 10, 4);
+            coreSwitchesStrip.Paint += DrawCardBorder;
+
+            TableLayoutPanel coreSwitchGrid = new TableLayoutPanel();
+            coreSwitchGrid.BackColor = PageBackgroundColor;
+            coreSwitchGrid.ColumnCount = 3;
+            coreSwitchGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.333F));
+            coreSwitchGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.333F));
+            coreSwitchGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.334F));
+            coreSwitchGrid.Dock = DockStyle.Fill;
+            coreSwitchGrid.Margin = Padding.Empty;
+            coreSwitchGrid.RowCount = 1;
+            coreSwitchGrid.RowStyles.Add(new RowStyle(SizeType.Percent, 100.0F));
+
+            chkCameraEnabled = CreateCheckBox("chkCameraEnabled", "启用相机", true, null);
+            chkCameraEnabled.BackColor = PageBackgroundColor;
+            chkCameraEnabled.Font = new Font("Microsoft YaHei UI", 9.0F, FontStyle.Bold, GraphicsUnit.Point, 134);
+            chkCameraEnabled.UseVisualStyleBackColor = false;
+            toolTip.SetToolTip(chkCameraEnabled, "独立控制相机硬件连接与采集；关闭后仍可使用本地导入图像执行检测与标定计算");
+
+            chkCalibrationEnabled = CreateCheckBox("chkCalibrationEnabled", "启用标定", true, null);
+            chkCalibrationEnabled.BackColor = PageBackgroundColor;
+            chkCalibrationEnabled.Font = new Font("Microsoft YaHei UI", 9.0F, FontStyle.Bold, GraphicsUnit.Point, 134);
+            chkCalibrationEnabled.UseVisualStyleBackColor = false;
+            toolTip.SetToolTip(chkCalibrationEnabled, "独立控制 9+5 标定、左右示教与坐标映射；关闭时仍可正常单独执行视觉检测");
+
+            chkInspectionEnabled = CreateCheckBox("chkInspectionEnabled", "启用检测", true, null);
+            chkInspectionEnabled.BackColor = PageBackgroundColor;
+            chkInspectionEnabled.Font = new Font("Microsoft YaHei UI", 9.0F, FontStyle.Bold, GraphicsUnit.Point, 134);
+            chkInspectionEnabled.UseVisualStyleBackColor = false;
+            toolTip.SetToolTip(chkInspectionEnabled, "独立控制板件定位与瑕疵检测（测试检测、检测当前图及 TCP 生产触发），不依赖标定");
+
+            coreSwitchGrid.Controls.Add(chkCameraEnabled, 0, 0);
+            coreSwitchGrid.Controls.Add(chkCalibrationEnabled, 1, 0);
+            coreSwitchGrid.Controls.Add(chkInspectionEnabled, 2, 0);
+            coreSwitchesStrip.Controls.Add(coreSwitchGrid);
+
+            TableLayoutPanel auxSwitchGrid = new TableLayoutPanel();
+            auxSwitchGrid.BackColor = CardBackgroundColor;
+            auxSwitchGrid.ColumnCount = 2;
+            auxSwitchGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 54.0F));
+            auxSwitchGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 46.0F));
+            auxSwitchGrid.Dock = DockStyle.Fill;
+            auxSwitchGrid.Margin = Padding.Empty;
+            auxSwitchGrid.Padding = new Padding(10, 2, 10, 0);
+            auxSwitchGrid.RowCount = 1;
+            auxSwitchGrid.RowStyles.Add(new RowStyle(SizeType.Percent, 100.0F));
+
+            chkLiveAcquisition = CreateCheckBox("chkLiveAcquisition", "连接后自动实时预览", true, "camera.liveToggle");
+            toolTip.SetToolTip(chkLiveAcquisition, "开启后连接大华/海康相机时自动开启主视口实时预览，生产抓拍时自动无冲突让出相机");
+
+            chkArchiveImages = CreateCheckBox("chkArchiveImages", "保存生产原图", false, "camera.archiveImages");
+            toolTip.SetToolTip(chkArchiveImages, "开启后自动保存每次生产检测原图到归档目录（默认关闭以节省磁盘空间）");
+
+            auxSwitchGrid.Controls.Add(chkLiveAcquisition, 0, 0);
+            auxSwitchGrid.Controls.Add(chkArchiveImages, 1, 0);
+
+            switchesRoot.Controls.Add(coreSwitchesStrip, 0, 0);
+            switchesRoot.Controls.Add(auxSwitchGrid, 0, 1);
+            Panel mode = CreateCard("独立功能开关", switchesRoot);
+
+            // 3. 真实工业相机连接卡（仅支持大华/海康真实硬件，等宽三键操作栏）
             TableLayoutPanel connectionFields = CreateFieldTable(2);
             connectionFields.AutoScroll = false;
+            connectionFields.ColumnStyles[0].Width = 78.0F;
             cmbCameraProvider = CreateComboBox("cmbCameraProvider");
-            cmbCameraProvider.Items.AddRange(new object[] { "大华 (CameraDH)", "海康 (MVS)", "模拟相机" });
+            cmbCameraProvider.Items.AddRange(new object[] { "大华 (CameraDH)", "海康 (MVS)" });
             cmbCameraProvider.SelectedIndex = 0;
             cmbCameraProvider.Tag = "camera.providerChanged";
-            toolTip.SetToolTip(cmbCameraProvider, "切换相机驱动后即时生效，点击「枚举」或「连接」即可发现对应相机");
+            toolTip.SetToolTip(cmbCameraProvider, "切换真实相机驱动（大华 / 海康）后即时生效");
             cmbCameraDevice = CreateComboBox("cmbCameraDevice");
+            toolTip.SetToolTip(cmbCameraDevice, "点击「枚举设备」刷新当前在线的真实工业相机列表");
             AddField(connectionFields, 0, "相机驱动", cmbCameraProvider);
-            AddField(connectionFields, 1, "设备", cmbCameraDevice);
+            AddField(connectionFields, 1, "在线设备", cmbCameraDevice);
             connectionFields.RowCount = 3;
-            connectionFields.RowStyles.Add(new RowStyle(SizeType.Absolute, 38.0F));
-            FlowLayoutPanel cameraCommands = new FlowLayoutPanel();
-            cameraCommands.AutoSize = false;
-            cameraCommands.Dock = DockStyle.Fill;
-            cameraCommands.Margin = Padding.Empty;
-            cameraCommands.Padding = new Padding(0, 4, 0, 0);
-            cameraCommands.WrapContents = false;
-            cameraCommands.Controls.Add(CreateButton("btnConnectCamera", "连接", 72, 30, true, "camera.connect"));
-            cameraCommands.Controls.Add(CreateButton("btnEnumerateCamera", "枚举", 68, 30, false, "camera.enumerate"));
-            cameraCommands.Controls.Add(CreateButton("btnDisconnectCamera", "断开", 68, 30, false, "camera.disconnect"));
-            connectionFields.Controls.Add(cameraCommands, 0, 2);
-            connectionFields.SetColumnSpan(cameraCommands, 2);
-            Panel connection = CreateCard("相机连接", connectionFields);
+            connectionFields.RowStyles.Add(new RowStyle(SizeType.Percent, 100.0F));
 
-            TableLayoutPanel acquisitionFields = CreateFieldTable(2);
-            acquisitionFields.AutoScroll = false;
+            TableLayoutPanel connectButtons = new TableLayoutPanel();
+            connectButtons.BackColor = CardBackgroundColor;
+            connectButtons.ColumnCount = 3;
+            connectButtons.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.333F));
+            connectButtons.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.333F));
+            connectButtons.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.334F));
+            connectButtons.Dock = DockStyle.Fill;
+            connectButtons.Margin = new Padding(0, 6, 0, 0);
+            connectButtons.RowCount = 1;
+            connectButtons.RowStyles.Add(new RowStyle(SizeType.Percent, 100.0F));
+
+            Button btnEnumCamera = CreateButton("btnEnumerateCamera", "枚举设备", 90, 32, false, "camera.enumerate");
+            btnEnumCamera.Dock = DockStyle.Fill;
+            btnEnumCamera.Margin = new Padding(0, 0, 5, 0);
+            Button btnConnCamera = CreateButton("btnConnectCamera", "连接相机", 90, 32, true, "camera.connect");
+            btnConnCamera.Dock = DockStyle.Fill;
+            btnConnCamera.Margin = new Padding(3, 0, 3, 0);
+            Button btnDiscCamera = CreateButton("btnDisconnectCamera", "断开连接", 90, 32, false, "camera.disconnect");
+            btnDiscCamera.Dock = DockStyle.Fill;
+            btnDiscCamera.Margin = new Padding(5, 0, 0, 0);
+            connectButtons.Controls.Add(btnEnumCamera, 0, 0);
+            connectButtons.Controls.Add(btnConnCamera, 1, 0);
+            connectButtons.Controls.Add(btnDiscCamera, 2, 0);
+            connectionFields.Controls.Add(connectButtons, 0, 2);
+            connectionFields.SetColumnSpan(connectButtons, 2);
+            Panel connection = CreateCard("设备连接", connectionFields);
+
+            // 4. 采集控制与核心参数卡（实时/拍照三键 + 曝光内联控制 + 三格遥测磁贴）
+            TableLayoutPanel acquisitionLayout = new TableLayoutPanel();
+            acquisitionLayout.BackColor = CardBackgroundColor;
+            acquisitionLayout.ColumnCount = 1;
+            acquisitionLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100.0F));
+            acquisitionLayout.Dock = DockStyle.Fill;
+            acquisitionLayout.Margin = Padding.Empty;
+            acquisitionLayout.RowCount = 4;
+            acquisitionLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 36.0F));
+            acquisitionLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 14.0F));
+            acquisitionLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 36.0F));
+            acquisitionLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100.0F));
+
+            TableLayoutPanel captureButtons = new TableLayoutPanel();
+            captureButtons.BackColor = CardBackgroundColor;
+            captureButtons.ColumnCount = 3;
+            captureButtons.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.333F));
+            captureButtons.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.333F));
+            captureButtons.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.334F));
+            captureButtons.Dock = DockStyle.Fill;
+            captureButtons.Margin = Padding.Empty;
+            captureButtons.RowCount = 1;
+            captureButtons.RowStyles.Add(new RowStyle(SizeType.Percent, 100.0F));
+
+            btnToggleLiveStream = CreateButton("btnToggleLiveStream", "开始实时", 90, 32, true, "camera.liveStreamToggle");
+            btnToggleLiveStream.Dock = DockStyle.Fill;
+            btnToggleLiveStream.Margin = new Padding(0, 0, 5, 0);
+            btnSyncLiveToMain = CreateButton("btnSyncLiveToMain", "主窗实时", 90, 32, false, "camera.resumeMainLive");
+            btnSyncLiveToMain.Dock = DockStyle.Fill;
+            btnSyncLiveToMain.Margin = new Padding(3, 0, 3, 0);
+            Button btnTestCam = CreateButton("btnTestCamera", "单次拍照", 90, 32, false, "camera.test");
+            btnTestCam.Dock = DockStyle.Fill;
+            btnTestCam.Margin = new Padding(5, 0, 0, 0);
+            toolTip.SetToolTip(btnToggleLiveStream, "启动或停止已连接相机的实时采集流（显示于左侧主图像视口）");
+            toolTip.SetToolTip(btnSyncLiveToMain, "解除主视口画面锁定，切回相机实时预览流");
+            toolTip.SetToolTip(btnTestCam, "触发已连接相机采集一帧真实图像并显示到主视口");
+            captureButtons.Controls.Add(btnToggleLiveStream, 0, 0);
+            captureButtons.Controls.Add(btnSyncLiveToMain, 1, 0);
+            captureButtons.Controls.Add(btnTestCam, 2, 0);
+
+            Panel divider = new Panel();
+            divider.BackColor = CardBorderColor;
+            divider.Dock = DockStyle.Top;
+            divider.Height = 1;
+            divider.Margin = new Padding(0, 7, 0, 6);
+
+            TableLayoutPanel exposureBar = new TableLayoutPanel();
+            exposureBar.BackColor = CardBackgroundColor;
+            exposureBar.ColumnCount = 4;
+            exposureBar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 78.0F));
+            exposureBar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100.0F));
+            exposureBar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 86.0F));
+            exposureBar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 64.0F));
+            exposureBar.Dock = DockStyle.Fill;
+            exposureBar.Margin = Padding.Empty;
+            exposureBar.RowCount = 1;
+            exposureBar.RowStyles.Add(new RowStyle(SizeType.Percent, 100.0F));
+
+            Label lblExposureTitle = new Label();
+            lblExposureTitle.Dock = DockStyle.Fill;
+            lblExposureTitle.ForeColor = TextSecondaryColor;
+            lblExposureTitle.Text = "曝光 (μs)";
+            lblExposureTitle.TextAlign = ContentAlignment.MiddleLeft;
+
             NumericUpDown cameraExposure = CreateDecimalInput("nudCameraExposure", 10000M, 10M, 10000000M, 1, 100M, false);
+            cameraExposure.Dock = DockStyle.Fill;
+            cameraExposure.Margin = new Padding(0, 4, 8, 4);
             toolTip.SetToolTip(cameraExposure, "相机曝光时间（微秒 μs），范围 10 ~ 10,000,000，每次调节步进 100 μs");
-            AddField(acquisitionFields, 0, "曝光 (μs)", cameraExposure);
-            AddField(acquisitionFields, 1, "增益", new Label { Name = "lblCameraGain", Text = "未读取", AutoSize = true, Anchor = AnchorStyles.Left, ForeColor = TextSecondaryColor });
-            AddField(acquisitionFields, 2, "触发模式", new Label { Name = "lblCameraTrigger", Text = "未读取", AutoSize = true, Anchor = AnchorStyles.Left, ForeColor = TextSecondaryColor });
-            Panel acquisition = CreateCard("采集参数", acquisitionFields);
 
-            FlowLayoutPanel actions = new FlowLayoutPanel();
-            actions.Dock = DockStyle.Fill;
-            actions.Margin = Padding.Empty;
-            actions.Padding = new Padding(0, 4, 0, 2);
-            actions.Controls.Add(CreateButton("btnApplyCamera", "应用曝光", 88, 34, true, "camera.apply"));
-            actions.Controls.Add(CreateButton("btnReadCamera", "读取参数", 88, 34, false, "camera.read"));
-            actions.Controls.Add(CreateButton("btnTestCamera", "测试拍照", 88, 34, false, "camera.test"));
+            Button btnApplyExp = CreateButton("btnApplyCamera", "应用曝光", 80, 30, true, "camera.apply");
+            btnApplyExp.Dock = DockStyle.Fill;
+            btnApplyExp.Margin = new Padding(0, 2, 6, 2);
+            Button btnReadParam = CreateButton("btnReadCamera", "读取", 58, 30, false, "camera.read");
+            btnReadParam.Dock = DockStyle.Fill;
+            btnReadParam.Margin = new Padding(0, 2, 0, 2);
+            toolTip.SetToolTip(btnApplyExp, "将当前曝光时间立即下发至已连接相机");
+            toolTip.SetToolTip(btnReadParam, "从已连接相机读取当前曝光、增益和触发模式");
 
-            layout.Controls.Add(mode, 0, 0);
-            layout.Controls.Add(livePreviewGroup, 0, 1);
+            exposureBar.Controls.Add(lblExposureTitle, 0, 0);
+            exposureBar.Controls.Add(cameraExposure, 1, 0);
+            exposureBar.Controls.Add(btnApplyExp, 2, 0);
+            exposureBar.Controls.Add(btnReadParam, 3, 0);
+
+            TableLayoutPanel metricGrid = new TableLayoutPanel();
+            metricGrid.BackColor = CardBackgroundColor;
+            metricGrid.ColumnCount = 3;
+            metricGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.333F));
+            metricGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.333F));
+            metricGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.334F));
+            metricGrid.Dock = DockStyle.Fill;
+            metricGrid.Margin = new Padding(0, 10, 0, 0);
+            metricGrid.RowCount = 1;
+            metricGrid.RowStyles.Add(new RowStyle(SizeType.Percent, 100.0F));
+
+            Label gainValue;
+            Label triggerValue;
+            Panel gainTile = CreateCameraMetricTile("当前增益", "lblCameraGain", "--", new Padding(0, 0, 5, 0), out gainValue);
+            Panel triggerTile = CreateCameraMetricTile("触发模式", "lblCameraTrigger", "--", new Padding(3, 0, 3, 0), out triggerValue);
+            Panel resolutionTile = CreateCameraMetricTile("画面分辨率", "lblCameraResolution", "--", new Padding(5, 0, 0, 0), out lblCameraResolution);
+            metricGrid.Controls.Add(gainTile, 0, 0);
+            metricGrid.Controls.Add(triggerTile, 1, 0);
+            metricGrid.Controls.Add(resolutionTile, 2, 0);
+
+            acquisitionLayout.Controls.Add(captureButtons, 0, 0);
+            acquisitionLayout.Controls.Add(divider, 0, 1);
+            acquisitionLayout.Controls.Add(exposureBar, 0, 2);
+            acquisitionLayout.Controls.Add(metricGrid, 0, 3);
+            Panel acquisition = CreateCard("采集控制与参数", acquisitionLayout);
+
+            layout.Controls.Add(pnlCameraHeroCard, 0, 0);
+            layout.Controls.Add(mode, 0, 1);
             layout.Controls.Add(connection, 0, 2);
             layout.Controls.Add(acquisition, 0, 3);
-            layout.Controls.Add(actions, 0, 4);
             return page;
+        }
+
+        private static Panel CreateCameraMetricTile(
+            string caption,
+            string valueName,
+            string defaultValue,
+            Padding margin,
+            out Label valueLabel)
+        {
+            Panel tile = new Panel();
+            tile.BackColor = PageBackgroundColor;
+            tile.Dock = DockStyle.Fill;
+            tile.Margin = margin;
+            tile.Padding = new Padding(10, 8, 10, 8);
+            tile.Paint += DrawCardBorder;
+
+            TableLayoutPanel inner = new TableLayoutPanel();
+            inner.BackColor = PageBackgroundColor;
+            inner.ColumnCount = 1;
+            inner.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100.0F));
+            inner.Dock = DockStyle.Fill;
+            inner.Margin = Padding.Empty;
+            inner.RowCount = 2;
+            inner.RowStyles.Add(new RowStyle(SizeType.Absolute, 20.0F));
+            inner.RowStyles.Add(new RowStyle(SizeType.Percent, 100.0F));
+
+            Label lblCaption = new Label();
+            lblCaption.AutoEllipsis = true;
+            lblCaption.Dock = DockStyle.Fill;
+            lblCaption.Font = new Font("Microsoft YaHei UI", 8.0F, FontStyle.Regular, GraphicsUnit.Point, 134);
+            lblCaption.ForeColor = TextMutedColor;
+            lblCaption.Text = caption;
+            lblCaption.TextAlign = ContentAlignment.MiddleLeft;
+
+            valueLabel = new Label();
+            valueLabel.AutoEllipsis = true;
+            valueLabel.Dock = DockStyle.Fill;
+            valueLabel.Font = new Font("Microsoft YaHei UI", 9.5F, FontStyle.Bold, GraphicsUnit.Point, 134);
+            valueLabel.ForeColor = TextPrimaryColor;
+            valueLabel.Name = valueName;
+            valueLabel.Text = defaultValue;
+            valueLabel.TextAlign = ContentAlignment.MiddleLeft;
+
+            inner.Controls.Add(lblCaption, 0, 0);
+            inner.Controls.Add(valueLabel, 0, 1);
+            tile.Controls.Add(inner);
+            return tile;
         }
 
         // 构建 TCP 通信监听与配置/数据文件路径页
@@ -1477,6 +1674,40 @@ namespace NinePointRotationCalibration.Station.Views
             button.Tag = actionKey;
             button.Text = text;
             button.UseVisualStyleBackColor = false;
+            button.EnabledChanged += delegate
+            {
+                if (button.Enabled)
+                {
+                    button.BackColor = primary ? AccentPrimaryColor : HeaderSurfaceColor;
+                    button.ForeColor = primary ? Color.White : Color.FromArgb(226, 232, 240);
+                    button.FlatAppearance.BorderColor = primary ? AccentPrimaryColor : Color.FromArgb(51, 65, 85);
+                    button.Cursor = Cursors.Hand;
+                }
+                else
+                {
+                    button.BackColor = Color.FromArgb(26, 36, 54);
+                    button.ForeColor = Color.FromArgb(148, 163, 184);
+                    button.FlatAppearance.BorderColor = Color.FromArgb(51, 65, 85);
+                    button.Cursor = Cursors.Default;
+                }
+                button.Invalidate();
+            };
+            button.Paint += delegate(object sender, PaintEventArgs e)
+            {
+                if (button.Enabled) return;
+                Rectangle bounds = new Rectangle(0, 0, button.Width, button.Height);
+                using (SolidBrush bg = new SolidBrush(Color.FromArgb(26, 36, 54)))
+                    e.Graphics.FillRectangle(bg, bounds);
+                using (Pen border = new Pen(Color.FromArgb(51, 65, 85), 1.0F))
+                    e.Graphics.DrawRectangle(border, 0, 0, button.Width - 1, button.Height - 1);
+                TextRenderer.DrawText(
+                    e.Graphics,
+                    button.Text,
+                    button.Font,
+                    bounds,
+                    Color.FromArgb(148, 163, 184),
+                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine);
+            };
             return button;
         }
 
@@ -1515,6 +1746,49 @@ namespace NinePointRotationCalibration.Station.Views
             button.Tag = actionKey;
             button.Text = text;
             button.UseVisualStyleBackColor = false;
+            button.EnabledChanged += delegate
+            {
+                if (button.Enabled)
+                {
+                    button.BackColor = primary
+                        ? AccentPrimaryColor
+                        : danger ? Color.FromArgb(254, 242, 242) : Color.White;
+                    button.ForeColor = primary
+                        ? Color.White
+                        : danger ? Color.FromArgb(185, 28, 28) : TextPrimaryColor;
+                    button.FlatAppearance.BorderColor = primary
+                        ? AccentPrimaryColor
+                        : danger ? Color.FromArgb(254, 202, 202) : Color.FromArgb(203, 213, 225);
+                    button.Cursor = Cursors.Hand;
+                }
+                else
+                {
+                    button.BackColor = primary
+                        ? Color.FromArgb(235, 240, 247)
+                        : Color.FromArgb(248, 250, 252);
+                    button.ForeColor = Color.FromArgb(148, 163, 184);
+                    button.FlatAppearance.BorderColor = Color.FromArgb(203, 213, 225);
+                    button.Cursor = Cursors.Default;
+                }
+                button.Invalidate();
+            };
+            button.Paint += delegate(object sender, PaintEventArgs e)
+            {
+                if (button.Enabled) return;
+                Rectangle bounds = new Rectangle(0, 0, button.Width, button.Height);
+                Color bgColor = primary ? Color.FromArgb(235, 240, 247) : Color.FromArgb(248, 250, 252);
+                using (SolidBrush bg = new SolidBrush(bgColor))
+                    e.Graphics.FillRectangle(bg, bounds);
+                using (Pen border = new Pen(Color.FromArgb(203, 213, 225), 1.0F))
+                    e.Graphics.DrawRectangle(border, 0, 0, button.Width - 1, button.Height - 1);
+                TextRenderer.DrawText(
+                    e.Graphics,
+                    button.Text,
+                    button.Font,
+                    bounds,
+                    Color.FromArgb(148, 163, 184),
+                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine);
+            };
             return button;
         }
 

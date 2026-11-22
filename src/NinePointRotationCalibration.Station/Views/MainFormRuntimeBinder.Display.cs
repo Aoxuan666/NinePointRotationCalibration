@@ -28,6 +28,13 @@ namespace NinePointRotationCalibration.Station.Views
 
         private void RenderDetectionDualViewOnTabEnter()
         {
+            if (!_runtime.IsInspectionEnabled)
+            {
+                _view.EffectViewport.ClearOverlays();
+                _view.SetEffectViewportInformation("检测功能已关闭 · 请在「相机」页开启「启用检测」");
+                return;
+            }
+
             long currentGeneration;
             long overlayGeneration;
             bool isLive;
@@ -192,13 +199,22 @@ namespace NinePointRotationCalibration.Station.Views
         private async void ScheduleBinaryPreview(bool debounce)
         {
             if (_disposed || !_view.IsDetectionDualViewActive) return;
+            if (!_runtime.IsInspectionEnabled)
+            {
+                _view.SetEffectViewportInformation("检测功能已关闭 · 请在「相机」页开启「启用检测」");
+                return;
+            }
 
             // 取消上一次尚未完成的效果图计算，并记录当前 _displayGeneration 防止旧帧覆盖新锁定图像
             CancellationTokenSource cancellation =
                 CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
             lock (_binaryPreviewSync)
             {
-                if (_binaryPreviewCancellation != null) _binaryPreviewCancellation.Cancel();
+                if (_binaryPreviewCancellation != null)
+                {
+                    try { _binaryPreviewCancellation.Cancel(); }
+                    catch (ObjectDisposedException) { }
+                }
                 _binaryPreviewCancellation = cancellation;
             }
 
@@ -253,6 +269,12 @@ namespace NinePointRotationCalibration.Station.Views
                 }
 
                 DetectionProfile profile = ReadDetectionProfileFromView();
+                if (profile.MinimumBlobArea > profile.MaximumBlobArea)
+                {
+                    _view.SetEffectViewportInformation("参数无效：最小面积不能大于最大面积");
+                    _view.SetOperationStatus("最小面积不能大于最大面积", false, true);
+                    return;
+                }
                 bool binaryEnabled = IsBinaryPreviewEnabled();
                 int expectedCount = Decimal.ToInt32(_view.ExpectedBoardCountInput.Value);
                 CalibrationJob job = _runtime.GetPositioningJobSnapshot();
@@ -841,6 +863,20 @@ namespace NinePointRotationCalibration.Station.Views
             }
         }
 
+        private Bitmap TrySnapshotLockedImage(out LockedFrameGrayCache cache)
+        {
+            lock (_displaySync)
+            {
+                if (_displayMode == DisplayMode.LockedFrame && _lockedDisplayImage != null)
+                {
+                    cache = _lockedGray;
+                    return (Bitmap)_lockedDisplayImage.Clone();
+                }
+                cache = null;
+                return null;
+            }
+        }
+
         private Bitmap SnapshotAndLockCurrentImage()
         {
             // 已处于锁定帧模式时直接克隆返回，避免重复截屏并保持当前基准帧不变
@@ -848,9 +884,6 @@ namespace NinePointRotationCalibration.Station.Views
             {
                 if (_lockedDisplayImage != null) return (Bitmap)_lockedDisplayImage.Clone();
             }
-
-            // 启用了模拟相机时禁止从仿真预览流截屏，强制要求先导入真实图像
-            if (_runtime.IsMockCamera) return null;
 
             Bitmap snapshot = _view.Viewport.Snapshot();
             if (snapshot == null) return null;

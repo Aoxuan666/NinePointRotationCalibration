@@ -121,6 +121,7 @@ namespace NinePointRotationCalibration.Station.Services.Camera
             CancellationToken cancellationToken)
         {
             ThrowIfDisposed();
+            await StopPreviewAsync().ConfigureAwait(false);
             await _deviceGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
@@ -306,10 +307,12 @@ namespace NinePointRotationCalibration.Station.Services.Camera
             lock (_sync)
             {
                 if (_previewCancellation != null) return;
-                _previewCancellation = new CancellationTokenSource();
+                if (_device == null || !_device.IsConnected)
+                    throw new InvalidOperationException("相机未连接，无法开启实时预览。");
+                CancellationTokenSource ownedCts = new CancellationTokenSource();
+                _previewCancellation = ownedCts;
                 _liveFps = 0.0;
-                CancellationToken token = _previewCancellation.Token;
-                _previewTask = Task.Run(() => PreviewLoopAsync(token));
+                _previewTask = Task.Run(() => PreviewLoopAsync(ownedCts));
                 started = true;
             }
             if (started)
@@ -365,9 +368,9 @@ namespace NinePointRotationCalibration.Station.Services.Camera
                         cleared = true;
                     }
                 }
-                cancellation.Dispose();
                 if (cleared)
                 {
+                    cancellation.Dispose();
                     LocalDebugLog.Write(
                         "INFO",
                         "camera.preview",
@@ -377,8 +380,9 @@ namespace NinePointRotationCalibration.Station.Services.Camera
             }
         }
 
-        private async Task PreviewLoopAsync(CancellationToken cancellationToken)
+        private async Task PreviewLoopAsync(CancellationTokenSource ownedCancellation)
         {
+            CancellationToken cancellationToken = ownedCancellation.Token;
             int consecutiveFailures = 0;
             bool failureReported = false;
             bool firstFrame = true;
@@ -387,123 +391,164 @@ namespace NinePointRotationCalibration.Station.Services.Camera
             Stopwatch statsLogWatch = Stopwatch.StartNew();
             int windowFrames = 0;
 
-            while (!cancellationToken.IsCancellationRequested)
+            try
             {
-                try
+                while (!cancellationToken.IsCancellationRequested)
                 {
-                    int targetInterval = PreviewIntervalMilliseconds;
-                    if (PreviewShouldYield())
-                    {
-                        await Task.Delay(Math.Min(100, Math.Max(20, targetInterval)), cancellationToken).ConfigureAwait(false);
-                        continue;
-                    }
-
-                    // UI 渲染端繁忙时让出极短时间片避免无效抓帧与内存抖动
-                    Func<bool> consumerBusy = PreviewConsumerBusy;
-                    if (consumerBusy != null)
-                    {
-                        bool busy = false;
-                        try { busy = consumerBusy(); } catch { }
-                        if (busy)
-                        {
-                            Interlocked.Increment(ref _liveDroppedFrameCount);
-                            await Task.Delay(Math.Min(16, targetInterval), cancellationToken).ConfigureAwait(false);
-                            continue;
-                        }
-                    }
-
-                    frameWatch.Restart();
-                    using (CameraFrame frame = await CaptureCoreAsync(cancellationToken, true).ConfigureAwait(false))
-                    {
-                        if (cancellationToken.IsCancellationRequested) break;
-                        if (firstFrame)
-                        {
-                            firstFrame = false;
-                            LocalDebugLog.Write("INFO", "camera.preview", "First preview frame: " +
-                                frame.Image.Width + "x" + frame.Image.Height + ", format=" + frame.Image.PixelFormat + ".");
-                        }
-                        Interlocked.Increment(ref _liveFrameCount);
-                        windowFrames++;
-                        double fpsElapsed = fpsWindowWatch.Elapsed.TotalSeconds;
-                        if (fpsElapsed >= 0.5)
-                        {
-                            double measuredFps = windowFrames / fpsElapsed;
-                            lock (_sync) _liveFps = measuredFps;
-                            windowFrames = 0;
-                            fpsWindowWatch.Restart();
-                        }
-
-                        PublishPreviewFrame(frame.Image);
-                    }
-
-                    consecutiveFailures = 0;
-                    if (failureReported)
-                    {
-                        failureReported = false;
-                        LocalDebugLog.Write("INFO", "camera.preview", "Camera live preview recovered.");
-                        OnLog("INFO", "Camera preview recovered.");
-                        OnPreviewHealthChanged(
-                            true,
-                            ProviderName + " / " + ConnectedDeviceId);
-                    }
-
-                    if (statsLogWatch.Elapsed.TotalSeconds >= 30.0)
-                    {
-                        statsLogWatch.Restart();
-                        LocalDebugLog.Write(
-                            "DEBUG",
-                            "camera.preview",
-                            string.Format(
-                                CultureInfo.InvariantCulture,
-                                "Live stream heartbeat: fps={0:0.0}, totalFrames={1}, dropped={2}, lastGrabMs={3:0.0}, interval={4}ms",
-                                LiveFps,
-                                LiveFrameCount,
-                                LiveDroppedFrameCount,
-                                frameWatch.Elapsed.TotalMilliseconds,
-                                targetInterval));
-                    }
-
-                    // 按周期扣减本次采集与拷贝耗时，避免固定 Sleep 叠加造成帧率掉半和卡顿
-                    int remainingMs = targetInterval - (int)frameWatch.ElapsedMilliseconds;
-                    if (remainingMs >= 4)
-                    {
-                        await Task.Delay(remainingMs, cancellationToken).ConfigureAwait(false);
-                    }
-                    else
-                    {
-                        await Task.Yield();
-                    }
-                }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                {
-                    break;
-                }
-                catch (Exception exception)
-                {
-                    consecutiveFailures++;
-                    if (consecutiveFailures == 1)
-                    {
-                        LocalDebugLog.WriteException("WARN", "camera.preview", "Camera preview grab failed (attempt #1)", exception);
-                        OnLog("WARN", "Camera preview failed: " + exception.Message);
-                    }
-                    // 连续失败达到阈值后上报预览健康异常，避免单帧偶发波动误报故障
-                    if (!failureReported && consecutiveFailures >= PreviewFailureThreshold)
-                    {
-                        failureReported = true;
-                        string detail = "Preview failed " + consecutiveFailures +
-                                        " consecutive times: " + exception.Message;
-                        LocalDebugLog.WriteException("ERROR", "camera.preview", detail, exception);
-                        OnLog("ERROR", detail);
-                        OnPreviewHealthChanged(false, detail);
-                    }
                     try
                     {
-                        await Task.Delay(Math.Max(500, PreviewIntervalMilliseconds), cancellationToken).ConfigureAwait(false);
+                        if (!IsConnected)
+                        {
+                            OnLog("WARN", "相机连接已断开，实时预览自动停止。");
+                            OnPreviewHealthChanged(false, "相机连接已断开");
+                            break;
+                        }
+
+                        int targetInterval = PreviewIntervalMilliseconds;
+                        if (PreviewShouldYield())
+                        {
+                            await Task.Delay(Math.Min(100, Math.Max(20, targetInterval)), cancellationToken).ConfigureAwait(false);
+                            continue;
+                        }
+
+                        // UI 渲染端繁忙时让出极短时间片避免无效抓帧与内存抖动
+                        Func<bool> consumerBusy = PreviewConsumerBusy;
+                        if (consumerBusy != null)
+                        {
+                            bool busy = false;
+                            try { busy = consumerBusy(); } catch { }
+                            if (busy)
+                            {
+                                Interlocked.Increment(ref _liveDroppedFrameCount);
+                                await Task.Delay(Math.Min(16, targetInterval), cancellationToken).ConfigureAwait(false);
+                                continue;
+                            }
+                        }
+
+                        frameWatch.Restart();
+                        using (CameraFrame frame = await CaptureCoreAsync(cancellationToken, true).ConfigureAwait(false))
+                        {
+                            if (cancellationToken.IsCancellationRequested) break;
+                            if (firstFrame)
+                            {
+                                firstFrame = false;
+                                LocalDebugLog.Write("INFO", "camera.preview", "First preview frame: " +
+                                    frame.Image.Width + "x" + frame.Image.Height + ", format=" + frame.Image.PixelFormat + ".");
+                            }
+                            Interlocked.Increment(ref _liveFrameCount);
+                            windowFrames++;
+                            double fpsElapsed = fpsWindowWatch.Elapsed.TotalSeconds;
+                            if (fpsElapsed >= 0.5)
+                            {
+                                double measuredFps = windowFrames / fpsElapsed;
+                                lock (_sync) _liveFps = measuredFps;
+                                windowFrames = 0;
+                                fpsWindowWatch.Restart();
+                            }
+
+                            PublishPreviewFrame(frame.Image);
+                        }
+
+                        consecutiveFailures = 0;
+                        if (failureReported)
+                        {
+                            failureReported = false;
+                            LocalDebugLog.Write("INFO", "camera.preview", "Camera live preview recovered.");
+                            OnLog("INFO", "Camera preview recovered.");
+                            OnPreviewHealthChanged(
+                                true,
+                                ProviderName + " / " + ConnectedDeviceId);
+                        }
+
+                        if (statsLogWatch.Elapsed.TotalSeconds >= 30.0)
+                        {
+                            statsLogWatch.Restart();
+                            LocalDebugLog.Write(
+                                "DEBUG",
+                                "camera.preview",
+                                string.Format(
+                                    CultureInfo.InvariantCulture,
+                                    "Live stream heartbeat: fps={0:0.0}, totalFrames={1}, dropped={2}, lastGrabMs={3:0.0}, interval={4}ms",
+                                    LiveFps,
+                                    LiveFrameCount,
+                                    LiveDroppedFrameCount,
+                                    frameWatch.Elapsed.TotalMilliseconds,
+                                    targetInterval));
+                        }
+
+                        // 按周期扣减本次采集与拷贝耗时，避免固定 Sleep 叠加造成帧率掉半和卡顿
+                        int remainingMs = targetInterval - (int)frameWatch.ElapsedMilliseconds;
+                        if (remainingMs >= 4)
+                        {
+                            await Task.Delay(remainingMs, cancellationToken).ConfigureAwait(false);
+                        }
+                        else
+                        {
+                            await Task.Yield();
+                        }
                     }
-                    catch (OperationCanceledException)
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                     {
                         break;
                     }
+                    catch (Exception exception)
+                    {
+                        consecutiveFailures++;
+                        if (!IsConnected)
+                        {
+                            string lostDetail = "相机连接已断开：" + exception.Message;
+                            LocalDebugLog.WriteException("ERROR", "camera.preview", lostDetail, exception);
+                            OnLog("ERROR", lostDetail);
+                            OnPreviewHealthChanged(false, lostDetail);
+                            break;
+                        }
+                        if (consecutiveFailures == 1)
+                        {
+                            LocalDebugLog.WriteException("WARN", "camera.preview", "Camera preview grab failed (attempt #1)", exception);
+                            OnLog("WARN", "Camera preview failed: " + exception.Message);
+                        }
+                        // 连续失败达到阈值后上报预览健康异常，避免单帧偶发波动误报故障
+                        if (!failureReported && consecutiveFailures >= PreviewFailureThreshold)
+                        {
+                            failureReported = true;
+                            string detail = "Preview failed " + consecutiveFailures +
+                                            " consecutive times: " + exception.Message;
+                            LocalDebugLog.WriteException("ERROR", "camera.preview", detail, exception);
+                            OnLog("ERROR", detail);
+                            OnPreviewHealthChanged(false, detail);
+                        }
+                        try
+                        {
+                            await Task.Delay(Math.Max(500, PreviewIntervalMilliseconds), cancellationToken).ConfigureAwait(false);
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            break;
+                        }
+                    }
+                }
+            }
+            finally
+            {
+                bool cleared = false;
+                lock (_sync)
+                {
+                    if (ReferenceEquals(_previewCancellation, ownedCancellation))
+                    {
+                        _previewCancellation = null;
+                        _previewTask = null;
+                        _liveFps = 0.0;
+                        cleared = true;
+                    }
+                }
+                if (cleared)
+                {
+                    ownedCancellation.Dispose();
+                    LocalDebugLog.Write(
+                        "INFO",
+                        "camera.preview",
+                        "Live preview loop exited: totalFrames=" + LiveFrameCount + ", droppedFrames=" + LiveDroppedFrameCount + ".");
+                    OnPreviewRunningChanged(false);
                 }
             }
         }

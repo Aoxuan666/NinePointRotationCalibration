@@ -27,8 +27,10 @@ namespace NinePointRotationCalibration.Station.Views
             _view.CameraDeviceInput.Items.Clear();
             _view.CameraDeviceInput.SelectedItem = null;
             RenderCameraFeatures(null);
+            ResetCameraResolution();
             await _runtime.SwitchCameraProviderAsync(provider, cancellationToken).ConfigureAwait(true);
             UpdateCameraLiveUiStatus();
+            RefreshUiFeatureAvailability(false);
         }
 
         private async Task StartTcpServerFromViewAsync(CancellationToken cancellationToken)
@@ -74,12 +76,26 @@ namespace NinePointRotationCalibration.Station.Views
                 await EnumerateCamerasAsync(cancellationToken).ConfigureAwait(true);
 
             string deviceId = GetSelectedCameraId();
-            if (string.IsNullOrWhiteSpace(deviceId)) throw new InvalidOperationException("请选择相机设备。");
+            if (string.IsNullOrWhiteSpace(deviceId))
+                throw new InvalidOperationException("未检测到在线相机，请检查相机电源及网线/USB连接。");
             StationLog.Write("INFO", "camera.switch", "Connecting selected camera " + deviceId + ".");
             LocalDebugLog.Write("INFO", "camera.switch", "Connecting selected camera " + deviceId + ".");
             await _runtime.ConnectCameraAsync(deviceId, cancellationToken).ConfigureAwait(true);
-            await ReadDeviceParametersAsync(cancellationToken).ConfigureAwait(true);
-            ResumeLivePreview();
+            try
+            {
+                await ReadDeviceParametersAsync(cancellationToken).ConfigureAwait(true);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                LocalDebugLog.WriteException("WARN", "camera.params", "Read parameters after connect failed", exception);
+                _view.AppendLog("相机已连接，但读取部分设备参数失败：" + exception.Message, false);
+            }
+            if (_runtime.IsCameraPreviewRunning)
+                ResumeLivePreview();
             UpdateCameraLiveUiStatus();
             StationLog.Write("INFO", "camera.switch", "Live preview resumed for " + deviceId + ".");
             LocalDebugLog.Write("INFO", "camera.switch", "Live preview resumed for " + deviceId + ".");
@@ -119,6 +135,8 @@ namespace NinePointRotationCalibration.Station.Views
             }
             else
             {
+                if (!_runtime.IsCameraConnected)
+                    throw new InvalidOperationException("相机未连接，请先连接真实相机后再开启实时预览。");
                 LocalDebugLog.Write("INFO", "ui.camera.live", "Starting live preview stream from UI.");
                 await _runtime.StartLivePreviewAsync(cancellationToken).ConfigureAwait(true);
                 ResumeLivePreview();
@@ -130,14 +148,15 @@ namespace NinePointRotationCalibration.Station.Views
 
         private async Task ResumeMainLivePreviewAsync(CancellationToken cancellationToken)
         {
+            if (!_runtime.IsCameraEnabled)
+                throw new InvalidOperationException("相机功能已停用，请先启用相机。");
+            if (!_runtime.IsCameraConnected)
+                throw new InvalidOperationException("相机未连接，无法切换实时预览。");
             LocalDebugLog.Write("INFO", "ui.camera.live", "ResumeMainLivePreviewAsync requested.");
             ResumeLivePreview();
-            if (_runtime.IsCameraEnabled && _runtime.IsLiveAcquisitionEnabled && !_runtime.IsCameraPreviewRunning)
+            if (!_runtime.IsCameraPreviewRunning)
             {
-                if (_runtime.IsCameraConnected || _runtime.IsMockCamera)
-                {
-                    await _runtime.StartLivePreviewAsync(cancellationToken).ConfigureAwait(true);
-                }
+                await _runtime.StartLivePreviewAsync(cancellationToken).ConfigureAwait(true);
             }
             UpdateCameraLiveUiStatus();
             _view.SetOperationStatus("主视口已恢复实时预览", false, false);
@@ -154,28 +173,28 @@ namespace NinePointRotationCalibration.Station.Views
             string text;
             if (!_runtime.IsCameraEnabled)
             {
-                text = "相机未启用";
+                text = "已停用\r\n未采集";
             }
-            else if (!_runtime.IsLiveAcquisitionEnabled)
+            else if (!_runtime.IsCameraConnected)
             {
-                text = "实时采集已关闭";
+                text = "未连接\r\n未采集";
             }
             else if (running)
             {
                 text = string.Format(
                     CultureInfo.InvariantCulture,
-                    "采集中 · {0:0.0} FPS · 帧 {1}{2}",
+                    "● {0:0.0} FPS\r\n帧 {1}{2}",
                     fps,
                     frames,
-                    dropped > 0 ? " · 跳帧 " + dropped : string.Empty);
+                    dropped > 0 ? " · 跳 " + dropped : string.Empty);
             }
-            else if (_runtime.IsCameraConnected)
+            else if (!_runtime.IsLiveAcquisitionEnabled)
             {
-                text = "已连接 · 待启动实时";
+                text = "已连接\r\n实时预览已关闭";
             }
             else
             {
-                text = "未连接 · 点击「开始实时」采集";
+                text = "已连接\r\n待启动实时";
             }
             _view.SetCameraLiveStatus(running, text);
         }
@@ -219,9 +238,8 @@ namespace NinePointRotationCalibration.Station.Views
         private async Task ApplyCameraSettingsAsync(CancellationToken cancellationToken)
         {
             if (!_runtime.IsCameraConnected) throw new InvalidOperationException("请先连接相机。");
-            if (!_readExposure.HasValue) throw new InvalidOperationException("请先读取相机当前曝光。");
             decimal requested = FindControl<NumericUpDown>("nudCameraExposure").Value;
-            if (requested != _readExposure.Value)
+            if (!_readExposure.HasValue || requested != _readExposure.Value)
                 await _runtime.SetCameraExposureAsync((double)requested, cancellationToken).ConfigureAwait(true);
             await ReadDeviceParametersAsync(cancellationToken).ConfigureAwait(true);
             UpdateCameraLiveUiStatus();
@@ -248,12 +266,12 @@ namespace NinePointRotationCalibration.Station.Views
                 _readExposure = exposure.Value;
             }
             if (!_readExposure.HasValue) exposure.Text = string.Empty;
-            FindControl<Label>("lblCameraGain").Text = parameters == null ? "未读取" :
+            FindControl<Label>("lblCameraGain").Text = parameters == null ? "--" :
                 double.IsNaN(parameters.Gain) ? "不可读" : parameters.Gain.ToString("0.###", CultureInfo.CurrentCulture);
             string mode = parameters == null ? null : parameters.TriggerMode;
             FindControl<Label>("lblCameraTrigger").Text = mode == "Software" ? "软件触发" :
                 mode == "Hardware" ? "硬件触发" : mode == "Continuous" ? "连续采集" :
-                parameters == null ? "未读取" : "不可读";
+                parameters == null ? "--" : "不可读";
         }
 
         private Task EditTemplateAsync(bool positioning)
@@ -541,15 +559,18 @@ namespace NinePointRotationCalibration.Station.Views
 
         private async Task RunInspectionAsync(CancellationToken cancellationToken)
         {
+            if (!_runtime.IsInspectionEnabled)
+                throw new InvalidOperationException("检测功能已关闭，请先在「相机」页开启「启用检测」。");
+
             DetectionProfile profile = ReadDetectionProfileFromView();
             ValidateDetectionProfile(profile);
             _runtime.UpdateDetectionProfile(profile);
             int expectedCount = Decimal.ToInt32(_view.ExpectedBoardCountInput.Value);
             double currentR = ReadNumeric("nudInspectionCurrentR");
 
-            // 只要当前已加载/锁定图像，或未启用实体相机（含模拟相机），均直接检测当前加载图像，避免回退抓取默认模拟图
+            // 若当前已锁定/导入图像，直接检测该锁定图；若处于实时预览或未锁定状态且相机已连接，则触发真实相机采图检测（不要求先标定）
             LockedFrameGrayCache cache;
-            using (Bitmap image = SnapshotForInspection(out cache))
+            using (Bitmap image = TrySnapshotLockedImage(out cache))
             {
                 if (image != null)
                 {
@@ -564,12 +585,9 @@ namespace NinePointRotationCalibration.Station.Views
                 }
             }
 
-            if (!_runtime.IsCameraEnabled ||
-                !_runtime.IsCalibrationEnabled ||
-                _runtime.IsMockCamera ||
-                !_runtime.IsCameraConnected)
+            if (!_runtime.IsCameraEnabled || !_runtime.IsCameraConnected)
             {
-                throw new InvalidOperationException("当前尚未加载图像，请先点击「导入图片」加载检测图像。");
+                throw new InvalidOperationException("当前未连接相机且尚未导入图像，请先连接相机或点击「导入图片」。");
             }
 
             InspectionResult result = await _runtime
@@ -583,6 +601,9 @@ namespace NinePointRotationCalibration.Station.Views
 
         private async Task RunCurrentImageInspectionAsync(CancellationToken cancellationToken)
         {
+            if (!_runtime.IsInspectionEnabled)
+                throw new InvalidOperationException("检测功能已关闭，请先在「相机」页开启「启用检测」。");
+
             LockedFrameGrayCache cache;
             using (Bitmap image = SnapshotForInspection(out cache))
             {
@@ -721,6 +742,7 @@ namespace NinePointRotationCalibration.Station.Views
         {
             options.CameraEnabled = _view.CameraEnabledInput.Checked;
             options.CalibrationEnabled = _view.CalibrationEnabledInput.Checked;
+            options.InspectionEnabled = _view.InspectionEnabledInput == null || _view.InspectionEnabledInput.Checked;
             options.ConfigurationVersion = StationOptions.CurrentConfigurationVersion;
             options.TcpBindAddress = _view.TcpBindAddressInput.Text.Trim();
             options.TcpPort = Decimal.ToInt32(_view.TcpPortInput.Value);
@@ -959,7 +981,14 @@ namespace NinePointRotationCalibration.Station.Views
                 {
                     if (action.Contains("calibration"))
                     {
-                        _runtime.LoadCalibrationJob(dialog.FileName);
+                        if (_runtime.IsCalibrationEnabled)
+                        {
+                            _runtime.LoadCalibrationJob(dialog.FileName);
+                        }
+                        else
+                        {
+                            _view.AppendLog("当前已关闭「启用标定」，仅同步配置目录路径，未加载标定任务。", false);
+                        }
                     }
                     else if (action.Contains("positioning"))
                     {

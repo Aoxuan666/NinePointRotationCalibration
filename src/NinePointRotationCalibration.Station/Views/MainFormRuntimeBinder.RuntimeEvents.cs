@@ -37,7 +37,13 @@ namespace NinePointRotationCalibration.Station.Views
                 if (string.Equals(e.Component, "camera", StringComparison.OrdinalIgnoreCase))
                 {
                     ApplyCameraState(e.Available, e.Detail);
+                    if (!e.Available)
+                    {
+                        ResetCameraResolution();
+                        _view.RunOnUiThread(delegate { if (!_disposed) RenderCameraFeatures(null); });
+                    }
                     UpdateCameraLiveUiStatus();
+                    _view.UpdateCameraConnectionAvailability(e.Available && _runtime.IsCameraEnabled);
                 }
                 else if (string.Equals(e.Component, "camera.live", StringComparison.OrdinalIgnoreCase))
                 {
@@ -82,7 +88,8 @@ namespace NinePointRotationCalibration.Station.Views
                                       string.Equals(normalized, "Disconnected", StringComparison.OrdinalIgnoreCase);
             bool infoDisconnect = ordinaryDisconnect ||
                                   normalized.StartsWith("已切换驱动", StringComparison.Ordinal) ||
-                                  normalized.StartsWith("等待", StringComparison.Ordinal);
+                                  normalized.StartsWith("等待", StringComparison.Ordinal) ||
+                                  normalized.StartsWith("未检测到在线相机", StringComparison.Ordinal);
             _view.SetCameraStatus(
                 infoDisconnect ? CameraUiState.Disconnected : CameraUiState.Error,
                 ordinaryDisconnect ? string.Empty : normalized);
@@ -96,17 +103,10 @@ namespace NinePointRotationCalibration.Station.Views
                 string source = e.Source ?? "frame";
                 if (string.Equals(source, "preview", StringComparison.OrdinalIgnoreCase))
                 {
-                    if (!_runtime.IsCameraPreviewRunning && _runtime.IsMockCamera) return;
+                    UpdateCameraResolution(e.Image.Width, e.Image.Height);
                     lock (_displaySync)
                     {
                         if (_disposed) return;
-
-                        bool updatedCameraLive = false;
-                        if (_view.CameraLiveViewport != null &&
-                            (_view.IsCameraTabActive || !_view.CameraLiveViewport.HasImage))
-                        {
-                            updatedCameraLive = _view.CameraLiveViewport.TrySetPreviewImage(e.Image);
-                        }
 
                         bool updatedMain = false;
                         if (_displayMode == DisplayMode.LivePreview)
@@ -119,36 +119,33 @@ namespace NinePointRotationCalibration.Station.Views
                             }
                         }
 
-                        if (updatedMain || updatedCameraLive)
+                        int now = Environment.TickCount;
+                        if (unchecked(now - _lastLiveInfoUpdateTick) >= 200)
                         {
-                            int now = Environment.TickCount;
-                            if (unchecked(now - _lastLiveInfoUpdateTick) >= 200)
+                            _lastLiveInfoUpdateTick = now;
+                            if (updatedMain)
                             {
-                                _lastLiveInfoUpdateTick = now;
-                                if (updatedMain)
+                                double fps = _runtime.LivePreviewFps;
+                                if (_view.IsDetectionDualViewActive)
                                 {
-                                    double fps = _runtime.LivePreviewFps;
-                                    if (_view.IsDetectionDualViewActive)
-                                    {
-                                        _view.SetEffectViewportInformation(string.Format(
-                                            CultureInfo.InvariantCulture,
-                                            "{0} x {1}   实时预览同步原图 ({2:0.0} FPS)   {3:HH:mm:ss.fff}",
-                                            e.Image.Width,
-                                            e.Image.Height,
-                                            fps,
-                                            e.CapturedAtUtc.ToLocalTime()));
-                                    }
-                                    _view.SetImageInformation(string.Format(
+                                    _view.SetEffectViewportInformation(string.Format(
                                         CultureInfo.InvariantCulture,
-                                        "{0} x {1}   {2}{3}   {4:HH:mm:ss.fff}",
+                                        "{0} x {1}   实时预览同步原图 ({2:0.0} FPS)   {3:HH:mm:ss.fff}",
                                         e.Image.Width,
                                         e.Image.Height,
-                                        source,
-                                        fps > 0.0 ? string.Format(CultureInfo.InvariantCulture, " ({0:0.0} FPS)", fps) : string.Empty,
+                                        fps,
                                         e.CapturedAtUtc.ToLocalTime()));
                                 }
-                                UpdateCameraLiveUiStatus();
+                                _view.SetImageInformation(string.Format(
+                                    CultureInfo.InvariantCulture,
+                                    "{0} x {1}   {2}{3}   {4:HH:mm:ss.fff}",
+                                    e.Image.Width,
+                                    e.Image.Height,
+                                    source,
+                                    fps > 0.0 ? string.Format(CultureInfo.InvariantCulture, " ({0:0.0} FPS)", fps) : string.Empty,
+                                    e.CapturedAtUtc.ToLocalTime()));
                             }
+                            UpdateCameraLiveUiStatus();
                         }
                     }
                     return;
@@ -169,6 +166,11 @@ namespace NinePointRotationCalibration.Station.Views
                             return;
                         }
                     }
+                }
+
+                if (!string.Equals(source, "offline-inspection", StringComparison.OrdinalIgnoreCase))
+                {
+                    UpdateCameraResolution(e.Image.Width, e.Image.Height);
                 }
 
                 // 非实时预览帧（单次拍照、标定、示教及在线/离线检测）会锁定主画面，防止被后续预览流覆盖
