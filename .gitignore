@@ -9,7 +9,6 @@ TestResults/
 artifacts/
 samples/output/
 tests/output/
-lib/*.dll
 
 # Local-only documents that may contain workstation/security details.
 docs/此电脑加密文本读取指南.md
