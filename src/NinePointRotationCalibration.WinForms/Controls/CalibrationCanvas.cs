@@ -35,15 +35,18 @@ namespace NinePointRotationCalibration.WinForms.Controls
 
         private readonly List<MaskStroke> _maskStrokes = new List<MaskStroke>();
         private Bitmap _maskHistory;
-        private Bitmap _maskInk;
+        private Bitmap _maskLive;
         private int _paintedStrokes;
-        private int _paintedInkPoints;
-        private MaskStroke _inkOwner;
+        private int _paintedLivePoints;
+        private MaskStroke _liveStrokeOwner;
+        private Rectangle _lastLiveShapeBounds;
+        private bool _liveBaseSynced;
         private double _maskZoom, _maskX, _maskY;
         private readonly Timer _maskRefreshTimer = new Timer { Interval = 90 };
         private bool _maskRefreshPending;
         private Rectangle _lastActiveMaskRect;
         private Rectangle _lastBrushCursorRect;
+        private double _brushRadiusImage = 12.0;
         private Bitmap _image;
         private Bitmap _interactivePreview;
         // 避免编辑 ROI 或平移时在每次鼠标移动重采样千万像素源图，按当前缩放率缓存一张降采样位图复用。
@@ -176,6 +179,9 @@ namespace NinePointRotationCalibration.WinForms.Controls
                         OnSelectedRoiChanged();
                     }
                 }
+                _lastBrushCursorRect = _hasHoverScreen && (_tool == CanvasEditTool.EraseMask || _tool == CanvasEditTool.RestoreMask)
+                    ? GetBrushCursorDirtyRect(_hoverScreen)
+                    : Rectangle.Empty;
                 Cursor = GetDefaultCursor();
                 OnToolChanged();
                 Invalidate();
@@ -281,7 +287,32 @@ namespace NinePointRotationCalibration.WinForms.Controls
         public bool ShowRois { get; set; } = true;
 
         [DefaultValue(12.0)]
-        public double BrushRadiusImage { get; set; } = 12.0;
+        public double BrushRadiusImage
+        {
+            get { return _brushRadiusImage; }
+            set
+            {
+                double clamped = Clamp(value, 1.0, 500.0);
+                if (Math.Abs(_brushRadiusImage - clamped) < 0.000001)
+                {
+                    return;
+                }
+
+                Rectangle previousCursor = _lastBrushCursorRect;
+                _brushRadiusImage = clamped;
+                if (_hasHoverScreen && (_tool == CanvasEditTool.EraseMask || _tool == CanvasEditTool.RestoreMask))
+                {
+                    Rectangle nextCursor = GetBrushCursorDirtyRect(_hoverScreen);
+                    _lastBrushCursorRect = nextCursor;
+                    Invalidate(previousCursor.IsEmpty ? nextCursor : Rectangle.Union(previousCursor, nextCursor));
+                }
+                else if (!previousCursor.IsEmpty)
+                {
+                    _lastBrushCursorRect = Rectangle.Empty;
+                    Invalidate(previousCursor);
+                }
+            }
+        }
 
         [Browsable(false)]
         public CanvasRuntimeOverlay EditorOverlay
@@ -400,6 +431,12 @@ namespace NinePointRotationCalibration.WinForms.Controls
             _offsetY = (ClientSize.Height - (_image.Height * _zoom)) / 2.0;
             _autoFit = true;
             _viewInitialized = true;
+            _lastBrushCursorRect = Rectangle.Empty;
+            if (_maskRefreshPending)
+            {
+                _maskRefreshTimer.Stop();
+                _maskRefreshPending = false;
+            }
             OnViewChanged();
             Invalidate();
         }
@@ -420,6 +457,12 @@ namespace NinePointRotationCalibration.WinForms.Controls
             _offsetY = (ClientSize.Height - _image.Height) / 2.0;
             _autoFit = false;
             _viewInitialized = true;
+            _lastBrushCursorRect = Rectangle.Empty;
+            if (_maskRefreshPending)
+            {
+                _maskRefreshTimer.Stop();
+                _maskRefreshPending = false;
+            }
             OnViewChanged();
             Invalidate();
         }
@@ -624,6 +667,8 @@ namespace NinePointRotationCalibration.WinForms.Controls
         {
             base.OnMouseDown(eventArgs);
             Focus();
+            _hoverScreen = eventArgs.Location;
+            _hasHoverScreen = true;
             _lastScreen = eventArgs.Location;
             _dragStartScreen = eventArgs.Location;
             _dragStartImage = ClientToImage(eventArgs.Location);
@@ -667,6 +712,12 @@ namespace NinePointRotationCalibration.WinForms.Controls
                     return;
                 }
 
+                if (_maskRefreshPending)
+                {
+                    _maskRefreshTimer.Stop();
+                    _maskRefreshPending = false;
+                }
+
                 ImageCoordinate startPt = ClampToImage(_dragStartImage);
                 BeginEditTransaction();
                 _activeStroke = new MaskStroke
@@ -679,6 +730,7 @@ namespace NinePointRotationCalibration.WinForms.Controls
                 _dragOperation = DragOperation.Mask;
                 Capture = true;
                 _transactionChanged = true;
+                _lastBrushCursorRect = GetBrushCursorDirtyRect(eventArgs.Location);
                 OnMaskPreviewChanged(_activeStroke, _activeStroke.IsErase, startPt, startPt);
                 Invalidate();
                 return;
@@ -689,6 +741,12 @@ namespace NinePointRotationCalibration.WinForms.Controls
                 if (!IsInsideImage(_dragStartImage))
                 {
                     return;
+                }
+
+                if (_maskRefreshPending)
+                {
+                    _maskRefreshTimer.Stop();
+                    _maskRefreshPending = false;
                 }
 
                 ImageCoordinate startPt = ClampToImage(_dragStartImage);
@@ -717,6 +775,7 @@ namespace NinePointRotationCalibration.WinForms.Controls
                 Capture = true;
                 _transactionChanged = false;
                 _lastActiveMaskRect = Rectangle.Empty;
+                _lastBrushCursorRect = Rectangle.Empty;
                 Invalidate();
                 return;
             }
@@ -726,6 +785,12 @@ namespace NinePointRotationCalibration.WinForms.Controls
                 if (!IsInsideImage(_dragStartImage))
                 {
                     return;
+                }
+
+                if (_maskRefreshPending)
+                {
+                    _maskRefreshTimer.Stop();
+                    _maskRefreshPending = false;
                 }
 
                 ImageCoordinate pt = ClampToImage(_dragStartImage);
@@ -980,7 +1045,12 @@ namespace NinePointRotationCalibration.WinForms.Controls
                     Invalidate();
                     break;
                 case DragOperation.Mask:
-                    AppendStrokePoint(current);
+                    Rectangle nextCursorRect = GetBrushCursorDirtyRect(eventArgs.Location);
+                    Rectangle cursorDirty = _lastBrushCursorRect.IsEmpty
+                        ? nextCursorRect
+                        : Rectangle.Union(_lastBrushCursorRect, nextCursorRect);
+                    _lastBrushCursorRect = nextCursorRect;
+                    AppendStrokePoint(current, cursorDirty);
                     break;
                 case DragOperation.MaskRect:
                     UpdateMaskRectangle(current);
@@ -997,7 +1067,7 @@ namespace NinePointRotationCalibration.WinForms.Controls
         {
             base.OnMouseLeave(eventArgs);
             _hasHoverScreen = false;
-            if (_hoveredRoi != CanvasRoiTarget.None || _anchorHovered)
+            if (_hoveredRoi != CanvasRoiTarget.None || _anchorHovered || _polygonDrawing)
             {
                 _hoveredRoi = CanvasRoiTarget.None;
                 _anchorHovered = false;
@@ -1343,9 +1413,34 @@ namespace NinePointRotationCalibration.WinForms.Controls
             _viewInitialized = true;
         }
 
+        private bool HasActiveMaskFill()
+        {
+            if (_activeStroke != null && _activeStroke.IsValid)
+            {
+                if (_activeStroke.Kind == MaskShapeKind.Brush ||
+                    _activeStroke.Kind == MaskShapeKind.Circle ||
+                    (_activeStroke.Kind == MaskShapeKind.Rectangle && _activeStroke.Rectangle != null))
+                {
+                    return true;
+                }
+            }
+
+            if (_polygonDrawing)
+            {
+                int vertexCount = _activePolygonPoints.Count + (_hasHoverScreen ? 1 : 0);
+                if (vertexCount >= 3)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
         private void DrawMaskLayer(Graphics graphics)
         {
-            if ((_maskStrokes.Count == 0 && (_activeStroke == null || _activeStroke.Kind != MaskShapeKind.Brush)) || _templateRoi == null)
+            bool hasActiveMaskFill = HasActiveMaskFill();
+            if ((_maskStrokes.Count == 0 && !hasActiveMaskFill) || _templateRoi == null)
             {
                 return;
             }
@@ -1366,7 +1461,7 @@ namespace NinePointRotationCalibration.WinForms.Controls
                         _maskHistory != null &&
                         _maskZoom > 0.0 &&
                         _paintedStrokes == _maskStrokes.Count &&
-                        (_activeStroke == null || _activeStroke.Kind != MaskShapeKind.Brush) &&
+                        !hasActiveMaskFill &&
                         (_dragOperation == DragOperation.Pan || _maskRefreshPending);
                     if (canTransformCachedMask)
                     {
@@ -1385,7 +1480,10 @@ namespace NinePointRotationCalibration.WinForms.Controls
                         return;
                     }
 
-                    UpdateMaskCache();
+                    UpdateMaskCache(hasActiveMaskFill);
+
+                    Bitmap sourceMask = hasActiveMaskFill && _maskLive != null ? _maskLive : _maskHistory;
+                    if (sourceMask == null) return;
 
                     // 仅贴图模板 ROI 客户端外接框与当前脏区的交集，避免每次局部重绘对整屏 32bpp 位图做全量 Alpha 混合
                     float minX = clipPoints[0].X, maxX = clipPoints[0].X;
@@ -1397,18 +1495,21 @@ namespace NinePointRotationCalibration.WinForms.Controls
                         if (clipPoints[i].Y < minY) minY = clipPoints[i].Y;
                         if (clipPoints[i].Y > maxY) maxY = clipPoints[i].Y;
                     }
-                    Rectangle roiRect = Rectangle.Ceiling(RectangleF.FromLTRB(minX - 2.0f, minY - 2.0f, maxX + 2.0f, maxY + 2.0f));
-                    Rectangle blitRect = Rectangle.Intersect(roiRect, new Rectangle(0, 0, ClientSize.Width, ClientSize.Height));
-                    Rectangle clipRect = Rectangle.Ceiling(graphics.ClipBounds);
-                    if (!clipRect.IsEmpty) blitRect = Rectangle.Intersect(blitRect, clipRect);
+                    Rectangle clientRect = new Rectangle(0, 0, ClientSize.Width, ClientSize.Height);
+                    Rectangle roiRect = ToEnclosingRectangle(RectangleF.FromLTRB(minX - 2.0f, minY - 2.0f, maxX + 2.0f, maxY + 2.0f));
+                    Rectangle blitRect = Rectangle.Intersect(roiRect, clientRect);
+                    Rectangle clipRect = ToEnclosingRectangle(graphics.ClipBounds);
+                    if (!clipRect.IsEmpty)
+                    {
+                        clipRect.Inflate(1, 1);
+                        blitRect = Rectangle.Intersect(blitRect, clipRect);
+                    }
                     if (blitRect.Width <= 0 || blitRect.Height <= 0) return;
 
-                    graphics.DrawImage(_maskHistory, blitRect, blitRect, GraphicsUnit.Pixel);
-
-                    if (_activeStroke != null && _activeStroke.Kind == MaskShapeKind.Brush)
-                    {
-                        graphics.DrawImage(_maskInk, blitRect, blitRect, GraphicsUnit.Pixel);
-                    }
+                    // 单层统一贴图：已提交掩膜与当前实时涂抹/选区已在离线缓冲中按 SourceCopy 合并，
+                    // 彻底消除重复涂抹已掩膜区域时的双重 Alpha 叠加拖影与松手闪变。
+                    graphics.InterpolationMode = InterpolationMode.NearestNeighbor;
+                    graphics.DrawImage(sourceMask, blitRect, blitRect, GraphicsUnit.Pixel);
                 }
             }
             finally
@@ -1423,23 +1524,19 @@ namespace NinePointRotationCalibration.WinForms.Controls
             bool hasShapePreview = _activeStroke != null && _activeStroke.Kind != MaskShapeKind.Brush;
             if (!hasShapePreview && !_polygonDrawing) return;
 
-            Color fillColor = Color.FromArgb(100, 239, 68, 68);
             Color borderColor = Color.FromArgb(235, 248, 113, 113);
-            using (Brush fill = new SolidBrush(fillColor))
             using (Pen border = new Pen(borderColor, 1.5f))
             {
                 border.DashStyle = DashStyle.Dash;
                 if (_activeStroke != null && _activeStroke.Kind == MaskShapeKind.Rectangle && _activeStroke.Rectangle != null)
                 {
                     PointF[] corners = _activeStroke.Rectangle.GetCorners().Select(ImageToClient).ToArray();
-                    graphics.FillPolygon(fill, corners);
                     graphics.DrawPolygon(border, corners);
                 }
                 else if (_activeStroke != null && _activeStroke.Kind == MaskShapeKind.Circle)
                 {
                     PointF center = ImageToClient(_activeStroke.Center);
                     float radius = (float)Math.Max(1.0, _activeStroke.Radius * _zoom);
-                    graphics.FillEllipse(fill, center.X - radius, center.Y - radius, radius * 2.0f, radius * 2.0f);
                     graphics.DrawEllipse(border, center.X - radius, center.Y - radius, radius * 2.0f, radius * 2.0f);
                     graphics.DrawLine(border, center.X - 5, center.Y, center.X + 5, center.Y);
                     graphics.DrawLine(border, center.X, center.Y - 5, center.X, center.Y + 5);
@@ -1448,10 +1545,6 @@ namespace NinePointRotationCalibration.WinForms.Controls
                 {
                     List<PointF> screenPoints = _activePolygonPoints.Select(ImageToClient).ToList();
                     if (_hasHoverScreen) screenPoints.Add(_hoverScreen);
-                    if (screenPoints.Count >= 3)
-                    {
-                        graphics.FillPolygon(fill, screenPoints.ToArray());
-                    }
                     if (screenPoints.Count >= 2)
                     {
                         graphics.DrawLines(border, screenPoints.ToArray());
@@ -1487,13 +1580,21 @@ namespace NinePointRotationCalibration.WinForms.Controls
         private void ClearMaskCache()
         {
             if (_maskHistory != null) _maskHistory.Dispose();
-            if (_maskInk != null) _maskInk.Dispose();
-            _maskHistory = _maskInk = null;
-            _inkOwner = null;
-            _paintedStrokes = _paintedInkPoints = 0;
+            if (_maskLive != null) _maskLive.Dispose();
+            _maskHistory = _maskLive = null;
+            _paintedStrokes = 0;
+            ResetLiveMaskState();
         }
 
-        private void UpdateMaskCache()
+        private void ResetLiveMaskState()
+        {
+            _liveStrokeOwner = null;
+            _paintedLivePoints = 0;
+            _lastLiveShapeBounds = Rectangle.Empty;
+            _liveBaseSynced = false;
+        }
+
+        private void UpdateMaskCache(bool hasActiveMaskFill)
         {
             // Coordinates are viewport-relative. The template ROI clips the layers at presentation.
             bool sizeChanged = _maskHistory == null || _maskHistory.Size != ClientSize;
@@ -1514,12 +1615,12 @@ namespace NinePointRotationCalibration.WinForms.Controls
                     clearLayer.Clear(Color.Transparent);
                 }
                 _paintedStrokes = 0;
-                _inkOwner = null;
-                _paintedInkPoints = 0;
+                ResetLiveMaskState();
                 _maskZoom = _zoom;
                 _maskX = _offsetX;
                 _maskY = _offsetY;
             }
+
             if (_paintedStrokes < _maskStrokes.Count)
             {
                 using (Graphics layer = Graphics.FromImage(_maskHistory))
@@ -1527,45 +1628,196 @@ namespace NinePointRotationCalibration.WinForms.Controls
                     // GDI+ 中 CompositingMode.SourceCopy 不能与 SmoothingMode.AntiAlias 混用，
                     // 否则在 32bppPArgb 位图上会静默丢弃绘制导致掩膜无痕迹；此处使用 None 确保像素精确写入。
                     layer.SmoothingMode = SmoothingMode.None;
+                    layer.PixelOffsetMode = PixelOffsetMode.Half;
                     layer.CompositingMode = CompositingMode.SourceCopy;
                     while (_paintedStrokes < _maskStrokes.Count)
                     {
-                        DrawMaskItem(layer, _maskStrokes[_paintedStrokes], 0);
+                        DrawMaskItem(layer, _maskStrokes[_paintedStrokes], 0, false);
                         _paintedStrokes++;
                     }
                 }
+                ResetLiveMaskState();
             }
-            if (_activeStroke == null || _activeStroke.Kind != MaskShapeKind.Brush) return;
-            if (_maskInk == null)
-                _maskInk = new Bitmap(ClientSize.Width, ClientSize.Height, PixelFormat.Format32bppPArgb);
-            if (_inkOwner == _activeStroke && _paintedInkPoints == _activeStroke.Points.Count) return;
-            using (Graphics ink = Graphics.FromImage(_maskInk))
+
+            if (!hasActiveMaskFill)
             {
-                ink.SmoothingMode = SmoothingMode.None;
-                ink.CompositingMode = CompositingMode.SourceCopy;
-                if (_inkOwner != _activeStroke)
+                if (_liveBaseSynced || _liveStrokeOwner != null || !_lastLiveShapeBounds.IsEmpty)
                 {
-                    ink.Clear(Color.Transparent);
-                    _inkOwner = _activeStroke;
-                    _paintedInkPoints = 0;
+                    ResetLiveMaskState();
                 }
-                DrawMaskItem(ink, _activeStroke, Math.Max(0, _paintedInkPoints - 1));
-                _paintedInkPoints = _activeStroke.Points.Count;
+                return;
+            }
+
+            if (_maskLive == null || _maskLive.Size != ClientSize)
+            {
+                if (_maskLive != null) _maskLive.Dispose();
+                _maskLive = new Bitmap(ClientSize.Width, ClientSize.Height, PixelFormat.Format32bppPArgb);
+                ResetLiveMaskState();
+            }
+
+            Rectangle fullRect = new Rectangle(0, 0, ClientSize.Width, ClientSize.Height);
+
+            if (_activeStroke != null && _activeStroke.Kind == MaskShapeKind.Brush)
+            {
+                if (_liveBaseSynced && ReferenceEquals(_liveStrokeOwner, _activeStroke) && _paintedLivePoints == _activeStroke.Points.Count)
+                {
+                    return;
+                }
+
+                using (Graphics live = Graphics.FromImage(_maskLive))
+                {
+                    live.SmoothingMode = SmoothingMode.None;
+                    live.PixelOffsetMode = PixelOffsetMode.Half;
+                    live.InterpolationMode = InterpolationMode.NearestNeighbor;
+                    live.CompositingMode = CompositingMode.SourceCopy;
+                    if (!_liveBaseSynced || !ReferenceEquals(_liveStrokeOwner, _activeStroke))
+                    {
+                        live.DrawImage(_maskHistory, fullRect, fullRect, GraphicsUnit.Pixel);
+                        _liveBaseSynced = true;
+                        _liveStrokeOwner = _activeStroke;
+                        _paintedLivePoints = 0;
+                        _lastLiveShapeBounds = Rectangle.Empty;
+                    }
+                    DrawMaskItem(live, _activeStroke, Math.Max(0, _paintedLivePoints - 1), true);
+                    _paintedLivePoints = _activeStroke.Points.Count;
+                }
+                return;
+            }
+
+            // 矩形 / 圆形 / 多边形实时选区预览：在 _maskLive 上仅还原上一帧选区脏区并按 SourceCopy 写入当前选区
+            using (Graphics live = Graphics.FromImage(_maskLive))
+            {
+                live.SmoothingMode = SmoothingMode.None;
+                live.PixelOffsetMode = PixelOffsetMode.Half;
+                live.InterpolationMode = InterpolationMode.NearestNeighbor;
+                live.CompositingMode = CompositingMode.SourceCopy;
+
+                if (!_liveBaseSynced || _liveStrokeOwner != null)
+                {
+                    live.DrawImage(_maskHistory, fullRect, fullRect, GraphicsUnit.Pixel);
+                    _liveBaseSynced = true;
+                    _liveStrokeOwner = null;
+                    _paintedLivePoints = 0;
+                    _lastLiveShapeBounds = Rectangle.Empty;
+                }
+                else if (!_lastLiveShapeBounds.IsEmpty)
+                {
+                    Rectangle restoreRect = Rectangle.Intersect(_lastLiveShapeBounds, fullRect);
+                    if (restoreRect.Width > 0 && restoreRect.Height > 0)
+                    {
+                        live.DrawImage(_maskHistory, restoreRect, restoreRect, GraphicsUnit.Pixel);
+                    }
+                }
+
+                if (_polygonDrawing)
+                {
+                    List<PointF> screenPoints = _activePolygonPoints.Select(ImageToClient).ToList();
+                    if (_hasHoverScreen) screenPoints.Add(_hoverScreen);
+                    if (screenPoints.Count >= 3)
+                    {
+                        PointF[] pts = screenPoints.ToArray();
+                        using (Brush brush = new SolidBrush(Color.FromArgb(115, 239, 68, 68)))
+                        {
+                            live.FillPolygon(brush, pts);
+                        }
+                        _lastLiveShapeBounds = GetPointsDirtyRect(pts, fullRect);
+                    }
+                    else
+                    {
+                        _lastLiveShapeBounds = Rectangle.Empty;
+                    }
+                }
+                else if (_activeStroke != null)
+                {
+                    DrawMaskItem(live, _activeStroke, 0, true);
+                    _lastLiveShapeBounds = GetStrokeClientDirtyRect(_activeStroke, fullRect);
+                }
+                else
+                {
+                    _lastLiveShapeBounds = Rectangle.Empty;
+                }
             }
         }
 
-        private void DrawMaskItem(Graphics graphics, MaskStroke stroke, int firstPoint)
+        private static Rectangle ToEnclosingRectangle(RectangleF rect)
+        {
+            if (rect.Width <= 0.0f || rect.Height <= 0.0f)
+            {
+                return Rectangle.Empty;
+            }
+
+            int left = (int)Math.Floor(rect.Left);
+            int top = (int)Math.Floor(rect.Top);
+            int right = (int)Math.Ceiling(rect.Right);
+            int bottom = (int)Math.Ceiling(rect.Bottom);
+            return Rectangle.FromLTRB(left, top, right, bottom);
+        }
+
+        private static Rectangle GetPointsDirtyRect(PointF[] points, Rectangle boundsLimit)
+        {
+            if (points == null || points.Length == 0)
+            {
+                return Rectangle.Empty;
+            }
+
+            float minX = points[0].X, maxX = points[0].X;
+            float minY = points[0].Y, maxY = points[0].Y;
+            for (int i = 1; i < points.Length; i++)
+            {
+                if (points[i].X < minX) minX = points[i].X;
+                if (points[i].X > maxX) maxX = points[i].X;
+                if (points[i].Y < minY) minY = points[i].Y;
+                if (points[i].Y > maxY) maxY = points[i].Y;
+            }
+            Rectangle rect = ToEnclosingRectangle(RectangleF.FromLTRB(minX - 4.0f, minY - 4.0f, maxX + 4.0f, maxY + 4.0f));
+            return Rectangle.Intersect(rect, boundsLimit);
+        }
+
+        private Rectangle GetStrokeClientDirtyRect(MaskStroke stroke, Rectangle boundsLimit)
+        {
+            if (stroke == null || !stroke.IsValid)
+            {
+                return Rectangle.Empty;
+            }
+
+            if (stroke.Kind == MaskShapeKind.Rectangle && stroke.Rectangle != null)
+            {
+                PointF[] corners = stroke.Rectangle.GetCorners().Select(ImageToClient).ToArray();
+                return GetPointsDirtyRect(corners, boundsLimit);
+            }
+
+            if (stroke.Kind == MaskShapeKind.Circle)
+            {
+                PointF center = ImageToClient(stroke.Center);
+                float radius = (float)Math.Max(1.0, stroke.Radius * _zoom) + 4.0f;
+                Rectangle rect = ToEnclosingRectangle(RectangleF.FromLTRB(
+                    center.X - radius,
+                    center.Y - radius,
+                    center.X + radius,
+                    center.Y + radius));
+                return Rectangle.Intersect(rect, boundsLimit);
+            }
+
+            if (stroke.Kind == MaskShapeKind.Polygon && stroke.Points != null && stroke.Points.Count > 0)
+            {
+                PointF[] pts = stroke.Points.Select(ImageToClient).ToArray();
+                return GetPointsDirtyRect(pts, boundsLimit);
+            }
+
+            return Rectangle.Empty;
+        }
+
+        private void DrawMaskItem(Graphics graphics, MaskStroke stroke, int firstPoint, bool isLivePreview)
         {
             if (stroke == null || !stroke.IsValid)
             {
                 return;
             }
 
-            // 使用 SourceCopy：擦除统一着半透明红（重复涂抹不变黑），恢复直接擦回透明露出清晰原图
-            bool isInkLayer = ReferenceEquals(stroke, _activeStroke);
+            // 使用 SourceCopy：擦除统一着半透明红（重复涂抹不变黑/无叠加拖影），恢复直接擦回透明露出清晰原图
             Color color = stroke.IsErase
                 ? Color.FromArgb(115, 239, 68, 68)
-                : (isInkLayer ? Color.FromArgb(105, 74, 222, 128) : Color.Transparent);
+                : Color.Transparent;
 
             if (stroke.Kind == MaskShapeKind.Rectangle && stroke.Rectangle != null)
             {
@@ -1574,7 +1826,7 @@ namespace NinePointRotationCalibration.WinForms.Controls
                 {
                     graphics.FillPolygon(brush, corners);
                 }
-                if (stroke.IsErase && !isInkLayer)
+                if (stroke.IsErase && !isLivePreview)
                 {
                     graphics.CompositingMode = CompositingMode.SourceOver;
                     using (Pen outline = new Pen(Color.FromArgb(215, 248, 113, 113), 1.35f))
@@ -1595,7 +1847,7 @@ namespace NinePointRotationCalibration.WinForms.Controls
                 {
                     graphics.FillEllipse(brush, center.X - radius, center.Y - radius, radius * 2.0f, radius * 2.0f);
                 }
-                if (stroke.IsErase && !isInkLayer)
+                if (stroke.IsErase && !isLivePreview)
                 {
                     graphics.CompositingMode = CompositingMode.SourceOver;
                     using (Pen outline = new Pen(Color.FromArgb(215, 248, 113, 113), 1.35f))
@@ -1617,7 +1869,7 @@ namespace NinePointRotationCalibration.WinForms.Controls
                     {
                         graphics.FillPolygon(brush, pts);
                     }
-                    if (stroke.IsErase && !isInkLayer)
+                    if (stroke.IsErase && !isLivePreview)
                     {
                         graphics.CompositingMode = CompositingMode.SourceOver;
                         using (Pen outline = new Pen(Color.FromArgb(215, 248, 113, 113), 1.35f))
@@ -2250,10 +2502,11 @@ namespace NinePointRotationCalibration.WinForms.Controls
             OnRoiChanged(_selectedRoi, false);
         }
 
-        private void AppendStrokePoint(ImageCoordinate current)
+        private void AppendStrokePoint(ImageCoordinate current, Rectangle cursorDirty)
         {
             if (_activeStroke == null)
             {
+                if (!cursorDirty.IsEmpty) Invalidate(cursorDirty);
                 return;
             }
 
@@ -2263,6 +2516,8 @@ namespace NinePointRotationCalibration.WinForms.Controls
             double minimumDistance = Math.Max(0.5, _activeStroke.Radius * 0.12);
             if ((deltaRow * deltaRow) + (deltaColumn * deltaColumn) < minimumDistance * minimumDistance)
             {
+                // 即使未达到笔画采样阈值，仍刷新画笔虚线圈脏区，防止慢速移动或越界拖拽时残留圆环拖影
+                if (!cursorDirty.IsEmpty) Invalidate(cursorDirty);
                 return;
             }
 
@@ -2270,10 +2525,20 @@ namespace NinePointRotationCalibration.WinForms.Controls
             _transactionChanged = true;
             PointF start = ImageToClient(previous);
             PointF end = ImageToClient(current);
-            float margin = (float)Math.Max(1, _activeStroke.Radius * _zoom) + 3;
+            float margin = (float)Math.Max(2.0, _activeStroke.Radius * _zoom) + 6.0f;
             OnMaskPreviewChanged(_activeStroke, _activeStroke.IsErase, previous, current);
-            Invalidate(Rectangle.Ceiling(RectangleF.FromLTRB(Math.Min(start.X, end.X) - margin,
-                Math.Min(start.Y, end.Y) - margin, Math.Max(start.X, end.X) + margin, Math.Max(start.Y, end.Y) + margin)));
+            Rectangle strokeDirty = ToEnclosingRectangle(RectangleF.FromLTRB(
+                Math.Min(start.X, end.X) - margin,
+                Math.Min(start.Y, end.Y) - margin,
+                Math.Max(start.X, end.X) + margin,
+                Math.Max(start.Y, end.Y) + margin));
+            Rectangle totalDirty = cursorDirty.IsEmpty
+                ? strokeDirty
+                : (strokeDirty.IsEmpty ? cursorDirty : Rectangle.Union(strokeDirty, cursorDirty));
+            if (!totalDirty.IsEmpty)
+            {
+                Invalidate(totalDirty);
+            }
         }
 
         private void UpdateMaskRectangle(ImageCoordinate current)
@@ -2314,7 +2579,7 @@ namespace NinePointRotationCalibration.WinForms.Controls
                 {
                     PointF tl = ImageToClient(new ImageCoordinate(minRow, minCol));
                     PointF br = ImageToClient(new ImageCoordinate(maxRow, maxCol));
-                    nextRect = Rectangle.Ceiling(RectangleF.FromLTRB(
+                    nextRect = ToEnclosingRectangle(RectangleF.FromLTRB(
                         Math.Min(tl.X, br.X) - 10.0f,
                         Math.Min(tl.Y, br.Y) - 10.0f,
                         Math.Max(tl.X, br.X) + 10.0f,
@@ -2367,6 +2632,7 @@ namespace NinePointRotationCalibration.WinForms.Controls
             _polygonDrawing = false;
             _activePolygonPoints.Clear();
             _activeStroke = null;
+            ResetLiveMaskState();
             _maskStrokes.Add(completed);
             EventHandler<MaskStrokeEventArgs> strokeHandler = MaskStrokeCreated;
             if (strokeHandler != null)
@@ -2382,6 +2648,7 @@ namespace NinePointRotationCalibration.WinForms.Controls
             _polygonDrawing = false;
             _activePolygonPoints.Clear();
             _activeStroke = null;
+            ResetLiveMaskState();
             if (notifyPreview)
             {
                 OnMaskPreviewChanged(null);
@@ -2399,10 +2666,14 @@ namespace NinePointRotationCalibration.WinForms.Controls
             }
 
             Cursor = GetDefaultCursor();
+            _lastBrushCursorRect = _hasHoverScreen && (_tool == CanvasEditTool.EraseMask || _tool == CanvasEditTool.RestoreMask)
+                ? GetBrushCursorDirtyRect(_hoverScreen)
+                : Rectangle.Empty;
             if (!commit)
             {
                 _activeStroke = null;
                 _lastActiveMaskRect = Rectangle.Empty;
+                ResetLiveMaskState();
                 OnMaskPreviewChanged(null);
                 Invalidate();
                 return;
@@ -2418,6 +2689,7 @@ namespace NinePointRotationCalibration.WinForms.Controls
             {
                 _activeStroke = null;
                 _lastActiveMaskRect = Rectangle.Empty;
+                ResetLiveMaskState();
                 if (operation == DragOperation.MaskRect || operation == DragOperation.MaskCircle)
                 {
                     OnMaskPreviewChanged(null);
@@ -2439,6 +2711,38 @@ namespace NinePointRotationCalibration.WinForms.Controls
                 _maskStrokes.Add(completed);
                 _activeStroke = null;
                 _lastActiveMaskRect = Rectangle.Empty;
+
+                // 画笔结束提交时，若离线 _maskLive 已基于最新 _maskHistory 同步，补齐尾段并 O(1) 交换缓冲，
+                // 消除松手瞬间的重复栅格化与任何视觉跳变。
+                if (operation == DragOperation.Mask &&
+                    _liveBaseSynced &&
+                    ReferenceEquals(_liveStrokeOwner, completed) &&
+                    _maskHistory != null &&
+                    _maskLive != null &&
+                    _maskHistory.Size == ClientSize &&
+                    _maskLive.Size == ClientSize &&
+                    _maskZoom == _zoom &&
+                    _maskX == _offsetX &&
+                    _maskY == _offsetY &&
+                    _paintedStrokes == _maskStrokes.Count - 1)
+                {
+                    if (_paintedLivePoints < completed.Points.Count)
+                    {
+                        using (Graphics live = Graphics.FromImage(_maskLive))
+                        {
+                            live.SmoothingMode = SmoothingMode.None;
+                            live.PixelOffsetMode = PixelOffsetMode.Half;
+                            live.CompositingMode = CompositingMode.SourceCopy;
+                            DrawMaskItem(live, completed, Math.Max(0, _paintedLivePoints - 1), true);
+                        }
+                    }
+                    Bitmap swapped = _maskHistory;
+                    _maskHistory = _maskLive;
+                    _maskLive = swapped;
+                    _paintedStrokes = _maskStrokes.Count;
+                }
+
+                ResetLiveMaskState();
                 EventHandler<MaskStrokeEventArgs> strokeHandler = MaskStrokeCreated;
                 if (strokeHandler != null)
                 {
@@ -2730,7 +3034,7 @@ namespace NinePointRotationCalibration.WinForms.Controls
 
         private Rectangle GetBrushCursorDirtyRect(Point location)
         {
-            int radius = (int)Math.Ceiling(Math.Max(2.0, BrushRadiusImage * _zoom)) + 4;
+            int radius = (int)Math.Ceiling(Math.Max(2.0, BrushRadiusImage * _zoom)) + 6;
             return new Rectangle(location.X - radius, location.Y - radius, (radius * 2) + 1, (radius * 2) + 1);
         }
 

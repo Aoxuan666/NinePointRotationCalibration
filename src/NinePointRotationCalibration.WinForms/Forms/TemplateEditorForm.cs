@@ -1016,9 +1016,16 @@ namespace NinePointRotationCalibration.WinForms.Forms
             // 新增擦除掩膜且未反选时，直接对当前已可见特征点做 O(P_vis) 单块增量剔除，
             // 无论历史累计多少画笔/区域掩膜均保持 <1ms 恒定耗时，彻底消除掩膜越多越卡的问题。
             if (stroke != null && stroke.IsValid && stroke.IsErase && !_state.MaskInverted &&
-                _committedVisiblePoints != null && _committedVisiblePoints.Count > 0)
+                _committedVisiblePoints != null)
             {
-                ApplyIncrementalEraseMask(stroke);
+                if (_committedVisiblePoints.Count > 0)
+                {
+                    ApplyIncrementalEraseMask(stroke);
+                }
+                else
+                {
+                    _canvas.Invalidate();
+                }
             }
             else
             {
@@ -1071,31 +1078,38 @@ namespace NinePointRotationCalibration.WinForms.Forms
             // 擦除画笔拖动过程中增量隐藏当前画笔段覆盖的特征点（微秒级 0 延迟）
             if (eventArgs.IsIncrementalEraseSegment && !_state.MaskInverted &&
                 eventArgs.ActiveMask != null && _canvas.EditorOverlay != null &&
-                _canvas.EditorOverlay.Points != null && _canvas.EditorOverlay.Points.Count > 0)
+                _canvas.EditorOverlay.Points != null)
             {
-                double radius = eventArgs.ActiveMask.Radius;
-                double minRow = Math.Min(eventArgs.SegmentStart.Row, eventArgs.SegmentEnd.Row) - radius;
-                double maxRow = Math.Max(eventArgs.SegmentStart.Row, eventArgs.SegmentEnd.Row) + radius;
-                double minCol = Math.Min(eventArgs.SegmentStart.Column, eventArgs.SegmentEnd.Column) - radius;
-                double maxCol = Math.Max(eventArgs.SegmentStart.Column, eventArgs.SegmentEnd.Column) + radius;
                 List<CanvasPointOverlay> points = _canvas.EditorOverlay.Points;
-                int write = 0;
-                for (int i = 0; i < points.Count; i++)
+                if (points.Count == 0 && (_committedVisiblePoints == null || _committedVisiblePoints.Count == 0))
                 {
-                    CanvasPointOverlay item = points[i];
-                    ImageCoordinate p = item.Position;
-                    if (p.Row >= minRow && p.Row <= maxRow && p.Column >= minCol && p.Column <= maxCol &&
-                        MaskGeometry.IsPointNearSegment(p, eventArgs.SegmentStart, eventArgs.SegmentEnd, radius))
+                    return;
+                }
+                if (points.Count > 0)
+                {
+                    double radius = eventArgs.ActiveMask.Radius;
+                    double minRow = Math.Min(eventArgs.SegmentStart.Row, eventArgs.SegmentEnd.Row) - radius;
+                    double maxRow = Math.Max(eventArgs.SegmentStart.Row, eventArgs.SegmentEnd.Row) + radius;
+                    double minCol = Math.Min(eventArgs.SegmentStart.Column, eventArgs.SegmentEnd.Column) - radius;
+                    double maxCol = Math.Max(eventArgs.SegmentStart.Column, eventArgs.SegmentEnd.Column) + radius;
+                    int write = 0;
+                    for (int i = 0; i < points.Count; i++)
                     {
-                        continue;
+                        CanvasPointOverlay item = points[i];
+                        ImageCoordinate p = item.Position;
+                        if (p.Row >= minRow && p.Row <= maxRow && p.Column >= minCol && p.Column <= maxCol &&
+                            MaskGeometry.IsPointNearSegment(p, eventArgs.SegmentStart, eventArgs.SegmentEnd, radius))
+                        {
+                            continue;
+                        }
+                        points[write++] = item;
                     }
-                    points[write++] = item;
+                    if (write < points.Count)
+                    {
+                        points.RemoveRange(write, points.Count - write);
+                    }
+                    return;
                 }
-                if (write < points.Count)
-                {
-                    points.RemoveRange(write, points.Count - write);
-                }
-                return;
             }
 
             // 矩形/圆形/多边形区域掩膜预览期间：按 33ms 节流并仅用单块 activeMask 过滤已提交可见点集，
@@ -1104,8 +1118,12 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 (eventArgs.ActiveMask.Kind == MaskShapeKind.Rectangle ||
                  eventArgs.ActiveMask.Kind == MaskShapeKind.Circle ||
                  eventArgs.ActiveMask.Kind == MaskShapeKind.Polygon) &&
-                !_state.MaskInverted && _committedVisiblePoints != null && _committedVisiblePoints.Count > 0)
+                !_state.MaskInverted && _committedVisiblePoints != null)
             {
+                if (_committedVisiblePoints.Count == 0)
+                {
+                    return;
+                }
                 int now = Environment.TickCount;
                 if (eventArgs.ActiveMask.Kind != MaskShapeKind.Polygon &&
                     unchecked(now - _lastMaskPreviewFilterTick) < 33)
