@@ -33,6 +33,7 @@ namespace NinePointRotationCalibration.Station.Services.Communication
             VerifyCodec(codec);
             await VerifyLengthFramingAsync(codec, cancellationToken).ConfigureAwait(false);
             await VerifyConnectionScopedReconnectAsync(codec, cancellationToken).ConfigureAwait(false);
+            await VerifySmoothClientReplacementAsync(codec, cancellationToken).ConfigureAwait(false);
             await VerifyHeartbeatInactivityTimeoutAsync(codec, cancellationToken).ConfigureAwait(false);
             VerifyDualRTargetMapping();
             VerifyInspectionSemantics();
@@ -248,6 +249,81 @@ namespace NinePointRotationCalibration.Station.Services.Communication
                 Assert(
                     string.Equals(delivered.MessageId, newResult.MessageId, StringComparison.Ordinal),
                     "A result for the old client leaked onto the replacement connection.");
+
+                await server.StopAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+        }
+
+        private static async Task VerifySmoothClientReplacementAsync(
+            ProtocolJsonCodec codec,
+            CancellationToken cancellationToken)
+        {
+            // 验证协议 v1.1 §2.1：旧连接尚未断开时新客户端接入，服务端须平滑关闭旧连接并接管新连接，且禁止跨连接串包
+            int port = ReserveLoopbackPort();
+            StationOptions options = new StationOptions
+            {
+                TcpBindAddress = "127.0.0.1",
+                TcpPort = port,
+                TcpMaxMessageBytes = 64 * 1024
+            };
+
+            using (CancellationTokenSource timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+            using (TcpVisionServer server = new TcpVisionServer(options, codec))
+            using (TcpClient oldClient = new TcpClient(AddressFamily.InterNetwork))
+            using (TcpClient newClient = new TcpClient(AddressFamily.InterNetwork))
+            {
+                timeout.CancelAfter(TimeSpan.FromSeconds(10));
+                TaskCompletionSource<string> oldConnected = NewCompletionSource<string>();
+                TaskCompletionSource<string> newConnected = NewCompletionSource<string>();
+                TaskCompletionSource<string> oldDisconnected = NewCompletionSource<string>();
+                int connectCount = 0;
+
+                server.Connected += delegate(object sender, TcpConnectionEventArgs args)
+                {
+                    if (Interlocked.Increment(ref connectCount) == 1)
+                        oldConnected.TrySetResult(args.ConnectionId);
+                    else
+                        newConnected.TrySetResult(args.ConnectionId);
+                };
+                server.Disconnected += delegate(object sender, TcpDisconnectedEventArgs args)
+                {
+                    oldDisconnected.TrySetResult(args.ConnectionId);
+                };
+
+                await server.StartAsync(timeout.Token).ConfigureAwait(false);
+                await oldClient.ConnectAsync(IPAddress.Loopback, port).ConfigureAwait(false);
+                string oldId = await AwaitAsync(oldConnected.Task, timeout.Token).ConfigureAwait(false);
+
+                // 旧连接仍保持打开，直接建立新连接
+                await newClient.ConnectAsync(IPAddress.Loopback, port).ConfigureAwait(false);
+                string newId = await AwaitAsync(newConnected.Task, timeout.Token).ConfigureAwait(false);
+                string disconnectedId = await AwaitAsync(oldDisconnected.Task, timeout.Token).ConfigureAwait(false);
+
+                Assert(string.Equals(disconnectedId, oldId, StringComparison.Ordinal),
+                    "Smooth replacement must close and report disconnect for the previous connection.");
+                Assert(!string.Equals(oldId, newId, StringComparison.Ordinal),
+                    "Replacement client must receive a distinct connection ID.");
+                Assert(string.Equals(server.ActiveConnectionId, newId, StringComparison.Ordinal),
+                    "ActiveConnectionId must point to the newly accepted client.");
+
+                // 发往被替换旧连接的消息必须被拒绝，不得串发到新连接
+                bool oldSendRejected = false;
+                try
+                {
+                    await server.SendAsync(oldId, CreateMessage("stale-after-replace", 1), timeout.Token).ConfigureAwait(false);
+                }
+                catch (InvalidOperationException)
+                {
+                    oldSendRejected = true;
+                }
+                Assert(oldSendRejected, "SendAsync targeting a replaced connection must be rejected.");
+
+                // 新连接应正常收发
+                ProtocolEnvelope freshReply = CreateMessage("fresh-after-replace", 2);
+                await server.SendAsync(newId, freshReply, timeout.Token).ConfigureAwait(false);
+                ProtocolEnvelope received = await ReadEnvelopeAsync(newClient.GetStream(), codec, options.TcpMaxMessageBytes, timeout.Token).ConfigureAwait(false);
+                Assert(string.Equals(received.MessageId, freshReply.MessageId, StringComparison.Ordinal),
+                    "Replacement client did not receive its expected message.");
 
                 await server.StopAsync(CancellationToken.None).ConfigureAwait(false);
             }

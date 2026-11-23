@@ -1741,12 +1741,27 @@ namespace NinePointRotationCalibration.Station.Services
 
         private void OnTcpDisconnected(object sender, TcpDisconnectedEventArgs e)
         {
+            ClearCalibrationRequestConnectionsFor(e.ConnectionId);
+
             string activeConnectionId = _tcpServer.ActiveConnectionId;
             if (!string.IsNullOrWhiteSpace(activeConnectionId) && !string.Equals(
                 activeConnectionId,
                 e.ConnectionId,
                 StringComparison.Ordinal))
             {
+                bool clearedReplacedCalibration = false;
+                lock (_stateSync)
+                {
+                    if (string.Equals(_calibrationCompletionConnectionId, e.ConnectionId, StringComparison.Ordinal))
+                    {
+                        _calibrationCompletionConnectionId = null;
+                        clearedReplacedCalibration = true;
+                    }
+                }
+                if (clearedReplacedCalibration)
+                {
+                    _calibration.CancelPendingMoves("Previous TCP connection replaced/closed: " + e.Reason);
+                }
                 LocalDebugLog.Write("INFO", "tcp.conn", "Previous connection closed: connId=" + e.ConnectionId + ", activeConnId=" + activeConnectionId + ", reason=" + e.Reason);
                 OnLog("INFO", "Previous upper-machine connection closed: " + e.ConnectionId);
                 return;
@@ -2918,6 +2933,7 @@ namespace NinePointRotationCalibration.Station.Services
                 }
                 finally
                 {
+                    ClearCalibrationRequestConnectionsFor(connectionId);
                     lock (_stateSync)
                     {
                         if (string.Equals(
@@ -2934,6 +2950,19 @@ namespace NinePointRotationCalibration.Station.Services
 
             throw new InvalidOperationException(
                 "Unsupported calibration protocol message type: " + message.Type + ".");
+        }
+
+        private void ClearCalibrationRequestConnectionsFor(string connectionId)
+        {
+            if (string.IsNullOrWhiteSpace(connectionId)) return;
+            foreach (KeyValuePair<string, string> pair in _calibrationRequestConnections)
+            {
+                if (string.Equals(pair.Value, connectionId, StringComparison.Ordinal))
+                {
+                    string ignored;
+                    _calibrationRequestConnections.TryRemove(pair.Key, out ignored);
+                }
+            }
         }
 
         private bool IsArchiveRequested(ProtocolEnvelope request)

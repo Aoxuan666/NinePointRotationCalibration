@@ -338,6 +338,8 @@ namespace NinePointRotationCalibration.Station.Services.Calibration
                         session,
                         point.PointNumber,
                         linked.Token).ConfigureAwait(false);
+                    // 若在同步匹配期间收到了上位机/本机取消指令，优先按取消路径回传 CANCELLED 及对应 correlationId
+                    linked.Token.ThrowIfCancellationRequested();
                     if (pointRecord == null || pointRecord.Status != CalibrationPointStatus.Completed)
                     {
                         string failMsg = pointRecord == null
@@ -459,8 +461,11 @@ namespace NinePointRotationCalibration.Station.Services.Calibration
                 session = _activeSession;
                 if (session != null)
                 {
-                    session.CancelReason = cancelMessage;
-                    session.CancelCorrelationId = null;
+                    if (string.IsNullOrWhiteSpace(session.CancelReason))
+                    {
+                        session.CancelReason = cancelMessage;
+                    }
+                    // 若上位机已先发来 calibration.cancel，保留其 CancelCorrelationId 以确保能关联回包
                 }
             }
 
@@ -1062,9 +1067,10 @@ namespace NinePointRotationCalibration.Station.Services.Calibration
 
             CalibrationResult result = await Task.Run(() => _sdk.Calculate(workingJob), cancellationToken)
                 .ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
             if (result != null && result.Success)
             {
-                // 仅当全部求解通过后才原子落盘并提交生效，彻底避免半途覆盖旧标定
+                // 仅当全部求解通过且未收到取消指令时才原子落盘并提交生效，彻底避免半途覆盖旧标定
                 if (_saveJobAsync != null)
                 {
                     await _saveJobAsync(session.Nozzle, workingJob.DeepClone()).ConfigureAwait(false);
@@ -1374,13 +1380,24 @@ namespace NinePointRotationCalibration.Station.Services.Calibration
             CalibrationSolverOptions solverOptions)
         {
             if (session == null || !session.TryMarkCompletedSent()) return Task.CompletedTask;
+            string effectiveCorrelationId = correlationId;
+            if (string.IsNullOrWhiteSpace(effectiveCorrelationId))
+            {
+                lock (_sync)
+                {
+                    if (!string.IsNullOrWhiteSpace(session.CancelCorrelationId))
+                    {
+                        effectiveCorrelationId = session.CancelCorrelationId;
+                    }
+                }
+            }
             return SendCompletedEnvelopeAsync(
                 session.SessionId,
                 session.Nozzle,
                 success,
                 errorCode,
                 message,
-                correlationId,
+                effectiveCorrelationId,
                 result,
                 solverOptions);
         }

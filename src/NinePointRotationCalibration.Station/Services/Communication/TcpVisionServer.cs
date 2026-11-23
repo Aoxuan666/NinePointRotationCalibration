@@ -485,21 +485,39 @@ namespace NinePointRotationCalibration.Station.Services.Communication
                     RaiseLog("WARN", "Accepted TCP client closed before initialization completed: " + exception.Message);
                     continue;
                 }
+                ClientConnection replacedConnection = null;
                 bool accepted;
 
-                // 本服务仅维持单个上位机主连接，已有活跃连接时直接拒绝多余客户端
+                // 按协议 v1.1 §2.1 单客户端约束：新连接接入时平滑替换关闭旧连接，同时保持 ConnectionId 隔离
                 lock (_stateSync)
                 {
-                    accepted = _running && _activeConnection == null;
-                    if (accepted) _activeConnection = connection;
+                    accepted = _running;
+                    if (accepted)
+                    {
+                        replacedConnection = _activeConnection;
+                        _activeConnection = connection;
+                    }
                 }
 
                 if (!accepted)
                 {
                     string rejectedEndPoint = connection.RemoteEndPoint;
                     connection.Dispose();
-                    RaiseLog("WARN", "Rejected additional TCP client " + rejectedEndPoint + "; one client is already active.");
+                    RaiseLog("WARN", "Rejected TCP client " + rejectedEndPoint + " because server is stopping.");
                     continue;
+                }
+
+                if (replacedConnection != null)
+                {
+                    string replacedEndPoint = replacedConnection.RemoteEndPoint;
+                    RaiseLog(
+                        "WARN",
+                        "Replacing active TCP client " + replacedEndPoint + " (" + replacedConnection.ConnectionId +
+                        ") with new client " + connection.RemoteEndPoint + " (" + connection.ConnectionId + ").");
+                    CloseConnection(
+                        replacedConnection,
+                        "Replaced by newer client connection " + connection.RemoteEndPoint + ".",
+                        null);
                 }
 
                 RaiseConnected(connection.ConnectionId, connection.RemoteEndPoint);
