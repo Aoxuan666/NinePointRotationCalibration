@@ -566,7 +566,8 @@ namespace NinePointRotationCalibration.Station.Views
             ValidateDetectionProfile(profile);
             _runtime.UpdateDetectionProfile(profile);
             int expectedCount = Decimal.ToInt32(_view.ExpectedBoardCountInput.Value);
-            double currentR = ReadNumeric("nudInspectionCurrentR");
+            double currentRLeft = ReadNumeric("nudInspectionCurrentR");
+            double currentRRight = ReadNumeric("nudInspectionCurrentRRight");
 
             // 若当前已锁定/导入图像，直接检测该锁定图；若处于实时预览或未锁定状态且相机已连接，则触发真实相机采图检测（不要求先标定）
             LockedFrameGrayCache cache;
@@ -575,7 +576,7 @@ namespace NinePointRotationCalibration.Station.Views
                 if (image != null)
                 {
                     InspectionResult offlineResult = await _runtime
-                        .RunOfflineInspectionAsync(image, expectedCount, currentR, cancellationToken, cache)
+                        .RunOfflineInspectionAsync(image, expectedCount, currentRLeft, currentRRight, cancellationToken, cache)
                         .ConfigureAwait(true);
                     if (offlineResult != null && !offlineResult.Executed)
                     {
@@ -591,7 +592,7 @@ namespace NinePointRotationCalibration.Station.Views
             }
 
             InspectionResult result = await _runtime
-                .RunInspectionAsync(expectedCount, currentR, cancellationToken)
+                .RunInspectionAsync(expectedCount, currentRLeft, currentRRight, cancellationToken)
                 .ConfigureAwait(true);
             if (result != null && !result.Executed)
             {
@@ -613,9 +614,10 @@ namespace NinePointRotationCalibration.Station.Views
                 ValidateDetectionProfile(profile);
                 _runtime.UpdateDetectionProfile(profile);
                 int expectedCount = Decimal.ToInt32(_view.ExpectedBoardCountInput.Value);
-                double currentR = ReadNumeric("nudInspectionCurrentR");
+                double currentRLeft = ReadNumeric("nudInspectionCurrentR");
+                double currentRRight = ReadNumeric("nudInspectionCurrentRRight");
                 InspectionResult result = await _runtime
-                    .RunOfflineInspectionAsync(image, expectedCount, currentR, cancellationToken, cache)
+                    .RunOfflineInspectionAsync(image, expectedCount, currentRLeft, currentRRight, cancellationToken, cache)
                     .ConfigureAwait(true);
                 if (result != null && !result.Executed)
                 {
@@ -756,7 +758,8 @@ namespace NinePointRotationCalibration.Station.Views
             options.MotionTimeoutMilliseconds = Convert.ToInt32(ReadNumeric("nudMotionTimeout"), CultureInfo.InvariantCulture);
             options.ExpectedBoardCount = Decimal.ToInt32(_view.ExpectedBoardCountInput.Value);
             options.ConfigDirectory = ReadTextOrFallback("txtConfigDirectory", options.GetUnifiedConfigDirectory());
-            options.CalibrationJobPath = ReadPath("txtCalibrationTemplatePath", "txtCalibrationFile", options.CalibrationJobPath);
+            options.CalibrationJobPath = ReadTextOrFallback("txtCalibrationFile", options.CalibrationJobPath);
+            options.RightCalibrationJobPath = ReadTextOrFallback("txtRightCalibrationFile", options.RightCalibrationJobPath);
             options.PositioningJobPath = ReadPath("txtPositioningTemplatePath", "txtPositioningFile", options.PositioningJobPath);
             options.TeachingPath = ReadTextOrFallback("txtTeachingFile", options.TeachingPath);
             options.DetectionProfilePath = ReadTextOrFallback("txtDetectionProfile", options.DetectionProfilePath);
@@ -864,14 +867,17 @@ namespace NinePointRotationCalibration.Station.Views
         private void RefreshAllConfigUiFromRuntime()
         {
             StationOptions options = _runtime.GetOptionsSnapshot();
+            TeachingSide activeNozzle = _runtime.ActiveCalibrationNozzle;
             SetText("txtConfigDirectory", options.GetUnifiedConfigDirectory());
-            SetPathPair("txtCalibrationTemplatePath", "txtCalibrationFile", options.CalibrationJobPath);
+            SetText("txtCalibrationFile", options.CalibrationJobPath);
+            SetText("txtRightCalibrationFile", options.RightCalibrationJobPath);
+            SetText("txtCalibrationTemplatePath", activeNozzle == TeachingSide.Right ? options.RightCalibrationJobPath : options.CalibrationJobPath);
             SetPathPair("txtPositioningTemplatePath", "txtPositioningFile", options.PositioningJobPath);
             SetText("txtTeachingFile", options.TeachingPath);
             SetText("txtDetectionProfile", options.DetectionProfilePath);
             SetText("txtImageArchive", options.ImageArchiveDirectory);
 
-            CalibrationJob calibrationJob = _runtime.GetCalibrationJobSnapshot();
+            CalibrationJob calibrationJob = _runtime.GetCalibrationJobSnapshot(activeNozzle);
             CalibrationJob positioningJob = _runtime.GetPositioningJobSnapshot();
             UpdateTemplateStatusLabel(false, calibrationJob == null ? null : calibrationJob.Template);
             UpdateTemplateStatusLabel(true, positioningJob == null ? null : positioningJob.Template);
@@ -879,11 +885,11 @@ namespace NinePointRotationCalibration.Station.Views
             TeachingData teaching = _runtime.GetTeachingSnapshot();
             ApplyTeachingToView(teaching == null ? null : teaching.Left);
             ApplyTeachingToView(teaching == null ? null : teaching.Right);
-            foreach (CalibrationPointRecord record in _runtime.GetCalibrationRecordsSnapshot())
+            foreach (CalibrationPointRecord record in _runtime.GetCalibrationRecordsSnapshot(activeNozzle))
             {
                 ApplyCalibrationRecord(record);
             }
-            CalibrationResult calibrationResult = _runtime.GetCalibrationResultSnapshot();
+            CalibrationResult calibrationResult = _runtime.GetCalibrationResultSnapshot(activeNozzle);
             _view.SetCalibrationRmsSummary(calibrationResult);
             _view.ApplyCalibrationDiagnostics(calibrationResult);
 
@@ -897,6 +903,8 @@ namespace NinePointRotationCalibration.Station.Views
             if (result == null) return "未返回检测结果";
             switch (result.ErrorCode ?? string.Empty)
             {
+                case "NO_MATERIAL":
+                    return "视野内未检测到 PCB 来料（空料）";
                 case "IMAGE_MISSING":
                     return "尚未加载图像，请先点击「导入图片」";
                 case "POSITIONING_TEMPLATE_MISSING":
@@ -907,9 +915,11 @@ namespace NinePointRotationCalibration.Station.Views
                 case "POSITIONING_FAILED":
                     return "当前图像未能匹配到定位模板，请检查模板参数或目标数量设置";
                 case "CALIBRATION_MISSING":
-                    return "九点与旋转标定尚未完成";
+                    return "左/右吸嘴 9+5 标定尚未全部完成";
                 case "TEACHING_MISSING":
                     return "左右吸嘴示教数据不完整";
+                case "CURRENT_R_INVALID":
+                    return "传入的 R1/R2 角度无效";
                 default:
                     return string.IsNullOrWhiteSpace(result.Message) ? "检测执行失败" : result.Message;
             }
@@ -934,10 +944,16 @@ namespace NinePointRotationCalibration.Station.Views
                 return;
             }
 
+            bool isRightCalibration = string.Equals(action, "files.calibrationRight.browse", StringComparison.OrdinalIgnoreCase);
             string primaryName;
             string secondaryName = null;
             string filter;
-            if (action.Contains("calibration"))
+            if (isRightCalibration)
+            {
+                primaryName = "txtRightCalibrationFile";
+                filter = "右吸嘴标定文件 (*.nprcal)|*.nprcal|所有文件 (*.*)|*.*";
+            }
+            else if (action.Contains("calibration"))
             {
                 primaryName = "txtCalibrationTemplatePath";
                 secondaryName = "txtCalibrationFile";
@@ -979,11 +995,25 @@ namespace NinePointRotationCalibration.Station.Views
 
                 if (File.Exists(dialog.FileName))
                 {
-                    if (action.Contains("calibration"))
+                    if (isRightCalibration)
                     {
                         if (_runtime.IsCalibrationEnabled)
                         {
-                            _runtime.LoadCalibrationJob(dialog.FileName);
+                            _runtime.LoadCalibrationJob(TeachingSide.Right, dialog.FileName);
+                        }
+                        else
+                        {
+                            _view.AppendLog("当前已关闭「启用标定」，仅同步配置目录路径，未加载右吸嘴标定任务。", false);
+                        }
+                    }
+                    else if (action.Contains("calibration"))
+                    {
+                        if (_runtime.IsCalibrationEnabled)
+                        {
+                            TeachingSide targetNozzle = string.Equals(action, "files.calibration.browse", StringComparison.OrdinalIgnoreCase)
+                                ? TeachingSide.Left
+                                : _runtime.ActiveCalibrationNozzle;
+                            _runtime.LoadCalibrationJob(targetNozzle, dialog.FileName);
                         }
                         else
                         {

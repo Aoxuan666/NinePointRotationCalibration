@@ -18,7 +18,7 @@ namespace NinePointRotationCalibration.Station.Services
             int featureCount = options.CameraFeatures == null ? 0 : options.CameraFeatures.Count;
             return string.Format(
                 CultureInfo.InvariantCulture,
-                "ver={0}, camEn={1}, calEn={2}, inspEn={3}, liveAcq={4}, archive={5}, tcp={6}:{7} (maxBytes={8}, motionTimeout={9}ms), provider={10}, sn='{11}', exp={12:0.##}us, gain={13:0.###}, gamma={14:0.###}, trig={15}, camTimeout={16}ms, previewMs={17}, features={18}, step=({19:0.###},{20:0.###},{21:0.###}deg), expectedCount={22}, configDir='{23}', calJob='{24}', posJob='{25}', teach='{26}', profile='{27}', archiveDir='{28}'",
+                "ver={0}, camEn={1}, calEn={2}, inspEn={3}, liveAcq={4}, archive={5}, tcp={6}:{7} (maxBytes={8}, hbTimeout={9}ms, motionTimeout={10}ms), provider={11}, sn='{12}', exp={13:0.##}us, gain={14:0.###}, gamma={15:0.###}, trig={16}, camTimeout={17}ms, previewMs={18}, features={19}, step=({20:0.###},{21:0.###},{22:0.###}deg), expectedCount={23}, configDir='{24}', calJobL='{25}', calJobR='{26}', posJob='{27}', teach='{28}', profile='{29}', archiveDir='{30}'",
                 options.ConfigurationVersion,
                 options.CameraEnabled,
                 options.CalibrationEnabled,
@@ -28,6 +28,7 @@ namespace NinePointRotationCalibration.Station.Services
                 options.TcpBindAddress,
                 options.TcpPort,
                 options.TcpMaxMessageBytes,
+                options.HeartbeatTimeoutMilliseconds,
                 options.MotionTimeoutMilliseconds,
                 options.CameraProvider,
                 options.CameraSerialNumber ?? string.Empty,
@@ -44,6 +45,7 @@ namespace NinePointRotationCalibration.Station.Services
                 options.ExpectedBoardCount,
                 options.GetUnifiedConfigDirectory(),
                 options.CalibrationJobPath,
+                options.RightCalibrationJobPath,
                 options.PositioningJobPath,
                 options.TeachingPath,
                 options.DetectionProfilePath,
@@ -267,7 +269,7 @@ namespace NinePointRotationCalibration.Station.Services
             StringBuilder sb = new StringBuilder();
             sb.AppendFormat(
                 CultureInfo.InvariantCulture,
-                "exec={0}, ok={1}, pass={2}, err={3}, count={4}/{5}, marks={6}, curR={7:0.###}, ct={8:0.0}ms (match={9:0.0}, blob={10:0.0}, conv={11:0.0}, thr={12:0.0}, morph={13:0.0}, hole={14:0.0}, comp={15:0.0}), msg='{16}'",
+                "exec={0}, ok={1}, pass={2}, err={3}, count={4}/{5}, marks={6}, curR=(L:{7:0.###},R:{8:0.###}), ct={9:0.0}ms (match={10:0.0}, blob={11:0.0}, conv={12:0.0}, thr={13:0.0}, morph={14:0.0}, hole={15:0.0}, comp={16:0.0}), msg='{17}'",
                 result.Executed,
                 result.Success,
                 result.Pass,
@@ -275,7 +277,8 @@ namespace NinePointRotationCalibration.Station.Services
                 result.ActualCount,
                 result.ExpectedCount,
                 result.HasManualMarks,
-                result.CurrentR,
+                result.CurrentRLeft,
+                result.CurrentRRight,
                 result.ElapsedMilliseconds,
                 result.MatchElapsedMilliseconds,
                 result.BlobElapsedMilliseconds,
@@ -298,8 +301,9 @@ namespace NinePointRotationCalibration.Station.Services
                         ? string.Empty
                         : string.Join(",", item.Targets.Where(t => t != null).Select(t => string.Format(
                             CultureInfo.InvariantCulture,
-                            "{0}:({1:0.###},{2:0.###},rOff={3:0.###},tgtR={4:0.###},pickR={5:0.###},placeR={6:0.###})",
+                            "{0}/{1}:({2:0.###},{3:0.###},rOff={4:0.###},tgtR={5:0.###},pickR={6:0.###},placeR={7:0.###})",
                             t.Side,
+                            string.IsNullOrWhiteSpace(t.Axis) ? ProtocolNozzle.GetAxisR(t.Side) : t.Axis,
                             t.X,
                             t.Y,
                             t.ROffset,
@@ -310,8 +314,9 @@ namespace NinePointRotationCalibration.Station.Services
                     int activeBlobs = item.Blobs == null ? 0 : item.Blobs.Count(b => b != null && !b.RejectedAsRectangle);
                     sb.AppendFormat(
                         CultureInfo.InvariantCulture,
-                        "B{0}(rc=({1:0.##},{2:0.##}),ang={3:0.##},score={4:0.###},mark={5},blobs={6}/{7},targets=[{8}])",
+                        "B{0}(valid={1},rc=({2:0.##},{3:0.##}),ang={4:0.##},score={5:0.###},mark={6},blobs={7}/{8},targets=[{9}])",
                         item.BoardIndex,
+                        item.Valid,
                         item.ImageRow,
                         item.ImageColumn,
                         item.ImageAngleDegrees,

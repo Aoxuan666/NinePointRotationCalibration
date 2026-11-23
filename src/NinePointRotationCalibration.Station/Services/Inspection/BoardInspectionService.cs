@@ -56,7 +56,7 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
             _poseMapper = new TargetPoseMapper();
         }
 
-        /// <summary>定位板件、分析配置的 Blob，并将示教目标映射为机械坐标。</summary>
+        /// <summary>单标定兼容入口：定位板件、分析配置的 Blob，并将示教目标映射为机械坐标。</summary>
         public InspectionResult Inspect(
             Bitmap image,
             CalibrationJob positioningJob,
@@ -66,14 +66,40 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
             int expectedCount,
             double currentR)
         {
-            return InspectCore(
+            return Inspect(
                 image,
                 positioningJob,
+                calibration,
                 calibration,
                 teaching,
                 profile,
                 expectedCount,
                 currentR,
+                currentR);
+        }
+
+        /// <summary>双 R 轴独立入口：使用左右吸嘴各自标定与当前 R1/R2 角度定位板件、分析 Blob 并映射目标坐标。</summary>
+        public InspectionResult Inspect(
+            Bitmap image,
+            CalibrationJob positioningJob,
+            CalibrationResult leftCalibration,
+            CalibrationResult rightCalibration,
+            TeachingData teaching,
+            DetectionProfile profile,
+            int expectedCount,
+            double currentRLeft,
+            double currentRRight)
+        {
+            return InspectCore(
+                image,
+                positioningJob,
+                leftCalibration,
+                rightCalibration,
+                teaching,
+                profile,
+                expectedCount,
+                currentRLeft,
+                currentRRight,
                 true);
         }
 
@@ -89,8 +115,10 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
                 positioningJob,
                 null,
                 null,
+                null,
                 profile,
                 expectedCount,
+                0.0,
                 0.0,
                 false);
         }
@@ -106,11 +134,40 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
             bool mapTargets,
             LockedFrameGrayCache frameCache = null)
         {
+            return InspectCore(
+                image,
+                positioningJob,
+                calibration,
+                calibration,
+                teaching,
+                profile,
+                expectedCount,
+                currentR,
+                currentR,
+                mapTargets,
+                frameCache);
+        }
+
+        internal InspectionResult InspectCore(
+            Bitmap image,
+            CalibrationJob positioningJob,
+            CalibrationResult leftCalibration,
+            CalibrationResult rightCalibration,
+            TeachingData teaching,
+            DetectionProfile profile,
+            int expectedCount,
+            double currentRLeft,
+            double currentRRight,
+            bool mapTargets,
+            LockedFrameGrayCache frameCache = null)
+        {
             Stopwatch watch = Stopwatch.StartNew();
             InspectionResult result = new InspectionResult
             {
                 ExpectedCount = expectedCount,
-                CurrentR = currentR
+                CurrentRLeft = currentRLeft,
+                CurrentRRight = currentRRight,
+                CurrentR = currentRLeft
             };
 
             HalconGrayImage gray = null;
@@ -121,19 +178,16 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
                     return Failure(result, "DETECTION_PROFILE_INVALID", "Detection profile is not configured.");
 
                 bool useTemplateMatching = profile.TemplateMatchingEnabled;
-                if (useTemplateMatching && (positioningJob == null || positioningJob.Template == null))
+                if (useTemplateMatching &&
+                    (positioningJob == null ||
+                     positioningJob.Template == null ||
+                     positioningJob.Template.ModelData == null ||
+                     positioningJob.Template.ModelData.Length == 0))
                     return Failure(result, "POSITIONING_TEMPLATE_MISSING", "Positioning template is not configured.");
-                if (useTemplateMatching && mapTargets &&
-                    (calibration == null || !calibration.TranslationSuccess))
-                    return Failure(result, "CALIBRATION_MISSING", "A valid XY calibration result is required.");
-                if (useTemplateMatching && mapTargets &&
-                    (calibration.Rotation == null || !calibration.Rotation.Success ||
-                    !calibration.Rotation.IsAvailable ||
-                    Math.Abs(calibration.Rotation.DirectionMultiplier) < 0.5))
-                {
-                    return Failure(result, "CALIBRATION_MISSING",
-                        "A valid rotation calibration result is required for R-axis mapping.");
-                }
+                if (useTemplateMatching && mapTargets && !IsCalibrationValid(leftCalibration))
+                    return Failure(result, "CALIBRATION_MISSING", "A valid Left (R1) 9+5 calibration result is required.");
+                if (useTemplateMatching && mapTargets && !IsCalibrationValid(rightCalibration))
+                    return Failure(result, "CALIBRATION_MISSING", "A valid Right (R2) 9+5 calibration result is required.");
                 if (useTemplateMatching && mapTargets &&
                     (!IsUsable(teaching == null ? null : teaching.Left) ||
                     !IsUsable(teaching == null ? null : teaching.Right)))
@@ -141,8 +195,8 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
                     return Failure(result, "TEACHING_MISSING",
                         "Valid left and right teaching data are required.");
                 }
-                if (useTemplateMatching && mapTargets && !IsFinite(currentR))
-                    return Failure(result, "CURRENT_R_INVALID", "A finite current R value is required for mapping.");
+                if (useTemplateMatching && mapTargets && (!IsFinite(currentRLeft) || !IsFinite(currentRRight)))
+                    return Failure(result, "CURRENT_R_INVALID", "Finite currentRLeft and currentRRight values are required for mapping.");
                 if (useTemplateMatching &&
                     positioningJob.Template.DetectionRoi == null &&
                     positioningJob.Template.TemplateRoi == null &&
@@ -160,11 +214,12 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
                     "inspect.start",
                     string.Format(
                         CultureInfo.InvariantCulture,
-                        "image={0}x{1}, expected={2}, currentR={3:0.###}, mapTargets={4}, {5}",
+                        "image={0}x{1}, expected={2}, currentRLeft={3:0.###}, currentRRight={4:0.###}, mapTargets={5}, {6}",
                         image.Width,
                         image.Height,
                         expectedCount,
-                        currentR,
+                        currentRLeft,
+                        currentRRight,
                         mapTargets,
                         StationLogFormatter.FormatDetectionProfile(profile)));
 
@@ -184,6 +239,7 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
                         BoardInspectionItem item = new BoardInspectionItem
                         {
                             BoardIndex = 1,
+                            Valid = true,
                             ImageRow = image.Height / 2.0,
                             ImageColumn = image.Width / 2.0,
                             ImageAngleDegrees = 0.0,
@@ -215,17 +271,39 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
                     TemplateMatchCollectionResult matches = _sdk.LocateAll(image, gray, locateTemplate, true);
                     matchWatch.Stop();
                     result.MatchElapsedMilliseconds = matchWatch.Elapsed.TotalMilliseconds;
-                    if (matches == null || !matches.Success)
+                    if (matches == null || (!matches.Success && !matches.IsNoMatch))
                     {
                         string message = matches == null ? "Positioning returned no result." : matches.Message;
                         return Failure(result, "POSITIONING_FAILED", message);
+                    }
+
+                    // 匹配引擎运行正常但视野内无任何达标目标 -> 正常空料工况（NO_MATERIAL），不报警停机
+                    if (matches.IsNoMatch || matches.Matches == null || matches.Matches.Count == 0)
+                    {
+                        result.ActualCount = 0;
+                        result.CountMatchesExpected = false;
+                        result.HasManualMarks = false;
+                        result.CoordinateMappingApplied = false;
+                        result.Success = true;
+                        result.Pass = true;
+                        result.ErrorCode = ProtocolErrorCodes.NoMaterial;
+                        result.Message = "视野内未检测到 PCB 来料（空料）";
+                        LocalDebugLog.Write(
+                            "INFO",
+                            "inspect.match",
+                            string.Format(
+                                CultureInfo.InvariantCulture,
+                                "No material detected (0 matches) in {0:0.0}ms (imgConv={1:0.0}ms)",
+                                result.MatchElapsedMilliseconds,
+                                result.ImageConversionElapsedMilliseconds));
+                        return result;
                     }
 
                     List<TemplateMatchResult> orderedMatches = OrderMatches(
                         matches.Matches,
                         locateTemplate,
                         profile);
-                    if (matches.Matches != null && orderedMatches.Count != matches.Matches.Count)
+                    if (orderedMatches.Count != matches.Matches.Count)
                     {
                         return Failure(result, "POSITIONING_FAILED", "Positioning returned an invalid board pose.");
                     }
@@ -267,6 +345,7 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
                             BoardInspectionItem item = new BoardInspectionItem
                             {
                                 BoardIndex = index + 1,
+                                Valid = true,
                                 ImageRow = match.Row,
                                 ImageColumn = match.Column,
                                 ImageAngleDegrees = match.AngleDegrees,
@@ -281,7 +360,43 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
                             item.HasManualMark = item.Blobs.Exists(blob => !blob.RejectedAsRectangle);
                             LogBoardBlobDetail(item.BoardIndex, analysis, item.HasManualMark);
                             if (mapTargets)
-                                item.Targets.AddRange(_poseMapper.Map(calibration, teaching, match, currentR));
+                            {
+                                try
+                                {
+                                    List<MappedTargetPose> mapped = _poseMapper.Map(
+                                        leftCalibration,
+                                        rightCalibration,
+                                        teaching,
+                                        match,
+                                        currentRLeft,
+                                        currentRRight);
+                                    bool hasLeft = mapped.Exists(t => t != null && t.Side == TeachingSide.Left);
+                                    bool hasRight = mapped.Exists(t => t != null && t.Side == TeachingSide.Right);
+                                    if (hasLeft && hasRight)
+                                    {
+                                        item.Targets.AddRange(mapped);
+                                    }
+                                    else
+                                    {
+                                        item.Valid = false;
+                                        item.Targets.Clear();
+                                        LocalDebugLog.Write(
+                                            "WARN",
+                                            "inspect.map",
+                                            "Board #" + item.BoardIndex + " failed to produce complete Left/Right targets; marked valid=false.");
+                                    }
+                                }
+                                catch (Exception mapException)
+                                {
+                                    item.Valid = false;
+                                    item.Targets.Clear();
+                                    LocalDebugLog.WriteException(
+                                        "WARN",
+                                        "inspect.map",
+                                        "Board #" + item.BoardIndex + " pose mapping threw an exception; marked valid=false.",
+                                        mapException);
+                                }
+                            }
                             result.Items.Add(item);
                         }
                     }
@@ -400,6 +515,14 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
             inspection.MorphologyElapsedMilliseconds += analysis.MorphologyElapsedMilliseconds;
             inspection.HoleFillElapsedMilliseconds += analysis.HoleFillElapsedMilliseconds;
             inspection.ComponentElapsedMilliseconds += analysis.ComponentElapsedMilliseconds;
+        }
+
+        private static bool IsCalibrationValid(CalibrationResult calibration)
+        {
+            return calibration != null && calibration.TranslationSuccess &&
+                calibration.Rotation != null && calibration.Rotation.Success &&
+                calibration.Rotation.IsAvailable &&
+                Math.Abs(calibration.Rotation.DirectionMultiplier) >= 0.5;
         }
 
         private static bool IsUsable(TeachingPose pose)

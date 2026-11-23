@@ -193,6 +193,7 @@ namespace NinePointRotationCalibration.Station.Views
             if (e == null || e.Record == null) return;
             try
             {
+                if (e.Nozzle != _runtime.ActiveCalibrationNozzle) return;
                 ApplyCalibrationRecord(e.Record);
                 _view.SelectCalibrationPoint(e.Record.PointNumber);
             }
@@ -222,25 +223,30 @@ namespace NinePointRotationCalibration.Station.Views
             try
             {
                 CalibrationResult result = e == null ? null : e.Result;
+                string nozzleText = e == null ? "标定" : ProtocolNozzle.GetDisplayName(e.Nozzle);
                 if (result == null)
                 {
-                    _view.AppendLog("标定计算未返回结果。", true);
+                    _view.AppendLog(nozzleText + " 标定计算未返回结果。", true);
                     return;
                 }
 
                 CalibrationRmsAssessment rms = result.EvaluateRms();
-                _view.SetCalibrationRmsSummary(result);
-                _view.ApplyCalibrationDiagnostics(result);
+                if (e == null || e.Nozzle == _runtime.ActiveCalibrationNozzle)
+                {
+                    _view.SetCalibrationRmsSummary(result);
+                    _view.ApplyCalibrationDiagnostics(result);
+                }
                 _view.AppendLog(
                     string.Format(
                         CultureInfo.InvariantCulture,
-                        "标定{0}：{1}｜{2}。",
-                        result.Success ? "成功" : "失败",
+                        "{0} 标定{1}：{2}｜{3}。",
+                        nozzleText,
+                        result.Success ? "成功" : "失败（已保留原有标定结果）",
                         result.Message,
                         rms.Summary),
                     !result.Success);
                 _view.SetOperationStatus(
-                    result.Success ? "标定完成 · " + rms.GradeLabel + "(" + rms.Score + "分)" : "标定失败",
+                    result.Success ? nozzleText + " 标定完成 · " + rms.GradeLabel + "(" + rms.Score + "分)" : nozzleText + " 标定失败",
                     false,
                     !result.Success);
             }
@@ -296,22 +302,26 @@ namespace NinePointRotationCalibration.Station.Views
                 MappedTargetPose rightTarget = item.Targets == null
                     ? null
                     : item.Targets.FirstOrDefault(target => target != null && target.Side == TeachingSide.Right);
-                string leftText = leftTarget == null
-                    ? "--"
-                    : string.Format(
-                        CultureInfo.InvariantCulture,
-                        "{0:0.##}, {1:0.##}, {2:0.##}°",
-                        leftTarget.X,
-                        leftTarget.Y,
-                        leftTarget.TargetR);
-                string rightText = rightTarget == null
-                    ? "--"
-                    : string.Format(
-                        CultureInfo.InvariantCulture,
-                        "{0:0.##}, {1:0.##}, {2:0.##}°",
-                        rightTarget.X,
-                        rightTarget.Y,
-                        rightTarget.TargetR);
+                string leftText = !item.Valid
+                    ? "无效"
+                    : leftTarget == null
+                        ? "--"
+                        : string.Format(
+                            CultureInfo.InvariantCulture,
+                            "{0:0.###}, {1:0.###}, {2:0.###}°",
+                            leftTarget.X,
+                            leftTarget.Y,
+                            leftTarget.TargetR);
+                string rightText = !item.Valid
+                    ? "无效"
+                    : rightTarget == null
+                        ? "--"
+                        : string.Format(
+                            CultureInfo.InvariantCulture,
+                            "{0:0.###}, {1:0.###}, {2:0.###}°",
+                            rightTarget.X,
+                            rightTarget.Y,
+                            rightTarget.TargetR);
                 rows.Add(new object[]
                 {
                     item.BoardIndex,
@@ -322,7 +332,7 @@ namespace NinePointRotationCalibration.Station.Views
                     leftText,
                     rightText,
                     item.HasManualMark ? "有" : "无",
-                    item.HasManualMark ? "NG" : "OK"
+                    !item.Valid ? "无效" : (item.HasManualMark ? "NG" : "OK")
                 });
                 foreach (BlobFinding blob in item.Blobs ?? new List<BlobFinding>())
                 {
@@ -413,16 +423,19 @@ namespace NinePointRotationCalibration.Station.Views
                     }
                 }
             }
+            bool isNoMaterial = string.Equals(result.ErrorCode, ProtocolErrorCodes.NoMaterial, StringComparison.OrdinalIgnoreCase);
             string summaryMessage = result.Executed ? result.Message : TranslateInspectionError(result);
             int ngBoardCount = result.Items == null ? 0 : result.Items.Count(item => item != null && item.HasManualMark);
             int okBoardCount = (result.Items == null ? 0 : result.Items.Count) - ngBoardCount;
             string ngReason = !result.Executed
                 ? "未执行"
-                : (!result.CountMatchesExpected && result.HasManualMarks)
-                    ? "板数不符+有标记"
-                    : !result.CountMatchesExpected
-                        ? "板数不符"
-                        : (result.HasManualMarks ? "有标记" : null);
+                : isNoMaterial
+                    ? null
+                    : (!result.CountMatchesExpected && result.HasManualMarks)
+                        ? "板数不符+有标记"
+                        : !result.CountMatchesExpected
+                            ? "板数不符"
+                            : (result.HasManualMarks ? "有标记" : null);
             _view.SetDetectionSummary(result.ExpectedCount, result.ActualCount, result.Success && result.Pass, summaryMessage);
             if (!result.Executed)
             {

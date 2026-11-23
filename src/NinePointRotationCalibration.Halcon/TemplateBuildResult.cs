@@ -1,4 +1,4 @@
-  using System;
+using System;
 using System.Collections.Generic;
 
 namespace NinePointRotationCalibration.Halcon
@@ -60,6 +60,8 @@ namespace NinePointRotationCalibration.Halcon
 
         public bool Success { get; set; }
         public CalibrationErrorCode ErrorCode { get; set; }
+        /// <summary>匹配引擎正常执行完成但视野内未发现任何达到阈值目标时为 true（用于区分空料与引擎异常）。</summary>
+        public bool IsNoMatch { get; set; }
         public string Message { get; set; }
         public List<TemplateMatchResult> Matches { get; set; }
         public double ElapsedMilliseconds { get; set; }
@@ -71,6 +73,19 @@ namespace NinePointRotationCalibration.Halcon
             {
                 Success = false,
                 ErrorCode = code,
+                IsNoMatch = false,
+                Message = message
+            };
+        }
+
+        /// <summary>创建匹配引擎正常完成但结果为 0 个目标的空料/无匹配结果。</summary>
+        public static TemplateMatchCollectionResult NoMatch(string message)
+        {
+            return new TemplateMatchCollectionResult
+            {
+                Success = false,
+                ErrorCode = CalibrationErrorCode.TemplateMatchFailed,
+                IsNoMatch = true,
                 Message = message
             };
         }

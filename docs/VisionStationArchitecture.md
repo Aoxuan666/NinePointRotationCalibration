@@ -116,7 +116,8 @@ R 轴使用标定出的方向系数修正图像角度差，同时返回 `rOffset
 | 文件 | 用途 |
 | --- | --- |
 | `station.json` | 相机/标定使能、TCP、相机、超时、步距和路径 |
-| `calibration.nprcal` | 标定模板、样本和求解参数 |
+| `calibration.nprcal` | 左吸嘴（R1）标定模板、14 点样本和求解参数 |
+| `calibration-right.nprcal` | 右吸嘴（R2）标定模板、14 点样本和求解参数 |
 | `positioning.nprcal` | PCB 多目标定位模板及检测 ROI 几何 |
 | `teaching.json` | 左/右示教数据 |
 | `detection-profile.json` | 模板匹配开关、ROI 使用模式、亮度/面积阈值、矩形过滤；不保存当前 ROI 几何 |

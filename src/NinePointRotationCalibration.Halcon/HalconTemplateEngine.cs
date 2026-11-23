@@ -357,8 +357,7 @@ namespace NinePointRotationCalibration.Halcon
                         int count = Math.Min(Math.Min(rows.Length, columns.Length), Math.Min(angles.Length, scores.Length));
                         if (count == 0)
                         {
-                            return Complete(TemplateMatchCollectionResult.Failure(
-                                CalibrationErrorCode.TemplateMatchFailed,
+                            return Complete(TemplateMatchCollectionResult.NoMatch(
                                 "No template match met the configured score and search constraints."), stopwatch);
                         }
 

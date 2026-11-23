@@ -118,12 +118,15 @@ namespace NinePointRotationCalibration.Station.Models
     {
         public BoardInspectionItem()
         {
+            Valid = true;
             Blobs = new List<BlobFinding>();
             Targets = new List<MappedTargetPose>();
             MatchContourSegments = new List<List<ImagePoint>>();
         }
 
         public int BoardIndex { get; set; }
+        /// <summary>单板坐标有效性标识；若个别板件映射异常无法给出可靠坐标则为 false。</summary>
+        public bool Valid { get; set; }
         public double ImageRow { get; set; }
         public double ImageColumn { get; set; }
         public double ImageAngleDegrees { get; set; }
@@ -156,6 +159,8 @@ namespace NinePointRotationCalibration.Station.Models
         public string Message { get; set; }
         public int ExpectedCount { get; set; }
         public int ActualCount { get; set; }
+        public double CurrentRLeft { get; set; }
+        public double CurrentRRight { get; set; }
         public double CurrentR { get; set; }
         public double MatchElapsedMilliseconds { get; set; }
         public double BlobElapsedMilliseconds { get; set; }

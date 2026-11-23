@@ -127,8 +127,32 @@ namespace NinePointRotationCalibration.TcpServerDemo
                 case ProtocolMessageTypes.InspectionTrigger:
                     await HandleInspectionTriggerAsync(connectionId, message, cancellationToken).ConfigureAwait(false);
                     break;
+                case ProtocolMessageTypes.CalibrationStartedAck:
+                    WriteLine("[CAL-START-ACK] sessionId=" + ReadString(message.Data, "sessionId", "") +
+                        ", accepted=" + ReadString(message.Data, "accepted", "false"));
+                    break;
                 case ProtocolMessageTypes.MotionArrived:
                     await HandleMotionArrivedAsync(connectionId, message, cancellationToken).ConfigureAwait(false);
+                    break;
+                case ProtocolMessageTypes.MotionFailed:
+                    await SendCalibrationCompletedAsync(
+                        connectionId,
+                        message.MessageId,
+                        ReadString(message.Data, "sessionId", "cal-demo-0001"),
+                        false,
+                        ProtocolErrorCodes.MotionFailed,
+                        ReadString(message.Data, "message", "Host reported motion failure."),
+                        cancellationToken).ConfigureAwait(false);
+                    break;
+                case ProtocolMessageTypes.CalibrationCancel:
+                    await SendCalibrationCompletedAsync(
+                        connectionId,
+                        message.MessageId,
+                        ReadString(message.Data, "sessionId", "cal-demo-0001"),
+                        false,
+                        ProtocolErrorCodes.Cancelled,
+                        ReadString(message.Data, "reason", "Cancelled by host."),
+                        cancellationToken).ConfigureAwait(false);
                     break;
                 default:
                     await SendErrorAsync(connectionId, message.MessageId, "MESSAGE_TYPE_UNSUPPORTED", "demo 未实现此消息类型。", false, cancellationToken).ConfigureAwait(false);
@@ -158,23 +182,46 @@ namespace NinePointRotationCalibration.TcpServerDemo
             ack.CorrelationId = request.MessageId;
             ack.Data["role"] = "vision";
             ack.Data["ready"] = false;
-            ack.Data["protocolVersion"] = "1.0";
+            ack.Data["cameraEnabled"] = true;
+            ack.Data["cameraConnected"] = false;
+            ack.Data["calibrationEnabled"] = true;
+            ack.Data["calibrationReady"] = false;
+            ack.Data["inspectionEnabled"] = true;
+            ack.Data["protocolVersion"] = ProtocolEnvelope.CurrentVersion;
             return SendAsync(connectionId, ack, cancellationToken);
         }
 
-        // 校验 currentR 参数并返回模拟的多板检测协议响应
+        // 校验双 R（或兼容单 R）参数并返回模拟的多板检测协议响应（v1.1）
         private static async Task HandleInspectionTriggerAsync(
             string connectionId,
             ProtocolEnvelope request,
             CancellationToken cancellationToken)
         {
-            double currentR;
-            object rawCurrentR;
-            if (!request.Data.TryGetValue("currentR", out rawCurrentR) ||
-                !double.TryParse(Convert.ToString(rawCurrentR, CultureInfo.InvariantCulture), NumberStyles.Float, CultureInfo.InvariantCulture, out currentR) ||
-                double.IsNaN(currentR) || double.IsInfinity(currentR))
+            double currentRLeft;
+            double currentRRight;
+            bool hasLeft = request.Data.ContainsKey("currentRLeft");
+            bool hasRight = request.Data.ContainsKey("currentRRight");
+            if (hasLeft ^ hasRight)
             {
-                await SendErrorAsync(connectionId, request.MessageId, "PROTOCOL_INVALID", "inspection.trigger.currentR 必须是有限数字。", false, cancellationToken).ConfigureAwait(false);
+                await SendErrorAsync(connectionId, request.MessageId, ProtocolErrorCodes.ProtocolInvalid, "inspection.trigger 必须成对传入 currentRLeft 与 currentRRight。", false, cancellationToken).ConfigureAwait(false);
+                return;
+            }
+            if (hasLeft && hasRight)
+            {
+                if (!TryReadFiniteDouble(request.Data, "currentRLeft", out currentRLeft) ||
+                    !TryReadFiniteDouble(request.Data, "currentRRight", out currentRRight))
+                {
+                    await SendErrorAsync(connectionId, request.MessageId, ProtocolErrorCodes.ProtocolInvalid, "inspection.trigger.currentRLeft/currentRRight 必须是有限数字。", false, cancellationToken).ConfigureAwait(false);
+                    return;
+                }
+            }
+            else if (TryReadFiniteDouble(request.Data, "currentR", out currentRLeft))
+            {
+                currentRRight = currentRLeft;
+            }
+            else
+            {
+                await SendErrorAsync(connectionId, request.MessageId, ProtocolErrorCodes.ProtocolInvalid, "inspection.trigger 缺少有效的 currentRLeft/currentRRight 或 currentR。", false, cancellationToken).ConfigureAwait(false);
                 return;
             }
 
@@ -184,17 +231,43 @@ namespace NinePointRotationCalibration.TcpServerDemo
             result.Data["executed"] = true;
             result.Data["success"] = true;
             result.Data["pass"] = true;
-            result.Data["errorCode"] = "NONE";
+            result.Data["coordinateMapped"] = true;
+            result.Data["errorCode"] = ProtocolErrorCodes.None;
             result.Data["message"] = "TCP demo synthetic inspection result.";
             result.Data["expectedCount"] = expectedCount;
             result.Data["actualCount"] = expectedCount;
             result.Data["hasManualMarks"] = false;
-            result.Data["currentR"] = currentR;
+            result.Data["currentRLeft"] = ProtocolNumber.Round3(currentRLeft);
+            result.Data["currentRRight"] = ProtocolNumber.Round3(currentRRight);
+            result.Data["currentR"] = ProtocolNumber.Round3(currentRLeft);
             result.Data["elapsedMilliseconds"] = 1.0;
             result.Data["matchElapsedMilliseconds"] = 0.5;
             result.Data["blobElapsedMilliseconds"] = 0.5;
             result.Data["items"] = new List<object>();
             await SendAsync(connectionId, result, cancellationToken).ConfigureAwait(false);
+        }
+
+        private static Task SendCalibrationCompletedAsync(
+            string connectionId,
+            string correlationId,
+            string sessionId,
+            bool success,
+            string errorCode,
+            string text,
+            CancellationToken cancellationToken)
+        {
+            ProtocolEnvelope done = ProtocolEnvelope.Create(ProtocolMessageTypes.CalibrationCompleted);
+            done.CorrelationId = correlationId;
+            done.Data["sessionId"] = sessionId ?? string.Empty;
+            done.Data["nozzle"] = "Left";
+            done.Data["axisR"] = "R1";
+            done.Data["success"] = success;
+            done.Data["errorCode"] = errorCode;
+            done.Data["message"] = text;
+            done.Data["resolutionX"] = 0.0;
+            done.Data["resolutionY"] = 0.0;
+            done.Data["rmsResidualPixels"] = 0.0;
+            return SendAsync(connectionId, done, cancellationToken);
         }
 
         // 根据关联的 move.request ID 构造模拟标定点结果回传
@@ -207,12 +280,14 @@ namespace NinePointRotationCalibration.TcpServerDemo
             result.CorrelationId = string.IsNullOrWhiteSpace(request.CorrelationId)
                 ? _lastMoveRequestId
                 : request.CorrelationId;
+            result.Data["sessionId"] = ReadString(request.Data, "sessionId", "cal-demo-0001");
+            result.Data["axisR"] = "R1";
             result.Data["pointNumber"] = ReadInt(request.Data, "pointNumber", _nextPointNumber);
             result.Data["success"] = true;
             result.Data["status"] = "Completed";
-            result.Data["machineX"] = ReadDouble(request.Data, "x", 100.0);
-            result.Data["machineY"] = ReadDouble(request.Data, "y", 50.0);
-            result.Data["machineR"] = ReadDouble(request.Data, "r", 0.0);
+            result.Data["machineX"] = ProtocolNumber.Round3(ReadDouble(request.Data, "x", 100.0));
+            result.Data["machineY"] = ProtocolNumber.Round3(ReadDouble(request.Data, "y", 50.0));
+            result.Data["machineR"] = ProtocolNumber.Round3(ReadDouble(request.Data, "r", 0.0));
             result.Data["imageRow"] = 1000.0;
             result.Data["imageColumn"] = 800.0;
             result.Data["imageAngle"] = 0.0;
@@ -265,6 +340,8 @@ namespace NinePointRotationCalibration.TcpServerDemo
                     break;
                 case "move":
                     message = ProtocolEnvelope.Create(ProtocolMessageTypes.MoveRequest);
+                    message.Data["sessionId"] = "cal-demo-0001";
+                    message.Data["axisR"] = "R1";
                     message.Data["pointNumber"] = _nextPointNumber;
                     message.Data["kind"] = _nextPointNumber <= 9 ? "translation" : "rotation";
                     message.Data["coordinateMode"] = "calibration-origin-relative";
@@ -278,17 +355,23 @@ namespace NinePointRotationCalibration.TcpServerDemo
                     break;
                 case "inspect":
                     message = ProtocolEnvelope.Create(ProtocolMessageTypes.InspectionTrigger);
-                    message.Data["currentR"] = parts.Length > 1 ? ParseDouble(parts[1]) : 12.5;
+                    double rVal = parts.Length > 1 ? ParseDouble(parts[1]) : 12.5;
+                    message.Data["currentRLeft"] = rVal;
+                    message.Data["currentRRight"] = rVal;
                     message.Data["expectedCount"] = 6;
                     message.Data["archiveImage"] = false;
                     break;
                 case "completed":
                     message = ProtocolEnvelope.Create(ProtocolMessageTypes.CalibrationCompleted);
+                    message.Data["sessionId"] = "cal-demo-0001";
+                    message.Data["nozzle"] = "Left";
+                    message.Data["axisR"] = "R1";
                     message.Data["success"] = true;
-                    message.Data["errorCode"] = "NONE";
+                    message.Data["errorCode"] = ProtocolErrorCodes.None;
                     message.Data["message"] = "TCP demo calibration completed.";
                     message.Data["resolutionX"] = 0.01;
                     message.Data["resolutionY"] = 0.01;
+                    message.Data["rmsResidualPixels"] = 0.15;
                     break;
                 case "error":
                     message = ProtocolEnvelope.Create(ProtocolMessageTypes.Error);
@@ -336,6 +419,24 @@ namespace NinePointRotationCalibration.TcpServerDemo
         private static string FormatEnvelope(ProtocolEnvelope message)
         {
             return message.Type + " messageId=" + message.MessageId + " correlationId=" + (message.CorrelationId ?? "") + " data=" + Codec.SerializeToString(message);
+        }
+
+        private static string ReadString(IDictionary<string, object> data, string key, string fallback)
+        {
+            object value;
+            return data != null && data.TryGetValue(key, out value) && value != null
+                ? Convert.ToString(value, CultureInfo.InvariantCulture)
+                : fallback;
+        }
+
+        private static bool TryReadFiniteDouble(IDictionary<string, object> data, string key, out double result)
+        {
+            result = 0.0;
+            object value;
+            return data != null && data.TryGetValue(key, out value) && value != null &&
+                !(value is bool) &&
+                double.TryParse(Convert.ToString(value, CultureInfo.InvariantCulture), NumberStyles.Float, CultureInfo.InvariantCulture, out result) &&
+                !double.IsNaN(result) && !double.IsInfinity(result);
         }
 
         private static int ReadInt(IDictionary<string, object> data, string key, int fallback)

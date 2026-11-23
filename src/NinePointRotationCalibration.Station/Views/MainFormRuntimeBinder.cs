@@ -61,6 +61,7 @@ namespace NinePointRotationCalibration.Station.Views
         private bool _disposed;
         private bool _suppressDetectionEvents;
         private bool _suppressCameraProviderEvents;
+        private bool _suppressCalibrationNozzleEvents;
         private decimal? _readExposure;
         private int _lastLiveInfoUpdateTick;
         private int _lastCameraWidth;
@@ -126,8 +127,10 @@ namespace NinePointRotationCalibration.Station.Views
 
             SetText("txtConfigDirectory", options.GetUnifiedConfigDirectory());
             SetPathPair("txtCalibrationTemplatePath", "txtCalibrationFile", options.CalibrationJobPath);
+            SetText("txtRightCalibrationFile", options.RightCalibrationJobPath);
             SetPathPair("txtPositioningTemplatePath", "txtPositioningFile", options.PositioningJobPath);
-            CalibrationJob initialCalibrationJob = _runtime.GetCalibrationJobSnapshot();
+            SelectCalibrationNozzle(_runtime.ActiveCalibrationNozzle);
+            CalibrationJob initialCalibrationJob = _runtime.GetCalibrationJobSnapshot(_runtime.ActiveCalibrationNozzle);
             CalibrationJob initialPositioningJob = _runtime.GetPositioningJobSnapshot();
             UpdateTemplateStatusLabel(false, initialCalibrationJob == null ? null : initialCalibrationJob.Template);
             UpdateTemplateStatusLabel(true, initialPositioningJob == null ? null : initialPositioningJob.Template);
@@ -346,15 +349,16 @@ namespace NinePointRotationCalibration.Station.Views
         {
             try
             {
-                LocalDebugLog.Write("INFO", "ui.action", "Calibration point requested: P" + e.PointNumber);
+                TeachingSide nozzle = GetSelectedCalibrationNozzle();
+                LocalDebugLog.Write("INFO", "ui.action", "Calibration point requested: " + ProtocolNozzle.GetAxisR(nozzle) + " P" + e.PointNumber);
                 Control source = FindControl<Button>("btnCalibrationPoint" + e.PointNumber);
                 await RunOperationAsync(
-                    "采集标定点 " + e.PointNumber,
+                    "采集 " + ProtocolNozzle.GetAxisR(nozzle) + " 标定点 " + e.PointNumber,
                     source,
                     async token =>
                     {
                         ApplyCalibrationStepOptions();
-                        await _runtime.CaptureCalibrationPointAsync(e.PointNumber, token).ConfigureAwait(true);
+                        await _runtime.CaptureCalibrationPointAsync(nozzle, e.PointNumber, token).ConfigureAwait(true);
                     }).ConfigureAwait(true);
             }
             catch (Exception exception)
@@ -377,28 +381,37 @@ namespace NinePointRotationCalibration.Station.Views
                     case "camera.snapshot":
                         // 拍照动作统一由 SnapshotRequested 事件处理，避免同一次点击触发两次采集
                         return;
+                    case "calibration.nozzleChanged":
+                        if (_suppressCalibrationNozzleEvents) return;
+                        SwitchCalibrationNozzleFromView();
+                        return;
                     case "calibration.manual":
-                        ApplyCalibrationStepOptions();
-                        _view.SetOperationStatus("手动标定：请选择点位", false, false);
-                        _view.AppendLog("已进入手动标定，请点击 1-14 点位。", false);
+                        await RunOperationAsync("启动手动标定", e.Source, async token =>
+                        {
+                            TeachingSide nozzle = GetSelectedCalibrationNozzle();
+                            ApplyCalibrationStepOptions();
+                            string sessionId = await _runtime.StartManualCalibrationSessionAsync(nozzle, token).ConfigureAwait(true);
+                            _view.AppendLog("已启动 " + ProtocolNozzle.GetDisplayName(nozzle) + " 手动标定会话 [" + sessionId + "]，请依次点击 1-14 点位。", false);
+                        }).ConfigureAwait(true);
                         return;
                     case "calibration.auto":
-                        await RunOperationAsync("自动标定", e.Source, async token =>
+                        await RunOperationAsync("自动标定 (" + ProtocolNozzle.GetAxisR(GetSelectedCalibrationNozzle()) + ")", e.Source, async token =>
                         {
+                            TeachingSide nozzle = GetSelectedCalibrationNozzle();
                             ApplyCalibrationStepOptions();
-                            await _runtime.RunAutomaticCalibrationAsync(token).ConfigureAwait(true);
+                            await _runtime.RunAutomaticCalibrationAsync(nozzle, token).ConfigureAwait(true);
                         }).ConfigureAwait(true);
                         return;
                     case "calibration.cancel":
-                        _runtime.CancelAutomaticCalibration();
-                        _view.SetOperationStatus("已请求取消标定", false, false);
-                        _view.AppendLog("已请求取消自动标定。", false);
+                        await _runtime.CancelCalibrationAsync("视觉界面操作员停止标定").ConfigureAwait(true);
+                        _view.SetOperationStatus("已停止标定（保留旧标定）", false, false);
+                        _view.AppendLog("已请求停止标定并通知上位机退出标定模式（保留原有标定结果）。", false);
                         return;
                     case "calibration.calculate":
                         await RunOperationAsync(
-                            "计算标定结果",
+                            "计算标定结果 (" + ProtocolNozzle.GetAxisR(GetSelectedCalibrationNozzle()) + ")",
                             e.Source,
-                            token => _runtime.CalculateCalibrationAsync(token)).ConfigureAwait(true);
+                            token => _runtime.CalculateCalibrationAsync(GetSelectedCalibrationNozzle(), token)).ConfigureAwait(true);
                         return;
                     case "camera.enumerate":
                         await RunOperationAsync("枚举相机", e.Source, EnumerateCamerasAsync).ConfigureAwait(true);
@@ -526,6 +539,7 @@ namespace NinePointRotationCalibration.Station.Views
                     case "template.calibration.browse":
                     case "template.positioning.browse":
                     case "files.calibration.browse":
+                    case "files.calibrationRight.browse":
                     case "files.positioning.browse":
                     case "files.teaching.browse":
                     case "files.detection.browse":
@@ -683,6 +697,53 @@ namespace NinePointRotationCalibration.Station.Views
             LocalDebugLog.WriteException("ERROR", "ui.op", "UI operation failed: " + operation, error);
             _view.AppendLog(operation + "失败：" + error.Message, true);
             _view.SetOperationStatus(operation + "失败", false, true);
+        }
+
+        private TeachingSide GetSelectedCalibrationNozzle()
+        {
+            ComboBox input = _view.CalibrationNozzleInput;
+            return input != null && input.SelectedIndex == 1 ? TeachingSide.Right : TeachingSide.Left;
+        }
+
+        private void SelectCalibrationNozzle(TeachingSide nozzle)
+        {
+            ComboBox input = _view.CalibrationNozzleInput;
+            if (input == null || input.Items.Count < 2) return;
+            _suppressCalibrationNozzleEvents = true;
+            try
+            {
+                input.SelectedIndex = nozzle == TeachingSide.Right ? 1 : 0;
+            }
+            finally
+            {
+                _suppressCalibrationNozzleEvents = false;
+            }
+        }
+
+        private void SwitchCalibrationNozzleFromView()
+        {
+            TeachingSide nozzle = GetSelectedCalibrationNozzle();
+            _runtime.ActiveCalibrationNozzle = nozzle;
+            RefreshCalibrationUiForNozzle(nozzle);
+            _view.AppendLog("已切换标定吸嘴至：" + ProtocolNozzle.GetDisplayName(nozzle), false);
+        }
+
+        private void RefreshCalibrationUiForNozzle(TeachingSide nozzle)
+        {
+            StationOptions options = _runtime.GetOptionsSnapshot();
+            string activeCalPath = nozzle == TeachingSide.Right
+                ? options.RightCalibrationJobPath
+                : options.CalibrationJobPath;
+            SetText("txtCalibrationTemplatePath", activeCalPath);
+            CalibrationJob calJob = _runtime.GetCalibrationJobSnapshot(nozzle);
+            UpdateTemplateStatusLabel(false, calJob == null ? null : calJob.Template);
+            foreach (CalibrationPointRecord record in _runtime.GetCalibrationRecordsSnapshot(nozzle))
+            {
+                ApplyCalibrationRecord(record);
+            }
+            CalibrationResult result = _runtime.GetCalibrationResultSnapshot(nozzle);
+            _view.SetCalibrationRmsSummary(result);
+            _view.ApplyCalibrationDiagnostics(result);
         }
 
         private string GetSelectedCameraId()

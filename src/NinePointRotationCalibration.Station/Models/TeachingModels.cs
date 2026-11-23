@@ -70,15 +70,17 @@ namespace NinePointRotationCalibration.Station.Models
     public sealed class MappedTargetPose
     {
         public TeachingSide Side { get; set; }
+        /// <summary>对应的独立 R 轴标识（Left 固定 "R1"，Right 固定 "R2"）。</summary>
+        public string Axis { get; set; }
         public double X { get; set; }
         public double Y { get; set; }
-        /// <summary>相对示教基准角度的旋转偏移量（度）。</summary>
+        /// <summary>相对该侧当前 R 轴的旋转补偿增量（度）。</summary>
         public double ROffset { get; set; }
-        /// <summary>映射后对应的目标旋转角度（度）。</summary>
+        /// <summary>映射后对应的该侧目标旋转角度（保持与输入 currentR 同连续坐标系，不做归一化，度）。</summary>
         public double TargetR { get; set; }
-        /// <summary>吸取时 R 轴旋转对齐 PCB 后的目标绝对角度（度）。</summary>
+        /// <summary>吸取时该侧 R 轴旋转对齐 PCB 后的目标绝对角度（度）。</summary>
         public double PickR { get; set; }
-        /// <summary>盲摆到固定位置时 R 轴转回的固定示教角度（通常为 0°）。</summary>
+        /// <summary>盲摆到固定位置时该侧 R 轴转回的固定示教角度（通常为 0°）。</summary>
         public double BlindPlaceR { get; set; }
     }
 }

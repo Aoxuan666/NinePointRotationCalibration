@@ -35,6 +35,15 @@ namespace NinePointRotationCalibration.Station.Models
         [OptionalField]
         private bool _hasLiveAcquisitionSetting;
 
+        [OptionalField]
+        private string _rightCalibrationJobPath;
+
+        [OptionalField]
+        private int _heartbeatTimeoutMilliseconds;
+
+        [OptionalField]
+        private int _calibrationStartAckTimeoutMilliseconds;
+
         public StationOptions()
         {
             _configurationVersion = CurrentConfigurationVersion;
@@ -44,6 +53,8 @@ namespace NinePointRotationCalibration.Station.Models
             _hasInspectionSetting = true;
             _liveAcquisitionEnabled = true;
             _hasLiveAcquisitionSetting = true;
+            _heartbeatTimeoutMilliseconds = 6000;
+            _calibrationStartAckTimeoutMilliseconds = 3000;
             TcpBindAddress = "0.0.0.0";
             TcpPort = 9100;
             TcpMaxMessageBytes = 1024 * 1024;
@@ -57,7 +68,7 @@ namespace NinePointRotationCalibration.Station.Models
             CameraGamma = 1.0;
             CameraTriggerMode = "Software";
             CameraFeatures = new Dictionary<string, string>(System.StringComparer.OrdinalIgnoreCase);
-            CameraTimeoutMilliseconds = 3000;
+            CameraTimeoutMilliseconds = 2000;
             TranslationStepX = 10.0;
             TranslationStepY = 10.0;
             RotationStepDegrees = 6.0;
@@ -67,6 +78,7 @@ namespace NinePointRotationCalibration.Station.Models
             string data = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "data");
             _configDirectory = data;
             CalibrationJobPath = Path.Combine(data, "calibration.nprcal");
+            _rightCalibrationJobPath = Path.Combine(data, "calibration-right.nprcal");
             PositioningJobPath = Path.Combine(data, "positioning.nprcal");
             TeachingPath = Path.Combine(data, "teaching.json");
             DetectionProfilePath = Path.Combine(data, "detection-profile.json");
@@ -119,6 +131,21 @@ namespace NinePointRotationCalibration.Station.Models
         public int TcpPort { get; set; }
         public int TcpMaxMessageBytes { get; set; }
         public int MotionTimeoutMilliseconds { get; set; }
+
+        /// <summary>TCP 链路心跳/无报文断线判定超时（毫秒，默认 6000 ms；<=0 时不启用服务端超时踢线）。</summary>
+        public int HeartbeatTimeoutMilliseconds
+        {
+            get { return _heartbeatTimeoutMilliseconds; }
+            set { _heartbeatTimeoutMilliseconds = value; }
+        }
+
+        /// <summary>标定会话握手 calibration.started.ack 应答超时（毫秒，默认 3000 ms）。</summary>
+        public int CalibrationStartAckTimeoutMilliseconds
+        {
+            get { return _calibrationStartAckTimeoutMilliseconds <= 0 ? 3000 : _calibrationStartAckTimeoutMilliseconds; }
+            set { _calibrationStartAckTimeoutMilliseconds = value; }
+        }
+
         public string CameraProvider { get; set; }
         public string CameraLibraryDirectory { get; set; }
         public string DahuaSdkAssemblyPath { get; set; }
@@ -136,6 +163,19 @@ namespace NinePointRotationCalibration.Station.Models
         public int PreviewIntervalMilliseconds { get; set; }
         public bool ArchiveImages { get; set; }
         public string CalibrationJobPath { get; set; }
+
+        /// <summary>右吸嘴（R2）独立 9+5 标定任务文件路径。</summary>
+        public string RightCalibrationJobPath
+        {
+            get
+            {
+                return string.IsNullOrWhiteSpace(_rightCalibrationJobPath)
+                    ? Path.Combine(GetUnifiedConfigDirectory(), "calibration-right.nprcal")
+                    : _rightCalibrationJobPath;
+            }
+            set { _rightCalibrationJobPath = value; }
+        }
+
         public string PositioningJobPath { get; set; }
         public string TeachingPath { get; set; }
         public string DetectionProfilePath { get; set; }
@@ -179,6 +219,7 @@ namespace NinePointRotationCalibration.Station.Models
             string normalized = Path.GetFullPath(directory.Trim());
             _configDirectory = normalized;
             CalibrationJobPath = Path.Combine(normalized, "calibration.nprcal");
+            _rightCalibrationJobPath = Path.Combine(normalized, "calibration-right.nprcal");
             PositioningJobPath = Path.Combine(normalized, "positioning.nprcal");
             TeachingPath = Path.Combine(normalized, "teaching.json");
             DetectionProfilePath = Path.Combine(normalized, "detection-profile.json");
@@ -248,7 +289,17 @@ namespace NinePointRotationCalibration.Station.Models
             }
             if (CameraTimeoutMilliseconds <= 0)
             {
-                CameraTimeoutMilliseconds = 3000;
+                CameraTimeoutMilliseconds = 2000;
+                changed = true;
+            }
+            if (_heartbeatTimeoutMilliseconds == 0)
+            {
+                _heartbeatTimeoutMilliseconds = 6000;
+                changed = true;
+            }
+            if (_calibrationStartAckTimeoutMilliseconds <= 0)
+            {
+                _calibrationStartAckTimeoutMilliseconds = 3000;
                 changed = true;
             }
             string unified = GetUnifiedConfigDirectory();
@@ -260,6 +311,11 @@ namespace NinePointRotationCalibration.Station.Models
             if (string.IsNullOrWhiteSpace(CalibrationJobPath))
             {
                 CalibrationJobPath = Path.Combine(unified, "calibration.nprcal");
+                changed = true;
+            }
+            if (string.IsNullOrWhiteSpace(_rightCalibrationJobPath))
+            {
+                _rightCalibrationJobPath = Path.Combine(unified, "calibration-right.nprcal");
                 changed = true;
             }
             if (string.IsNullOrWhiteSpace(PositioningJobPath))

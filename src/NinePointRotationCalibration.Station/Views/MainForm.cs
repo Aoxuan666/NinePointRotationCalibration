@@ -253,6 +253,12 @@ namespace NinePointRotationCalibration.Station.Views
         }
 
         [Browsable(false)]
+        public ComboBox CalibrationNozzleInput
+        {
+            get { return cmbCalibrationNozzle; }
+        }
+
+        [Browsable(false)]
         public CheckBox CameraEnabledInput
         {
             get { return chkCameraEnabled; }
@@ -1716,6 +1722,7 @@ namespace NinePointRotationCalibration.Station.Views
 
             // 标定与示教模块独立受“启用标定”控制；涉及硬件采图时额外要求真实相机已连接
             if (tabCalibration != null) tabCalibration.Enabled = calibrationEnabled;
+            if (cmbCalibrationNozzle != null) cmbCalibrationNozzle.Enabled = calibrationEnabled && !workflowBusy;
             bool acquisitionCalibrationAvailable = cameraReady && calibrationEnabled;
             foreach (Button button in calibrationPointButtons)
             {
@@ -1724,7 +1731,7 @@ namespace NinePointRotationCalibration.Station.Views
             SetActionControlEnabled("calibration.manual", acquisitionCalibrationAvailable);
             SetActionControlEnabled("calibration.auto", acquisitionCalibrationAvailable);
             SetActionControlEnabled("calibration.calculate", calibrationEnabled && !workflowBusy);
-            SetActionControlEnabled("calibration.cancel", calibrationEnabled && workflowBusy);
+            SetActionControlEnabled("calibration.cancel", calibrationEnabled);
             SetActionControlEnabled("teaching.left.capture", acquisitionCalibrationAvailable);
             SetActionControlEnabled("teaching.right.capture", acquisitionCalibrationAvailable);
             SetActionControlEnabled("teaching.left.clear", calibrationEnabled && !workflowBusy);

@@ -126,8 +126,8 @@ TCP 使用同样的独立状态点：灰色表示未监听，黄色表示正在�
 2. 每帧使用“4 字节无符号大端 JSON 长度 + UTF-8 JSON”，默认上限 1 MiB。
 3. 先发 `system.hello` 或 `system.heartbeat`，确认收到 `system.ack` 且 `correlationId` 正确。
 4. 每个 `messageId` 在当前连接内唯一；重试时使用新 ID。
-5. 标定时核对 `calibration.move.request -> motion.arrived -> calibration.point.result`。`motion.arrived.correlationId` 必须等于移动请求 ID，且 `x/y/r` 是停稳后实际绝对值。
-6. 检测时启用标定且标定/示教就绪时需提供有限数值 `inspection.trigger.currentR`；未启用标定（纯检测模式）可省略 `currentR` 并直接返回视觉定位与瑕疵判定（`coordinateMapped=false`）。核对回复中的板数、`success/pass`、每块板两侧目标以及 `rOffset/targetR`。`boardIndex` 从 1 开始，必须稳定遵循“从上到下分行、同行从左到右”，不按 `score` 排序。
+5. 标定时核对 `calibration.started -> calibration.started.ack`（锁存原点）及 `calibration.move.request -> motion.arrived / motion.failed -> calibration.point.result -> calibration.completed`；左吸嘴对应 `R1`，右吸嘴对应 `R2`，任意中止或失败均保留原有标定结果不覆盖。
+6. 检测时启用标定且双吸嘴标定/示教就绪时需成对提供有限数值 `inspection.trigger.currentRLeft` 与 `currentRRight`（兼容旧版 `currentR`）；纯视觉检测模式可省略角度并直接返回视觉定位与瑕疵判定（`coordinateMapped=false`）。核对回复中的板数、空料 `NO_MATERIAL`、数量不符 `BOARD_COUNT_MISMATCH`（仍返回已定位 `items`）、每板 `valid` 与两侧 `R1/R2` 目标及 `rOffset/targetR`。`boardIndex` 从 1 开始，必须稳定遵循“从上到下分行、同行从左到右”，不按 `score` 排序。
 7. 相机、标定、检测三大开关相互独立：检测关闭时生产触发返回 `system.error / INSPECTION_DISABLED`（不可重试）；相机关闭时返回 `system.error / CAMERA_DISABLED`（不可重试）；真实相机未连接时返回 `system.error / CAMERA_NOT_CONNECTED`（可待连上后重试）。关闭标定或尚未完成标定时，仍可正常执行检测。
 8. 同时发起两个视觉流程会收到 `BUSY`。坏帧、非 UTF-8 或非法 JSON 会导致连接被断开。
 
@@ -140,7 +140,8 @@ TCP 使用同样的独立状态点：灰色表示未监听，黄色表示正在�
 | 文件 | 用途 |
 | --- | --- |
 | `station.json` | 相机/标定使能、TCP、相机、标定步距、期望板数和其他路径 |
-| `calibration.nprcal` | 标定模板、14 点样本及求解所需数据 |
+| `calibration.nprcal` | 左吸嘴（R1）标定模板、14 点样本及求解所需数据 |
+| `calibration-right.nprcal` | 右吸嘴（R2）标定模板、14 点样本及求解所需数据 |
 | `positioning.nprcal` | PCB 定位模板及在模板编辑器中设置的检测 ROI |
 | `teaching.json` | 左/右示教图像位姿和机械位姿 |
 | `detection-profile.json` | 模板匹配开关、ROI 使用模式、亮度和 Blob/矩形过滤参数；不再单独保存 ROI 几何 |

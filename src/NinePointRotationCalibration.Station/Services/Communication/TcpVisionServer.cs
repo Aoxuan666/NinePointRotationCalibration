@@ -87,6 +87,7 @@ namespace NinePointRotationCalibration.Station.Services.Communication
         private string _bindAddress;
         private int _port;
         private readonly int _maxMessageBytes;
+        private int _heartbeatTimeoutMilliseconds;
         private readonly ProtocolJsonCodec _codec;
         private readonly SemaphoreSlim _lifecycleGate = new SemaphoreSlim(1, 1);
         private readonly SemaphoreSlim _sendGate = new SemaphoreSlim(1, 1);
@@ -120,6 +121,7 @@ namespace NinePointRotationCalibration.Station.Services.Communication
             _bindAddress = options.TcpBindAddress;
             _port = options.TcpPort;
             _maxMessageBytes = options.TcpMaxMessageBytes;
+            _heartbeatTimeoutMilliseconds = options.HeartbeatTimeoutMilliseconds;
             _codec = codec ?? new ProtocolJsonCodec();
         }
 
@@ -156,6 +158,12 @@ namespace NinePointRotationCalibration.Station.Services.Communication
         }
 
         public int MaxMessageBytes { get { return _maxMessageBytes; } }
+
+        public int HeartbeatTimeoutMilliseconds
+        {
+            get { return Volatile.Read(ref _heartbeatTimeoutMilliseconds); }
+            set { Volatile.Write(ref _heartbeatTimeoutMilliseconds, value); }
+        }
 
         public IPEndPoint LocalEndPoint
         {
@@ -504,6 +512,7 @@ namespace NinePointRotationCalibration.Station.Services.Communication
         {
             string reason = "Remote client closed the connection.";
             Exception error = null;
+            Task watchdogTask = MonitorInactivityAsync(connection);
 
             try
             {
@@ -535,21 +544,28 @@ namespace NinePointRotationCalibration.Station.Services.Communication
                         connection.Token).ConfigureAwait(false);
 
                     ProtocolEnvelope message = _codec.Deserialize(payload);
+                    connection.TouchActivity();
                     RaiseMessageReceived(message, connection.ConnectionId, connection.RemoteEndPoint);
                 }
             }
             catch (OperationCanceledException) when (connection.Token.IsCancellationRequested)
             {
-                reason = "Connection canceled.";
+                reason = connection.InactivityTimedOut
+                    ? "Heartbeat/inactivity timeout."
+                    : "Connection canceled.";
             }
             catch (IOException exception) when (connection.Token.IsCancellationRequested)
             {
-                reason = "Connection closed.";
-                error = exception;
+                reason = connection.InactivityTimedOut
+                    ? "Heartbeat/inactivity timeout."
+                    : "Connection closed.";
+                error = connection.InactivityTimedOut ? null : exception;
             }
             catch (ObjectDisposedException) when (connection.Token.IsCancellationRequested)
             {
-                reason = "Connection closed.";
+                reason = connection.InactivityTimedOut
+                    ? "Heartbeat/inactivity timeout."
+                    : "Connection closed.";
             }
             catch (Exception exception)
             {
@@ -560,6 +576,36 @@ namespace NinePointRotationCalibration.Station.Services.Communication
             finally
             {
                 CloseConnection(connection, reason, error);
+                await IgnoreExpectedShutdownAsync(watchdogTask).ConfigureAwait(false);
+            }
+        }
+
+        private async Task MonitorInactivityAsync(ClientConnection connection)
+        {
+            try
+            {
+                while (!connection.Token.IsCancellationRequested)
+                {
+                    int timeoutMs = Volatile.Read(ref _heartbeatTimeoutMilliseconds);
+                    int pollMs = timeoutMs > 0 ? Math.Max(100, Math.Min(500, timeoutMs / 4)) : 1000;
+                    await Task.Delay(pollMs, connection.Token).ConfigureAwait(false);
+                    timeoutMs = Volatile.Read(ref _heartbeatTimeoutMilliseconds);
+                    if (timeoutMs <= 0) continue;
+                    if (connection.GetIdleMilliseconds() >= timeoutMs)
+                    {
+                        connection.MarkInactivityTimedOut();
+                        string reason = "Heartbeat/inactivity timeout (" + timeoutMs + " ms without valid messages).";
+                        RaiseLog("WARN", "Closing TCP client " + connection.RemoteEndPoint + ": " + reason);
+                        CloseConnection(connection, reason, null);
+                        return;
+                    }
+                }
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (ObjectDisposedException)
+            {
             }
         }
 
@@ -776,6 +822,8 @@ namespace NinePointRotationCalibration.Station.Services.Communication
             private readonly CancellationTokenSource _cancellation;
             private readonly CancellationToken _token;
             private int _closed;
+            private long _lastActivityTimestamp;
+            private int _inactivityTimedOut;
 
             public ClientConnection(TcpClient client, CancellationToken serverToken)
             {
@@ -785,6 +833,7 @@ namespace NinePointRotationCalibration.Station.Services.Communication
                 RemoteEndPoint = GetRemoteEndPoint(client);
                 _cancellation = CancellationTokenSource.CreateLinkedTokenSource(serverToken);
                 _token = _cancellation.Token;
+                _lastActivityTimestamp = System.Diagnostics.Stopwatch.GetTimestamp();
             }
 
             public TcpClient Client { get; private set; }
@@ -792,6 +841,24 @@ namespace NinePointRotationCalibration.Station.Services.Communication
             public NetworkStream Stream { get; private set; }
             public string RemoteEndPoint { get; private set; }
             public CancellationToken Token { get { return _token; } }
+            public bool InactivityTimedOut { get { return Volatile.Read(ref _inactivityTimedOut) != 0; } }
+
+            public void TouchActivity()
+            {
+                Interlocked.Exchange(ref _lastActivityTimestamp, System.Diagnostics.Stopwatch.GetTimestamp());
+            }
+
+            public double GetIdleMilliseconds()
+            {
+                long last = Interlocked.Read(ref _lastActivityTimestamp);
+                long elapsed = System.Diagnostics.Stopwatch.GetTimestamp() - last;
+                return elapsed * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+            }
+
+            public void MarkInactivityTimedOut()
+            {
+                Interlocked.Exchange(ref _inactivityTimedOut, 1);
+            }
 
             public bool TryMarkClosed()
             {

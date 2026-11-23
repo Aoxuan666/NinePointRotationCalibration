@@ -57,6 +57,7 @@ namespace NinePointRotationCalibration.Station.Views
         private CheckBox chkBinaryPreview;
         private ComboBox cmbCameraProvider;
         private ComboBox cmbCameraDevice;
+        private ComboBox cmbCalibrationNozzle;
         private CheckBox chkCameraEnabled;
         private CheckBox chkCalibrationEnabled;
         private CheckBox chkInspectionEnabled;
@@ -462,7 +463,7 @@ namespace NinePointRotationCalibration.Station.Views
             layout.MinimumSize = new Size(0, 520);
             layout.Padding = new Padding(10);
             layout.RowCount = 4;
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 242.0F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 276.0F));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 44.0F));
             layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100.0F));
@@ -554,17 +555,23 @@ namespace NinePointRotationCalibration.Station.Views
             TableLayoutPanel moveFields = CreateFieldTable(2);
             moveFields.AutoScroll = false;
             moveFields.ColumnStyles[0].Width = 96.0F;
+            cmbCalibrationNozzle = CreateComboBox("cmbCalibrationNozzle");
+            cmbCalibrationNozzle.Items.AddRange(new object[] { "左吸嘴 (Left / R1)", "右吸嘴 (Right / R2)" });
+            cmbCalibrationNozzle.SelectedIndex = 0;
+            cmbCalibrationNozzle.Tag = "calibration.nozzleChanged";
+            toolTip.SetToolTip(cmbCalibrationNozzle, "选择当前执行 9+5 标定的独立吸嘴与 R 轴（左吸嘴对应 R1，右吸嘴对应 R2）");
             NumericUpDown stepX = CreateDecimalInput("nudCalibrationStepX", 10.0M, 0.1M, 500.0M, 3, 1.0M, false);
             NumericUpDown stepY = CreateDecimalInput("nudCalibrationStepY", 10.0M, 0.1M, 500.0M, 3, 1.0M, false);
             NumericUpDown stepR = CreateDecimalInput("nudCalibrationStepR", 6.0M, 0.5M, 90.0M, 2, 0.5M, false);
             NumericUpDown motionTimeout = CreateDecimalInput("nudMotionTimeout", 30000.0M, 1000.0M, 600000.0M, 0, 1000.0M, false);
             toolTip.SetToolTip(stepR, "五点旋转依次采集 -2ΔR / -ΔR / 0 / +ΔR / +2ΔR，总跨度 4×ΔR 须 ≥ 20°（推荐 6°~10°）");
             toolTip.SetToolTip(motionTimeout, "等待上位机运动到位的超时时间（毫秒），每次调节步进 1000 ms");
-            AddField(moveFields, 0, "X 步距 (mm)", stepX);
-            AddField(moveFields, 1, "Y 步距 (mm)", stepY);
-            AddField(moveFields, 2, "R 步距 (°)", stepR);
-            AddField(moveFields, 3, "到位超时 (ms)", motionTimeout);
-            moveFields.RowCount = 5;
+            AddField(moveFields, 0, "标定吸嘴", cmbCalibrationNozzle);
+            AddField(moveFields, 1, "X 步距 (mm)", stepX);
+            AddField(moveFields, 2, "Y 步距 (mm)", stepY);
+            AddField(moveFields, 3, "R 步距 (°)", stepR);
+            AddField(moveFields, 4, "到位超时 (ms)", motionTimeout);
+            moveFields.RowCount = 6;
             moveFields.RowStyles.Add(new RowStyle(SizeType.Percent, 100.0F));
             lblCalibrationSpanHint = new Label();
             lblCalibrationSpanHint.AutoEllipsis = true;
@@ -575,7 +582,7 @@ namespace NinePointRotationCalibration.Station.Views
             lblCalibrationSpanHint.Name = "lblCalibrationSpanHint";
             lblCalibrationSpanHint.Text = "5/12 原点 · 旋转总跨度 24.0° (要求≥20°)";
             lblCalibrationSpanHint.TextAlign = ContentAlignment.MiddleLeft;
-            moveFields.Controls.Add(lblCalibrationSpanHint, 0, 4);
+            moveFields.Controls.Add(lblCalibrationSpanHint, 0, 5);
             moveFields.SetColumnSpan(lblCalibrationSpanHint, 2);
             Panel moveGroup = CreateCard("点位参数", moveFields);
             moveGroup.Margin = new Padding(4, 0, 0, 8);
@@ -592,7 +599,7 @@ namespace NinePointRotationCalibration.Station.Views
             actions.Controls.Add(CreateButton("btnAutoCalibration", "自动标定", 94, 34, true, "calibration.auto"));
             actions.Controls.Add(CreateButton("btnManualCalibration", "手动标定", 92, 34, false, "calibration.manual"));
             actions.Controls.Add(CreateButton("btnCalculateCalibration", "计算并保存", 104, 34, false, "calibration.calculate"));
-            actions.Controls.Add(CreateButton("btnCancelCalibration", "取消", 68, 34, false, "calibration.cancel"));
+            actions.Controls.Add(CreateButton("btnCancelCalibration", "停止标定", 82, 34, false, "calibration.cancel"));
 
             lblCalibrationRmsSummary = new Label();
             lblCalibrationRmsSummary.AutoSize = true;
@@ -807,19 +814,32 @@ namespace NinePointRotationCalibration.Station.Views
             Label currentRLabel = new Label();
             currentRLabel.AutoSize = false;
             currentRLabel.ForeColor = TextSecondaryColor;
-            currentRLabel.Margin = new Padding(0, 0, 4, 0);
-            currentRLabel.Size = new Size(56, 32);
-            currentRLabel.Text = "当前 R(°)";
+            currentRLabel.Margin = new Padding(0, 0, 2, 0);
+            currentRLabel.Size = new Size(34, 32);
+            currentRLabel.Text = "R1(°)";
             currentRLabel.TextAlign = ContentAlignment.MiddleLeft;
-            NumericUpDown currentR = CreateDecimalInput("nudInspectionCurrentR", 0.0M, -360.0M, 360.0M, 2, 1.0M, false);
-            currentR.Margin = new Padding(0, 4, 10, 0);
-            currentR.Size = new Size(76, 27);
-            toolTip.SetToolTip(currentR, "手动测试检测时使用的当前 R 轴角度（度，仅在启用标定且已完成标定示教时参与坐标换算）");
+            NumericUpDown currentR = CreateDecimalInput("nudInspectionCurrentR", 0.0M, -3600.0M, 3600.0M, 3, 1.0M, false);
+            currentR.Margin = new Padding(0, 4, 6, 0);
+            currentR.Size = new Size(64, 27);
+            toolTip.SetToolTip(currentR, "手动测试检测时使用的左吸嘴 R1 当前角度（度，3 位小数）");
+            Label currentRRightLabel = new Label();
+            currentRRightLabel.AutoSize = false;
+            currentRRightLabel.ForeColor = TextSecondaryColor;
+            currentRRightLabel.Margin = new Padding(0, 0, 2, 0);
+            currentRRightLabel.Size = new Size(34, 32);
+            currentRRightLabel.Text = "R2(°)";
+            currentRRightLabel.TextAlign = ContentAlignment.MiddleLeft;
+            NumericUpDown currentRRight = CreateDecimalInput("nudInspectionCurrentRRight", 0.0M, -3600.0M, 3600.0M, 3, 1.0M, false);
+            currentRRight.Margin = new Padding(0, 4, 8, 0);
+            currentRRight.Size = new Size(64, 27);
+            toolTip.SetToolTip(currentRRight, "手动测试检测时使用的右吸嘴 R2 当前角度（度，3 位小数）");
             actions.Controls.Add(currentRLabel);
             actions.Controls.Add(currentR);
-            actions.Controls.Add(CreateButton("btnTestDetection", "测试检测", 84, 34, true, "detection.test"));
-            actions.Controls.Add(CreateButton("btnDebugDetection", "Blob 调试", 88, 34, false, "detection.debug"));
-            actions.Controls.Add(CreateButton("btnSaveDetection", "保存参数", 82, 34, false, "detection.save"));
+            actions.Controls.Add(currentRRightLabel);
+            actions.Controls.Add(currentRRight);
+            actions.Controls.Add(CreateButton("btnTestDetection", "测试检测", 78, 34, true, "detection.test"));
+            actions.Controls.Add(CreateButton("btnDebugDetection", "Blob 调试", 82, 34, false, "detection.debug"));
+            actions.Controls.Add(CreateButton("btnSaveDetection", "保存参数", 76, 34, false, "detection.save"));
 
             lblDetectionSummary = new Label();
             lblDetectionSummary.AutoEllipsis = true;
@@ -836,8 +856,8 @@ namespace NinePointRotationCalibration.Station.Views
             AddTextColumn(dgvDetectionResults, "ImageX", "图像 X", 64);
             AddTextColumn(dgvDetectionResults, "ImageY", "图像 Y", 64);
             AddTextColumn(dgvDetectionResults, "Angle", "板角°", 54);
-            AddTextColumn(dgvDetectionResults, "LeftTarget", "左吸嘴吸取 (X,Y,R)", 138);
-            AddTextColumn(dgvDetectionResults, "RightTarget", "右吸嘴吸取 (X,Y,R)", 138);
+            AddTextColumn(dgvDetectionResults, "LeftTarget", "左吸嘴 R1 (X,Y,R)", 142);
+            AddTextColumn(dgvDetectionResults, "RightTarget", "右吸嘴 R2 (X,Y,R)", 142);
             AddTextColumn(dgvDetectionResults, "Mark", "标记", 46);
             AddTextColumn(dgvDetectionResults, "Status", "状态", 48);
 
@@ -1205,7 +1225,7 @@ namespace NinePointRotationCalibration.Station.Views
             TableLayoutPanel layout = CreateScrollableStack(page);
             layout.RowCount = 3;
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 162.0F));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 316.0F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 358.0F));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48.0F));
 
             TableLayoutPanel tcpFields = CreateFieldTable(2);
@@ -1240,7 +1260,8 @@ namespace NinePointRotationCalibration.Station.Views
             fileFields.Dock = DockStyle.Fill;
             fileFields.Margin = Padding.Empty;
             fileFields.Padding = Padding.Empty;
-            fileFields.RowCount = 6;
+            fileFields.RowCount = 7;
+            fileFields.RowStyles.Add(new RowStyle(SizeType.Absolute, 42.0F));
             fileFields.RowStyles.Add(new RowStyle(SizeType.Absolute, 42.0F));
             fileFields.RowStyles.Add(new RowStyle(SizeType.Absolute, 42.0F));
             fileFields.RowStyles.Add(new RowStyle(SizeType.Absolute, 42.0F));
@@ -1248,11 +1269,12 @@ namespace NinePointRotationCalibration.Station.Views
             fileFields.RowStyles.Add(new RowStyle(SizeType.Absolute, 42.0F));
             fileFields.RowStyles.Add(new RowStyle(SizeType.Absolute, 42.0F));
             AddPathField(fileFields, 0, "配置文件夹", "txtConfigDirectory", "files.folder.import", "导入文件夹");
-            AddPathField(fileFields, 1, "标定文件", "txtCalibrationFile", "files.calibration.browse");
-            AddPathField(fileFields, 2, "定位文件", "txtPositioningFile", "files.positioning.browse");
-            AddPathField(fileFields, 3, "示教文件", "txtTeachingFile", "files.teaching.browse");
-            AddPathField(fileFields, 4, "检测配置", "txtDetectionProfile", "files.detection.browse");
-            AddPathField(fileFields, 5, "图像归档", "txtImageArchive", "files.archive.browse");
+            AddPathField(fileFields, 1, "左标定(R1)", "txtCalibrationFile", "files.calibration.browse");
+            AddPathField(fileFields, 2, "右标定(R2)", "txtRightCalibrationFile", "files.calibrationRight.browse");
+            AddPathField(fileFields, 3, "定位文件", "txtPositioningFile", "files.positioning.browse");
+            AddPathField(fileFields, 4, "示教文件", "txtTeachingFile", "files.teaching.browse");
+            AddPathField(fileFields, 5, "检测配置", "txtDetectionProfile", "files.detection.browse");
+            AddPathField(fileFields, 6, "图像归档", "txtImageArchive", "files.archive.browse");
             Panel files = CreateCard("配置与数据文件（统一配置目录）", fileFields);
 
             FlowLayoutPanel savePanel = new FlowLayoutPanel();

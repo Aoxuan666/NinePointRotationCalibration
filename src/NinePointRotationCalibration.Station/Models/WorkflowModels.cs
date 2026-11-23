@@ -16,6 +16,9 @@ namespace NinePointRotationCalibration.Station.Models
     /// <summary>标定点的计划偏移、实测机台坐标与图像匹配结果记录。</summary>
     public sealed class CalibrationPointRecord
     {
+        public TeachingSide Nozzle { get; set; }
+        public string AxisR { get; set; }
+        public string SessionId { get; set; }
         public int PointNumber { get; set; }
         public CalibrationSampleKind Kind { get; set; }
         public string Tag { get; set; }
@@ -44,10 +47,23 @@ namespace NinePointRotationCalibration.Station.Models
     public sealed class CalibrationPointEventArgs : EventArgs
     {
         public CalibrationPointEventArgs(CalibrationPointRecord record)
+            : this(record == null ? TeachingSide.Left : record.Nozzle, record)
         {
-            Record = record == null ? null : record.DeepClone();
         }
 
+        public CalibrationPointEventArgs(TeachingSide nozzle, CalibrationPointRecord record)
+        {
+            Nozzle = nozzle;
+            Record = record == null ? null : record.DeepClone();
+            if (Record != null)
+            {
+                Record.Nozzle = nozzle;
+                if (string.IsNullOrWhiteSpace(Record.AxisR))
+                    Record.AxisR = ProtocolNozzle.GetAxisR(nozzle);
+            }
+        }
+
+        public TeachingSide Nozzle { get; private set; }
         public CalibrationPointRecord Record { get; private set; }
     }
 
@@ -55,10 +71,28 @@ namespace NinePointRotationCalibration.Station.Models
     public sealed class CalibrationResultEventArgs : EventArgs
     {
         public CalibrationResultEventArgs(CalibrationResult result)
+            : this(TeachingSide.Left, result, null, null)
         {
+        }
+
+        public CalibrationResultEventArgs(
+            TeachingSide nozzle,
+            CalibrationResult result,
+            string sessionId = null,
+            string protocolErrorCode = null)
+        {
+            Nozzle = nozzle;
+            AxisR = ProtocolNozzle.GetAxisR(nozzle);
+            SessionId = sessionId ?? string.Empty;
+            ProtocolErrorCode = protocolErrorCode ??
+                (result != null && result.Success ? ProtocolErrorCodes.None : ProtocolErrorCodes.CalibrationSolveFailed);
             Result = result == null ? null : result.DeepClone();
         }
 
+        public TeachingSide Nozzle { get; private set; }
+        public string AxisR { get; private set; }
+        public string SessionId { get; private set; }
+        public string ProtocolErrorCode { get; private set; }
         public CalibrationResult Result { get; private set; }
     }
 

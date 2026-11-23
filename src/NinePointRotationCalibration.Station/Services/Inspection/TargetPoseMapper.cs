@@ -5,33 +5,46 @@ using NinePointRotationCalibration.Station.Models;
 namespace NinePointRotationCalibration.Station.Services.Inspection
 {
     /// <summary>
-    /// 单轴双吸嘴（左/右吸嘴）定位吸取 + 盲摆固定位置坐标映射器。
-    /// 工艺动作：吸取时旋转 R 轴对齐来料 PCB 角度（PickR = MachineR + ROffset），
-    /// 吸取后移动至固定盲摆工位并将 R 轴转回固定示教角（BlindPlaceR = MachineR，常为 0°）。
-    /// 当旋转标定包含有效的机械旋转中心（RotationCenterStage / ReferenceStage）时，
-    /// 自动补偿 R 轴从吸取对齐角转回盲摆固定角过程中的旋转中心偏心摆臂位移。
+    /// 双吸嘴独立双 R 轴（左吸嘴 R1 / 右吸嘴 R2）定位吸取 + 盲摆固定位置坐标映射器。
+    /// 左右吸嘴分别使用各自独立标定的 XY 仿射矩阵、机械旋转中心、旋转方向系数与示教基准，
+    /// 输出保持与输入 currentRLeft / currentRRight 同一连续角度坐标系（不做 [-180,180] 或 [0,360] 归一化）。
     /// </summary>
     public sealed class TargetPoseMapper
     {
-        /// <summary>为单块定位到的 PCB 分别计算左、右吸嘴的吸取机械坐标及回正盲摆角度。</summary>
+        /// <summary>单标定兼容入口：左右吸嘴共用同一份标定与同一 R 轴角。</summary>
         public List<MappedTargetPose> Map(
             CalibrationResult calibration,
             TeachingData teaching,
             TemplateMatchResult boardMatch,
             double currentR)
         {
-            List<MappedTargetPose> result = new List<MappedTargetPose>();
-            if (calibration == null || !calibration.TranslationSuccess || boardMatch == null || !boardMatch.Success)
-                return result;
-            if (calibration.Rotation == null || !calibration.Rotation.Success ||
-                !calibration.Rotation.IsAvailable ||
-                Math.Abs(calibration.Rotation.DirectionMultiplier) < 0.5)
-                return result;
-            if (teaching == null) return result;
-            if (!IsFinite(currentR) || !IsFinite(boardMatch.AngleDegrees)) return result;
+            return Map(calibration, calibration, teaching, boardMatch, currentR, currentR);
+        }
 
-            AddMappedPose(result, calibration, teaching.Left, boardMatch, currentR);
-            AddMappedPose(result, calibration, teaching.Right, boardMatch, currentR);
+        /// <summary>双 R 轴独立入口：分别为左吸嘴（R1）与右吸嘴（R2）计算目标机械坐标及连续坐标系角度。</summary>
+        public List<MappedTargetPose> Map(
+            CalibrationResult leftCalibration,
+            CalibrationResult rightCalibration,
+            TeachingData teaching,
+            TemplateMatchResult boardMatch,
+            double currentRLeft,
+            double currentRRight)
+        {
+            List<MappedTargetPose> result = new List<MappedTargetPose>();
+            if (boardMatch == null || !boardMatch.Success || teaching == null) return result;
+            if (!IsFinite(boardMatch.Row) || !IsFinite(boardMatch.Column) || !IsFinite(boardMatch.AngleDegrees))
+                return result;
+
+            if (IsCalibrationUsable(leftCalibration) && IsFinite(currentRLeft))
+            {
+                AddMappedPose(result, leftCalibration, teaching.Left, boardMatch, currentRLeft);
+            }
+
+            if (IsCalibrationUsable(rightCalibration) && IsFinite(currentRRight))
+            {
+                AddMappedPose(result, rightCalibration, teaching.Right, boardMatch, currentRRight);
+            }
+
             return result;
         }
 
@@ -47,6 +60,11 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
             ImagePoint taughtAnchor = new ImagePoint(teaching.ImageRow, teaching.ImageColumn);
             StagePoint detectedStage = calibration.TransformImageToStage(boardMatch.Anchor);
             StagePoint taughtImageStage = calibration.TransformImageToStage(taughtAnchor);
+            if (!IsFinite(detectedStage.X) || !IsFinite(detectedStage.Y) ||
+                !IsFinite(taughtImageStage.X) || !IsFinite(taughtImageStage.Y))
+            {
+                return;
+            }
 
             // 计算来料板在机械台面坐标系下的真实旋转角增量（自动处理镜像轴或图像行向下坐标系）。
             double boardRotation = NormalizeDegrees(
@@ -56,10 +74,9 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
             double cos = Math.Cos(radians);
             double sin = Math.Sin(radians);
 
-            // 若五点旋转标定测定了 R 轴机械旋转中心相对于标定参考点（ReferenceStage）的偏心向量：
+            // 若五点旋转标定测定了该侧 R 轴机械旋转中心相对于标定参考点（ReferenceStage）的偏心向量：
             // C_rot(M) = M + (RotationCenterStage - ReferenceStage)。
-            // 吸取时 R 轴旋转对齐 PCB，去固定位置盲摆时 R 轴转回固定示教角（0°）：
-            // 吸取时刻必须让旋转后的吸嘴/板锚点向量与 R 轴旋转中心严格重合，转回 0° 盲摆时才能落位零偏差。
+            // 吸取时该侧 R 轴旋转对齐 PCB，去固定位置盲摆时转回固定示教角，自动补偿旋转中心偏心摆臂位移。
             double rotCenterOffsetX = 0.0;
             double rotCenterOffsetY = 0.0;
             if (HasCalibratedRotationCenter(calibration.Rotation))
@@ -73,22 +90,39 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
 
             double direction = calibration.Rotation.DirectionMultiplier;
 
-            // PickR 为旋转对齐来料板角后的吸取目标 R；BlindPlaceR 为回正盲摆的固定示教角（常为 0°）
+            // 相对该侧当前 R 轴计算最小角度补偿增量 offsetR，targetR = currentR + offsetR 保持与输入 currentR 同一连续坐标系（不做归一化）。
             double imageCorrection = NormalizeDegrees(boardMatch.AngleDegrees - teaching.ImageAngleDegrees);
             double pickR = teaching.MachineR + (direction * imageCorrection);
             double offsetR = NormalizeDegrees(pickR - currentR);
             double targetR = currentR + offsetR;
 
+            double targetX = detectedStage.X - rotCenterOffsetX + (armX * cos) - (armY * sin);
+            double targetY = detectedStage.Y - rotCenterOffsetY + (armX * sin) + (armY * cos);
+            if (!IsFinite(targetX) || !IsFinite(targetY) ||
+                !IsFinite(offsetR) || !IsFinite(targetR) || !IsFinite(teaching.MachineR))
+            {
+                return;
+            }
+
             result.Add(new MappedTargetPose
             {
                 Side = teaching.Side,
-                X = detectedStage.X - rotCenterOffsetX + (armX * cos) - (armY * sin),
-                Y = detectedStage.Y - rotCenterOffsetY + (armX * sin) + (armY * cos),
+                Axis = ProtocolNozzle.GetAxisR(teaching.Side),
+                X = targetX,
+                Y = targetY,
                 ROffset = offsetR,
                 TargetR = targetR,
                 PickR = targetR,
                 BlindPlaceR = teaching.MachineR
             });
+        }
+
+        private static bool IsCalibrationUsable(CalibrationResult calibration)
+        {
+            return calibration != null && calibration.TranslationSuccess &&
+                calibration.Rotation != null && calibration.Rotation.Success &&
+                calibration.Rotation.IsAvailable &&
+                Math.Abs(calibration.Rotation.DirectionMultiplier) >= 0.5;
         }
 
         private static bool HasCalibratedRotationCenter(RotationCalibrationResult rotation)
