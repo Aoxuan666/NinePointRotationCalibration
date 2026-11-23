@@ -16,6 +16,7 @@
   - 断线判定：任一方连续 `6000 ms` 未收到任何有效报文即判断线并重连；
   - `system.ack` 应答超时：`1000 ms`；
   - `inspection.result` 应答超时：`3000 ms`（视觉典型 CT `80~250 ms`，正常最大 `≤ 1500 ms`，生产采图超时收紧至 `≤ 2000 ms`）；
+  - `teaching.result` 应答超时：`3000 ms`（示教采图超时收紧至 `≤ 2000 ms`）；
   - `calibration.started.ack` 应答超时：`3000 ms`；
   - 单点标定运动超时：默认 `30000 ms`（可配置）。
 
@@ -218,7 +219,7 @@
 ```
 
 - `currentRLeft`（R1）与 `currentRRight`（R2）为拍照时刻左右吸嘴当前角度（deg，3 位小数，有限数值）。启用标定且标定/示教就绪时两者同时必填；保留 `currentR` 仅作 v1.0 兼容（双值均存在时以双值为准；若仅传双值之一或含非有限数值，返回 `system.error / PROTOCOL_INVALID`）。
-- 纯视觉检测模式（未启用标定或标定/示教未就绪）下可省略角度（默认 `0.000`），正常执行定位与瑕疵检测（`coordinateMapped=false`，`targets=[]`）。
+- 纯视觉检测模式（未启用标定或标定/示教未就绪）下可省略角度（默认 `0.000`），正常执行定位与瑕疵检测：空料返回 `NO_MATERIAL`（`pass=true`）；有板时返回 `COORDINATE_NOT_MAPPED`（`executed=true, success=false, pass=false, coordinateMapped=false, items[].valid=false, targets=[]`）。
 - 未进入检测流程的拒绝条件统一返回 `system.error`：`INSPECTION_DISABLED`（`retryable=false`）、`CAMERA_DISABLED`（`retryable=false`）、`CAMERA_NOT_CONNECTED`（`retryable=true`）、`BUSY`（`retryable=true`）、`PROTOCOL_INVALID`（`retryable=false`）。
 
 ### Vision -> Host: `inspection.result`
@@ -260,8 +261,48 @@
 
 - **双 R 轴独立映射**：`Left`（`axis="R1"`）相对 `currentRLeft` 及左标定/左示教计算（`Left.targetR = currentRLeft + Left.rOffset`）；`Right`（`axis="R2"`）相对 `currentRRight` 及右标定/右示教计算（`Right.targetR = currentRRight + Right.rOffset`）。
 - **空料（`NO_MATERIAL`）**：模板匹配引擎正常执行且匹配结果为 `0` 块板时，返回 `executed=true, success=true, pass=true, errorCode="NO_MATERIAL", actualCount=0, hasManualMarks=false, items=[]`；只要定位到 `≥ 1` 块板即不得返回 `NO_MATERIAL`。
+- **未映射 / 映射异常与 5 级优先级**：有板（`actualCount ≥ 1`）时按 `BOARD_COUNT_MISMATCH` > `COORDINATE_NOT_MAPPED` > `COORDINATE_MAPPING_FAILED` > `MANUAL_MARK_FOUND` > `NONE` 判定；**只要任一块板 `valid=false`（或 `coordinateMapped=false`），整帧 `pass` 必为 `false`**。即使单板 `valid=false`（或未做坐标映射），该板 `hasManualMark` 与像素位姿仍独立生成且**完全可信**。
 - **数量不一致（`BOARD_COUNT_MISMATCH`）**：`actualCount >= 1 && actualCount != expectedCount` 时，`executed=true, success=false, pass=false, errorCode="BOARD_COUNT_MISMATCH"`，且 `items` 仍完整返回所有已成功定位的 `1..actualCount` 块板（含完整坐标、`targets`、`hasManualMark`）；若个别板无法给出可靠坐标，仅将该单板置 `valid=false`，不得整体置空 `items`。
 - `boardIndex` 从 `1` 开始，严格按图像空间“从上到下分行、同行内从左到右”连续编号，上位机不得按 `score` 重排。
+
+## 5.1 远程示教（`teaching.submit` / `teaching.result`）
+
+### Host -> Vision: `teaching.submit`
+
+上位机将板放到示教位并将吸嘴移开后发送（`correlationId=null`）：
+
+```json
+{
+  "nozzle": "Left",
+  "axisR": "R1",
+  "x": 650.120,
+  "y": 210.450,
+  "r": 0.000
+}
+```
+
+### Vision -> Host: `teaching.result`
+
+`correlationId` 等于对应 `teaching.submit.messageId`。失败时完整保留旧示教数据；成功后若 `calibrationReady` 变化，随后推送 `system.status`。
+
+```json
+{
+  "nozzle": "Left",
+  "axisR": "R1",
+  "success": true,
+  "errorCode": "NONE",
+  "message": "Teaching saved.",
+  "machineX": 650.120,
+  "machineY": 210.450,
+  "machineR": 0.000,
+  "imageRow": 1024.15,
+  "imageColumn": 1280.42,
+  "imageAngle": 0.12,
+  "score": 0.952
+}
+```
+
+`teaching.result.errorCode`：`NONE`、`POSITIONING_TEMPLATE_MISSING`、`CAMERA_CAPTURE_FAILED`、`MATCH_FAILED`、`TEACHING_SAVE_FAILED`、`INTERNAL_ERROR`（前置条件不满足走 `system.error`：`CALIBRATION_DISABLED`、`CAMERA_DISABLED`、`CAMERA_NOT_CONNECTED`、`BUSY`、`PROTOCOL_INVALID`）。
 
 ## 6. 错误返回边界与错误码速查
 
@@ -294,9 +335,11 @@
 
 | 错误码 | `executed` | `success` | `pass` | 含义 |
 | --- | --- | --- | --- | --- |
-| `NONE` | `true` | `true` | `true` | 检测完成，板数一致且无人工标记 |
+| `NONE` | `true` | `true` | `true` | 检测完成，板数一致、全部 `valid=true` 且无人工标记 |
 | `NO_MATERIAL` | `true` | `true` | `true` | 正常空料（定位结果为 0 块板，`items=[]`） |
-| `MANUAL_MARK_FOUND` | `true` | `true` | `false` | 板数一致，但检出人工坏板标记 |
+| `MANUAL_MARK_FOUND` | `true` | `true` | `false` | 板数一致、坐标全部有效，但检出人工坏板标记 |
+| `COORDINATE_MAPPING_FAILED` | `true` | `false` | `false` | 板数一致且已执行映射，但至少 1 块板 `valid=false` |
+| `COORDINATE_NOT_MAPPED` | `true` | `false` | `false` | 有板（`actualCount ≥ 1`）但未执行坐标映射（`coordinateMapped=false`） |
 | `BOARD_COUNT_MISMATCH` | `true` | `false` | `false` | 实际板数（≥1）与期望数不等；`items` 仍返回全部已定位板 |
 | `POSITIONING_TEMPLATE_MISSING` | `false` | `false` | `false` | 定位模板未配置 |
 | `CALIBRATION_MISSING` | `false` | `false` | `false` | 左或右吸嘴 9+5 标定结果不可用 |

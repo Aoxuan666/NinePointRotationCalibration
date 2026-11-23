@@ -920,6 +920,10 @@ namespace NinePointRotationCalibration.Station.Views
                     return "左右吸嘴示教数据不完整";
                 case "CURRENT_R_INVALID":
                     return "传入的 R1/R2 角度无效";
+                case "COORDINATE_NOT_MAPPED":
+                    return "检测已完成，但标定未启用或未就绪，未生成取料坐标";
+                case "COORDINATE_MAPPING_FAILED":
+                    return "存在单板坐标映射异常，未生成完整取料坐标";
                 default:
                     return string.IsNullOrWhiteSpace(result.Message) ? "检测执行失败" : result.Message;
             }

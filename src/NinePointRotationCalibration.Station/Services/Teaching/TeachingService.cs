@@ -10,6 +10,29 @@ using NinePointRotationCalibration.Station.Services.Inspection;
 
 namespace NinePointRotationCalibration.Station.Services.Teaching
 {
+    /// <summary>示教工作流异常，携带协议标准全大写错误码。</summary>
+    [Serializable]
+    public sealed class TeachingWorkflowException : Exception
+    {
+        public TeachingWorkflowException(string errorCode, string message)
+            : base(message)
+        {
+            ErrorCode = string.IsNullOrWhiteSpace(errorCode)
+                ? ProtocolErrorCodes.InternalError
+                : errorCode;
+        }
+
+        public TeachingWorkflowException(string errorCode, string message, Exception innerException)
+            : base(message, innerException)
+        {
+            ErrorCode = string.IsNullOrWhiteSpace(errorCode)
+                ? ProtocolErrorCodes.InternalError
+                : errorCode;
+        }
+
+        public string ErrorCode { get; private set; }
+    }
+
     /// <summary>负责左右工位示教采图、模板定位和示教数据保存。</summary>
     public sealed class TeachingService : IDisposable
     {
@@ -53,9 +76,19 @@ namespace NinePointRotationCalibration.Station.Services.Teaching
         }
 
         /// <summary>采集一幅图像并使用 HALCON 模板定位生成指定侧的示教姿态。</summary>
+        public Task<TeachingPose> CaptureAsync(
+            TeachingSide side,
+            MachinePose machinePose,
+            CancellationToken cancellationToken)
+        {
+            return CaptureAsync(side, machinePose, 0, cancellationToken);
+        }
+
+        /// <summary>采集一幅图像并使用 HALCON 模板定位生成指定侧的示教姿态（支持可选采图超时限制）。</summary>
         public async Task<TeachingPose> CaptureAsync(
             TeachingSide side,
             MachinePose machinePose,
+            int captureTimeoutMilliseconds,
             CancellationToken cancellationToken)
         {
             if (_disposed) throw new ObjectDisposedException(nameof(TeachingService));
@@ -69,7 +102,9 @@ namespace NinePointRotationCalibration.Station.Services.Teaching
                 if (job == null || job.Template == null || job.Template.ModelData == null || job.Template.ModelData.Length == 0)
                 {
                     LocalDebugLog.Write("WARN", "teaching", "Capture aborted: positioning template is not configured. side=" + side);
-                    throw new InvalidOperationException("Positioning template is not configured.");
+                    throw new TeachingWorkflowException(
+                        ProtocolErrorCodes.PositioningTemplateMissing,
+                        "Positioning template is not configured.");
                 }
 
                 LocalDebugLog.Write(
@@ -83,7 +118,23 @@ namespace NinePointRotationCalibration.Station.Services.Teaching
                         machinePose.Y,
                         machinePose.ThetaDegrees));
 
-                using (CameraFrame frame = await _captureAsync(cancellationToken).ConfigureAwait(false))
+                CameraFrame frame;
+                if (captureTimeoutMilliseconds > 0)
+                {
+                    using (CancellationTokenSource captureCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+                    {
+                        captureCts.CancelAfter(captureTimeoutMilliseconds);
+                        frame = await CaptureFrameWithMappedErrorsAsync(captureCts.Token, cancellationToken, captureTimeoutMilliseconds)
+                            .ConfigureAwait(false);
+                    }
+                }
+                else
+                {
+                    frame = await CaptureFrameWithMappedErrorsAsync(cancellationToken, cancellationToken, 0)
+                        .ConfigureAwait(false);
+                }
+
+                using (frame)
                 {
                     LocalDebugLog.Write(
                         "INFO",
@@ -91,13 +142,31 @@ namespace NinePointRotationCalibration.Station.Services.Teaching
                         "Captured teaching frame: side=" + side + ", seq=" + frame.Sequence + ", size=" +
                         (frame.Image == null ? "null" : frame.Image.Width + "x" + frame.Image.Height));
                     PublishFrame(frame.Image, "teaching." + side.ToString().ToLowerInvariant());
-                    TemplateMatchResult match = await Task.Run(
-                        () => LocateReferenceBoard(frame.Image, job), cancellationToken).ConfigureAwait(false);
-                    if (match == null || !match.Success)
+
+                    TemplateMatchResult match;
+                    try
                     {
-                        string errMsg = match == null ? "Template locate returned no result." : match.Message;
+                        match = await Task.Run(
+                            () => LocateReferenceBoard(frame.Image, job), cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    {
+                        throw;
+                    }
+                    catch (Exception ex)
+                    {
+                        LocalDebugLog.WriteException("WARN", "teaching", "Template locate threw an exception for " + side, ex);
+                        throw new TeachingWorkflowException(ProtocolErrorCodes.MatchFailed, "Template locate failed: " + ex.Message, ex);
+                    }
+
+                    if (match == null || !match.Success ||
+                        !IsFinite(match.Row) || !IsFinite(match.Column) || !IsFinite(match.AngleDegrees))
+                    {
+                        string errMsg = match == null || string.IsNullOrWhiteSpace(match.Message)
+                            ? "Positioning template match failed."
+                            : match.Message;
                         LocalDebugLog.Write("WARN", "teaching", "Template locate failed for " + side + ": " + errMsg);
-                        throw new InvalidOperationException(errMsg);
+                        throw new TeachingWorkflowException(ProtocolErrorCodes.MatchFailed, errMsg);
                     }
 
                     // 记录示教基准时刻的视觉与机械位姿；MachineR 同时作为后续盲摆回正的固定角
@@ -108,6 +177,7 @@ namespace NinePointRotationCalibration.Station.Services.Teaching
                         ImageRow = match.Row,
                         ImageColumn = match.Column,
                         ImageAngleDegrees = match.AngleDegrees,
+                        MatchScore = IsFinite(match.Score) ? match.Score : 0.0,
                         MachineX = machinePose.X,
                         MachineY = machinePose.Y,
                         MachineR = machinePose.ThetaDegrees,
@@ -121,8 +191,28 @@ namespace NinePointRotationCalibration.Station.Services.Teaching
                         if (side == TeachingSide.Left) snapshot.Left = Clone(pose);
                         else snapshot.Right = Clone(pose);
                     }
-                    // 先持久化成功后再提交内存状态，防止保存失败导致内存与磁盘不一致
-                    if (_saveAsync != null) await _saveAsync(snapshot).ConfigureAwait(false);
+
+                    // 先持久化成功后再提交内存状态，防止保存失败导致内存与磁盘不一致（旧示教完整保留）
+                    if (_saveAsync != null)
+                    {
+                        try
+                        {
+                            await _saveAsync(snapshot).ConfigureAwait(false);
+                        }
+                        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                        {
+                            throw;
+                        }
+                        catch (Exception ex)
+                        {
+                            LocalDebugLog.WriteException("ERROR", "teaching", "Failed to save teaching data for " + side, ex);
+                            throw new TeachingWorkflowException(
+                                ProtocolErrorCodes.TeachingSaveFailed,
+                                "Failed to save teaching data: " + ex.Message,
+                                ex);
+                        }
+                    }
+
                     lock (_sync)
                     {
                         _data = Clone(snapshot);
@@ -131,7 +221,7 @@ namespace NinePointRotationCalibration.Station.Services.Teaching
                         "INFO",
                         "teaching",
                         "Teaching saved: " + StationLogFormatter.FormatTeachingPose(pose) +
-                        ", matchScore=" + match.Score.ToString("0.###", CultureInfo.InvariantCulture));
+                        ", matchScore=" + pose.MatchScore.ToString("0.###", CultureInfo.InvariantCulture));
                     EventHandler<TeachingEventArgs> handler = TeachingChanged;
                     if (handler != null) handler(this, new TeachingEventArgs(pose));
                     return Clone(pose);
@@ -141,6 +231,48 @@ namespace NinePointRotationCalibration.Station.Services.Teaching
             {
                 _gate.Release();
             }
+        }
+
+        private async Task<CameraFrame> CaptureFrameWithMappedErrorsAsync(
+            CancellationToken captureToken,
+            CancellationToken callerToken,
+            int timeoutMilliseconds)
+        {
+            CameraFrame frame;
+            try
+            {
+                frame = await _captureAsync(captureToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (callerToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (OperationCanceledException ex)
+            {
+                string msg = timeoutMilliseconds > 0
+                    ? "Camera capture timed out (" + timeoutMilliseconds + " ms)."
+                    : "Camera capture timed out.";
+                LocalDebugLog.Write("WARN", "teaching", msg);
+                throw new TeachingWorkflowException(ProtocolErrorCodes.CameraCaptureFailed, msg, ex);
+            }
+            catch (Exception ex)
+            {
+                LocalDebugLog.WriteException("WARN", "teaching", "Camera capture failed during teaching", ex);
+                throw new TeachingWorkflowException(
+                    ProtocolErrorCodes.CameraCaptureFailed,
+                    "Camera capture failed: " + ex.Message,
+                    ex);
+            }
+
+            if (frame == null || frame.Image == null)
+            {
+                if (frame != null) frame.Dispose();
+                throw new TeachingWorkflowException(
+                    ProtocolErrorCodes.CameraCaptureFailed,
+                    "Camera capture returned an empty frame.");
+            }
+
+            return frame;
         }
 
         /// <summary>
@@ -247,11 +379,17 @@ namespace NinePointRotationCalibration.Station.Services.Teaching
                 ImageRow = source.ImageRow,
                 ImageColumn = source.ImageColumn,
                 ImageAngleDegrees = source.ImageAngleDegrees,
+                MatchScore = source.MatchScore,
                 MachineX = source.MachineX,
                 MachineY = source.MachineY,
                 MachineR = source.MachineR,
                 CapturedAtUtc = source.CapturedAtUtc
             };
+        }
+
+        private static bool IsFinite(double value)
+        {
+            return !double.IsNaN(value) && !double.IsInfinity(value);
         }
 
         public void Dispose()

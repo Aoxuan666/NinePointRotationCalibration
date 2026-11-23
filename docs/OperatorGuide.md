@@ -89,8 +89,8 @@ TCP 使用同样的独立状态点：灰色表示未监听，黄色表示正在�
 1. 放入可代表生产状态的 PCB，拍照后在“模板 > 定位模板”点“创建模板”。
 2. 在“定位模板与检测区域”编辑器中完成板件模板后，点“检测区”并在同一张参考图上拖出检测 ROI；切回“选择”后，可拖动 ROI 内部移动、拖动控制点缩放、拖动旋转手柄改变角度。检测 ROI 与定位模板一起保存在定位 Job 中，不在检测页重复维护一套几何数值。
 3. 保存后点“测试”，确认多目标定位数和分数。
-4. 用上位机把机构移到左侧示教位，在“左右示教”页输入当前实际机械 X/Y/R，点左侧“记录当前”。
-5. 对右侧重复上一步。记录时工作站会自行拍照并用定位模板求图像位姿，不需要上位机再触发一次拍照。
+4. 用上位机把机构移到左侧示教位（或由上位机放板后移开吸嘴发送 `teaching.submit` 远程示教）；若在视觉界面本地示教，需在“左右示教”页手工输入当前实际机械 X/Y/R 后点左侧“记录当前”。
+5. 对右侧重复上一步。记录时工作站会自行拍照并用定位模板求第 1 号基准板图像位姿，保存至 `teaching.json`。
 
 ### 5.4 检测 ROI 与试运行
 
@@ -127,7 +127,7 @@ TCP 使用同样的独立状态点：灰色表示未监听，黄色表示正在�
 3. 先发 `system.hello` 或 `system.heartbeat`，确认收到 `system.ack` 且 `correlationId` 正确。
 4. 每个 `messageId` 在当前连接内唯一；重试时使用新 ID。
 5. 标定时核对 `calibration.started -> calibration.started.ack`（锁存原点）及 `calibration.move.request -> motion.arrived / motion.failed -> calibration.point.result -> calibration.completed`；左吸嘴对应 `R1`，右吸嘴对应 `R2`，任意中止或失败均保留原有标定结果不覆盖。
-6. 检测时启用标定且双吸嘴标定/示教就绪时需成对提供有限数值 `inspection.trigger.currentRLeft` 与 `currentRRight`（兼容旧版 `currentR`）；纯视觉检测模式可省略角度并直接返回视觉定位与瑕疵判定（`coordinateMapped=false`）。核对回复中的板数、空料 `NO_MATERIAL`、数量不符 `BOARD_COUNT_MISMATCH`（仍返回已定位 `items`）、每板 `valid` 与两侧 `R1/R2` 目标及 `rOffset/targetR`。`boardIndex` 从 1 开始，必须稳定遵循“从上到下分行、同行从左到右”，不按 `score` 排序。
+6. 检测时启用标定且双吸嘴标定/示教就绪时需成对提供有限数值 `inspection.trigger.currentRLeft` 与 `currentRRight`（兼容旧版 `currentR`）；纯视觉检测模式可省略角度并执行视觉定位与瑕疵判定：空料返回 `NO_MATERIAL`（`pass=true`），有板但未做坐标映射返回 `COORDINATE_NOT_MAPPED`（`success=false, pass=false, coordinateMapped=false`）。核对回复中的板数、数量不符 `BOARD_COUNT_MISMATCH`（仍返回已定位 `items`）、单板映射异常 `COORDINATE_MAPPING_FAILED`（任一板 `valid=false` 则 `pass=false`，且 `hasManualMark` 仍可信）与两侧 `R1/R2` 目标及 `rOffset/targetR`。支持上位机通过 `teaching.submit` / `teaching.result` 远程提交机械坐标完成双吸嘴示教。`boardIndex` 从 1 开始，必须稳定遵循“从上到下分行、同行从左到右”，不按 `score` 排序。
 7. 相机、标定、检测三大开关相互独立：检测关闭时生产触发返回 `system.error / INSPECTION_DISABLED`（不可重试）；相机关闭时返回 `system.error / CAMERA_DISABLED`（不可重试）；真实相机未连接时返回 `system.error / CAMERA_NOT_CONNECTED`（可待连上后重试）。关闭标定或尚未完成标定时，仍可正常执行检测。
 8. 同时发起两个视觉流程会收到 `BUSY`。坏帧、非 UTF-8 或非法 JSON 会导致连接被断开。
 

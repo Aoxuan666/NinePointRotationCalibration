@@ -3,7 +3,7 @@
 | 项目 | 内容 |
 | --- | --- |
 | **协议名称** | ZM910A 视觉工作站与上位机 TCP 通讯协议规范 |
-| **协议版本** | `v1.1`（唯一正式实施版本，纯 JSON 协议） |
+| **协议版本** | `v1.1`（唯一正式实施版本，纯 JSON 协议；已并入上位机 3 项确认补全） |
 | **发布日期** | 2026-11-23 |
 | **适用机型** | ZM910A PCB 移栽龙门（共用 X/Y 轴 + 独立左吸嘴 R1 / 右吸嘴 R2） |
 | **通讯角色** | 视觉工作站 = TCP Server（默认 `0.0.0.0:9100`）；上位机 = TCP Client |
@@ -63,6 +63,7 @@ ZM910A 移栽龙门具备**左、右两个独立吸嘴，共用一套 X/Y 轴，
 | **无活动断线判定** | `6000 ms`（6 s） | 任一方连续 `6000 ms` 未收到对端任何有效帧（心跳、业务请求、应答、推送均刷新活跃计时）即判定链路断开，主动关闭套接字，由上位机发起重连 |
 | **`system.ack` 应答超时** | `1000 ms` | 上位机发送 `system.hello` / `system.heartbeat` 后等待 `system.ack` 的超时上限（视觉内存直回，典型 `< 10 ms`） |
 | **`inspection.result` 应答超时** | `3000 ms` | 上位机发送 `inspection.trigger` 后等待回复的超时上限。视觉 6 连板典型 CT `80 ~ 250 ms`，正常最大耗时 `≤ 1500 ms`；视觉生产单次采图超时收紧至 `≤ 2000 ms`，确保端到端 `≤ 2500 ms` 内必回结果或错误 |
+| **`teaching.result` 应答超时** | `3000 ms` | 上位机发送 `teaching.submit` 后等待 `teaching.result` 的超时上限；视觉示教单次采图超时收紧至 `≤ 2000 ms`，确保 `≤ 3000 ms` 内必回结果或错误 |
 | **`calibration.started.ack` 应答超时** | `3000 ms` | 视觉发送 `calibration.started` 后等待上位机确认与原点锁存的超时上限；超时后视觉直接中止本次启动并发送 `calibration.completed(SESSION_REJECTED)`，不下发任何 `move.request` |
 | **单点标定运动超时** | `30000 ms`（默认，可配置） | 视觉发送 `calibration.move.request` 后等待 `motion.arrived` 或 `motion.failed` 的超时上限；上位机发生软限位/急停/报警时必须立即回复 `motion.failed`，不得等待超时 |
 
@@ -82,7 +83,7 @@ ZM910A 移栽龙门具备**左、右两个独立吸嘴，共用一套 X/Y 轴，
      - `Right.targetR = Right.pickR = Round3(currentRRight + Right.rOffset)`
      - `blindPlaceR` 为该吸嘴示教时记录的固定回正放置角（`MachineR`，常见为 `0.000`）。
    - 最终目标角是否超出 R1 / R2 软限位或多圈行程范围，由上位机统一校验。
-4. **错误码命名规范**：全协议所有错误码字段（`system.error.data.code`、`inspection.result.data.errorCode`、`calibration.completed.data.errorCode`、`motion.failed.data.code`）统一采用 **全大写下划线格式（`UPPER_SNAKE_CASE`）**，成功/无错误统一为 `"NONE"`。
+4. **错误码命名规范**：全协议所有错误码字段（`system.error.data.code`、`inspection.result.data.errorCode`、`calibration.completed.data.errorCode`、`motion.failed.data.code`、`teaching.result.data.errorCode`）统一采用 **全大写下划线格式（`UPPER_SNAKE_CASE`）**，成功/无错误统一为 `"NONE"`。
 
 ---
 
@@ -105,6 +106,8 @@ ZM910A 移栽龙门具备**左、右两个独立吸嘴，共用一套 X/Y 轴，
 | 13 | `calibration.completed` | 视觉 → 上位机 | 汇总标定成功/失败/中止（正常/界面停止填 `null`，上位机中止/拒动/拒绝填对应 `messageId`） | 标定结束通知 |
 | 14 | `inspection.trigger` | 上位机 → 视觉 | 触发生产检测（`null`） | 生产检测触发 |
 | 15 | `inspection.result` | 视觉 → 上位机 | 返回生产检测结果（填 `trigger.messageId`） | 生产检测结果 |
+| 16 | `teaching.submit` | 上位机 → 视觉 | 提交吸嘴机械坐标并触发示教拍照保存（`null`） | 远程双吸嘴示教 |
+| 17 | `teaching.result` | 视觉 → 上位机 | 返回示教结果与像素定位/得分（填 `submit.messageId`） | 示教结果反馈 |
 
 ---
 
@@ -216,14 +219,41 @@ sequenceDiagram
             Vision-->>Host: inspection.result (executed=false, success=false, pass=false, errorCode=IMAGE_MISSING / ...)
         else 正常空料（定位结果数为 0）
             Vision-->>Host: inspection.result (executed=true, success=true, pass=true, errorCode="NO_MATERIAL", actualCount=0, items=[])
-        else 板数一致且无不良标记
-            Vision-->>Host: inspection.result (executed=true, success=true, pass=true, errorCode="NONE", items[1..N])
-        else 板数一致且检出人工坏板标记
-            Vision-->>Host: inspection.result (executed=true, success=true, pass=false, errorCode="MANUAL_MARK_FOUND", items[1..N])
         else 板数不一致（actualCount >= 1 && != expectedCount）
             Vision-->>Host: inspection.result (executed=true, success=false, pass=false, errorCode="BOARD_COUNT_MISMATCH", items[1..actualCount])
+        else 有板但未做坐标映射（coordinateMapped=false）
+            Vision-->>Host: inspection.result (executed=true, success=false, pass=false, errorCode="COORDINATE_NOT_MAPPED", items[].valid=false)
+        else 存在单板坐标映射异常（任一板 valid=false）
+            Vision-->>Host: inspection.result (executed=true, success=false, pass=false, errorCode="COORDINATE_MAPPING_FAILED", 异常板 valid=false)
+        else 板数一致且全部有效但检出人工标记
+            Vision-->>Host: inspection.result (executed=true, success=true, pass=false, errorCode="MANUAL_MARK_FOUND", items[1..N])
+        else 板数一致、全部有效且无不良标记
+            Vision-->>Host: inspection.result (executed=true, success=true, pass=true, errorCode="NONE", items[1..N])
         end
         Note over Vision: 先释放工作流锁并回传结果，再于后台串行执行 UI 刷新与图像归档
+    end
+```
+
+### 4.4 双吸嘴远程示教流程（`teaching.submit` / `teaching.result`）
+
+```mermaid
+sequenceDiagram
+    participant Host as 上位机 (Client)
+    participant Vision as 视觉工作站 (Server)
+
+    Note over Host: 放板至示教位，吸嘴移开不遮挡相机
+    Host->>Vision: teaching.submit (nozzle="Left"/"Right", axisR="R1"/"R2", x, y, r)
+
+    alt 前置条件不满足或协议非法（使能关闭/相机未连/忙/字段非法）
+        Vision-->>Host: system.error (corrId, code, message, retryable)
+    else 已进入示教流程（采图<=2000ms -> 锁定第1号基准板 -> 写入teaching.json）
+        alt 示教成功
+            Vision-->>Host: teaching.result (corrId, success=true, errorCode="NONE", machine/image/score)
+            Note over Vision: 若 calibrationReady 因此变为 true，随后推送 system.status
+        else 模板缺失/采图失败/匹配失败/保存失败
+            Vision-->>Host: teaching.result (corrId, success=false, errorCode, message)
+            Note over Vision: 完整保留原有示教数据不覆盖
+        end
     end
 ```
 
@@ -422,7 +452,38 @@ sequenceDiagram
 **入参校验规则**：
 - 若 `currentRLeft` 与 `currentRRight` **只传了其中之一**，或任意角度字段为 `NaN` / `Infinity` / 非数字，直接回复 `system.error / PROTOCOL_INVALID`（`retryable=false`）。
 - 启用标定且 `calibrationReady=true` 时，若双值与 `currentR` 均未提供，回复 `system.error / PROTOCOL_INVALID`。
-- 纯视觉检测模式（`calibrationEnabled=false` 或 `calibrationReady=false`）下允许省略角度（默认 `0.000`），仍正常执行模板定位与瑕疵检测（`coordinateMapped=false`，各板 `targets=[]`）。
+- 纯视觉检测模式（`calibrationEnabled=false` 或 `calibrationReady=false`）下允许省略角度（默认 `0.000`），仍正常执行模板定位与瑕疵检测：
+  - 若空料（`actualCount=0`），仍返回 `NO_MATERIAL`（`pass=true`）；
+  - 若有板（`actualCount ≥ 1`），返回 `executed=true, success=false, pass=false, coordinateMapped=false, errorCode="COORDINATE_NOT_MAPPED"`，各板 `valid=false, targets=[]`，像素姿态与 `hasManualMark` 正常给出。
+
+---
+
+#### 5.1.8 `teaching.submit` — 提交机械坐标并触发远程示教
+
+上位机将基准板放到示教位并将吸嘴移开后，向视觉发送本报文（`correlationId` 为 `null`），由视觉软触发拍照（`≤ 2000 ms`）、锁定基准板位姿、保存至 `teaching.json` 并刷新界面。
+
+```json
+{
+  "version": "1.1",
+  "messageId": "host-teach-0001",
+  "correlationId": null,
+  "type": "teaching.submit",
+  "timestampUtc": "2026-11-23T09:00:00.000Z",
+  "data": {
+    "nozzle": "Left",
+    "axisR": "R1",
+    "x": 650.120,
+    "y": 210.450,
+    "r": 0.000
+  }
+}
+```
+
+| `data` 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `nozzle` | `string` | 是（或与 `axisR` 成对） | `"Left"` 或 `"Right"` |
+| `axisR` | `string` | 是（或与 `nozzle` 成对） | `"R1"`（对应 `Left`）或 `"R2"`（对应 `Right`）；若同时提供 `nozzle` 与 `axisR`，必须一致，否则返回 `system.error / PROTOCOL_INVALID` |
+| `x` / `y` / `r` | `number` | 是 | 放板至示教位时该吸嘴的实测机械坐标（mm / deg，3 位小数，有限数值）；发送前吸嘴须已移开不遮挡相机 |
 
 ---
 
@@ -824,13 +885,54 @@ sequenceDiagram
 }
 ```
 
+**示例 D：有板但未做坐标映射（`COORDINATE_NOT_MAPPED`，`pass=false`）**
+
+```json
+{
+  "version": "1.1",
+  "messageId": "vision-insp-res-0004",
+  "correlationId": "host-insp-0004",
+  "type": "inspection.result",
+  "timestampUtc": "2026-11-23T08:01:08.040Z",
+  "data": {
+    "executed": true,
+    "success": false,
+    "pass": false,
+    "coordinateMapped": false,
+    "errorCode": "COORDINATE_NOT_MAPPED",
+    "message": "检测已完成，但标定未启用或未就绪，未生成取料坐标（OK 6 / NG 0）",
+    "expectedCount": 6,
+    "actualCount": 6,
+    "hasManualMarks": false,
+    "currentRLeft": 0.0,
+    "currentRRight": 0.0,
+    "currentR": 0.0,
+    "elapsedMilliseconds": 74.2,
+    "matchElapsedMilliseconds": 50.1,
+    "blobElapsedMilliseconds": 18.0,
+    "items": [
+      {
+        "boardIndex": 1,
+        "valid": false,
+        "row": 430.20,
+        "column": 812.60,
+        "angle": -1.80,
+        "score": 0.940,
+        "hasManualMark": false,
+        "targets": []
+      }
+    ]
+  }
+}
+```
+
 **全量字段明细**：
 
 | 字段路径 | 类型 | 说明 |
 | --- | --- | --- |
 | `executed` | `bool` | 是否已进入实际视觉定位/检测执行（前置配置校验失败或采图失败为 `false`） |
-| `success` | `bool` | 检测是否正常完成。板数一致（`NONE` / `MANUAL_MARK_FOUND`）及空料（`NO_MATERIAL`）均为 `true`；`BOARD_COUNT_MISMATCH` 与异常为 `false` |
-| `pass` | `bool` | 最终工艺放行判定：`NONE` 与 `NO_MATERIAL` 为 `true`；检出人工标记、板数不符或任何失败为 `false` |
+| `success` | `bool` | 检测是否完整且有效完成。仅板数一致、坐标映射有效（`NONE` / `MANUAL_MARK_FOUND`）及空料（`NO_MATERIAL`）为 `true`；`BOARD_COUNT_MISMATCH`、`COORDINATE_NOT_MAPPED`、`COORDINATE_MAPPING_FAILED` 与异常为 `false` |
+| `pass` | `bool` | **最终工艺放行判定**：仅 `NONE` 与 `NO_MATERIAL` 为 `true`；**只要存在任一板 `valid=false`、未执行坐标映射（有板）、板数不符或检出人工标记，整帧 `pass` 必须为 `false`** |
 | `coordinateMapped` | `bool` | 本次是否执行了双吸嘴坐标与双 R 轴映射（纯视觉模式、空料或前置失败为 `false`） |
 | `errorCode` / `message` | `string` | 全大写下划线状态码（见第 6.2 节）及中文/英文可读描述 |
 | `expectedCount` / `actualCount` | `int` | 期望板数 / 实际定位板数（空料为 `0`） |
@@ -840,9 +942,9 @@ sequenceDiagram
 | `elapsedMilliseconds` | `number` | 视觉检测总耗时（ms，1 位小数，不含回包后的 UI 刷新与图像归档） |
 | `matchElapsedMilliseconds` / `blobElapsedMilliseconds` | `number` | 模板定位耗时 / 逐板 Blob 分析耗时（ms，1 位小数） |
 | `items[].boardIndex` | `int` | 连续板序号（`1..actualCount`），严格按图像空间**从上到下分行、同行内从左到右**排序；上位机不得按 `score` 重排 |
-| `items[].valid` | `bool` | 单板坐标可靠性标识。正常为 `true`；若某板坐标映射异常，仅置该板 `valid=false`（`targets=[]`），不置空整帧 `items` |
+| `items[].valid` | `bool` | 单板坐标可靠性标识。坐标映射成功为 `true`；若未执行坐标映射或该板映射异常，置 `valid=false`（`targets=[]`），不置空整帧 `items` |
 | `items[].row` / `column` / `angle` / `score` | `number` | 定位中心像素坐标、图像角度（2 位小数）与匹配得分（3 位小数） |
-| `items[].hasManualMark` | `bool` | 该单块板是否检出人工标记（在 `BOARD_COUNT_MISMATCH` 时同样逐板给出） |
+| `items[].hasManualMark` | `bool` | 该单块板是否检出人工标记（**在 `BOARD_COUNT_MISMATCH`、`COORDINATE_NOT_MAPPED` 或单板 `valid=false` 时同样逐板给出且完全可信**） |
 | `items[].targets[].side` | `string` | `"Left"` 或 `"Right"` |
 | `items[].targets[].axis` | `string` | 对应的独立 R 轴：Left 固定 `"R1"`，Right 固定 `"R2"` |
 | `items[].targets[].x` / `y` | `number` | 映射后的目标机械 XY 坐标（mm，3 位小数，已含来料板旋转与对应吸嘴 R 轴旋转中心偏心补偿） |
@@ -854,11 +956,87 @@ sequenceDiagram
 #### 关键业务规则补充说明
 
 1. **空料（`NO_MATERIAL`）判定依据与误判防护**：
-   - **判定依据**：相机正常抓图且 HALCON 多目标模板匹配引擎（`LocateAll`）正常执行完毕（无模型损坏、无参数/算子异常、无超时、无非法位姿），但搜索区域内高于 `MinScore` 的有效匹配数为 `0` 时，返回 `NO_MATERIAL`；只要定位到 `≥ 1` 块板，严禁返回 `NO_MATERIAL`。
+   - **判定依据**：相机正常抓图且 HALCON 多目标模板匹配引擎（`LocateAll`）正常执行完毕（无模型损坏、无参数/算子异常、无超时、无非法位姿），但搜索区域内高于 `MinScore` 的有效匹配数为 `0` 时，返回 `NO_MATERIAL`；只要定位到 `≥ 1` 块板，严禁返回 `NO_MATERIAL`（空料不受 `COORDINATE_NOT_MAPPED` 影响）。
    - **与 `POSITIONING_FAILED` 边界**：模板引擎异常、超时、模型损坏或输出非法位姿一律返回 `POSITIONING_FAILED`（`success=false, pass=false`）。
    - **误判防护建议**：若实际有料但出现光源熄灭/过曝欠曝、镜头遮挡、料盘严重偏离搜索区或混入错料导致得分全低于 `MinScore`，匹配数也会为 `0`。建议上位机结合**皮带到料光电传感器**交叉复核：若光电显示有料但视觉返回 `NO_MATERIAL`（或连续多次空拍），触发“疑似错料/光源异常”人工复核提示。
-2. **数量不一致（`BOARD_COUNT_MISMATCH`）处理**：
+2. **有板时的 5 级错误码优先级与 `valid=false` 硬性规则**：
+   - 当 `actualCount ≥ 1` 且多种情况同时出现时，严格按以下优先级（从高到低）判定整帧 `errorCode`、`success` 与 `pass`：
+     1. `BOARD_COUNT_MISMATCH`（`actualCount ≥ 1` 且 `≠ expectedCount`）→ `success=false, pass=false`
+     2. `COORDINATE_NOT_MAPPED`（板数一致，且 `coordinateMapped=false`）→ `success=false, pass=false`
+     3. `COORDINATE_MAPPING_FAILED`（板数一致、已执行坐标映射，但至少 1 块板 `valid=false`）→ `success=false, pass=false`
+     4. `MANUAL_MARK_FOUND`（板数一致、全部有效，且至少 1 块板 `hasManualMark=true`）→ `success=true, pass=false`
+     5. `NONE`（板数一致、全部有效、无人工标记）→ `success=true, pass=true`
+   - **硬性放行规则**：只要任一块板 `valid=false`，整帧 `pass` 必为 `false`。
+   - **`hasManualMark` 可信性确认**：Blob 瑕疵分析在坐标映射之前独立于像素 ROI 执行；即使某板 `valid=false`（或整帧 `coordinateMapped=false`），该板的 `hasManualMark`、像素位姿与匹配得分仍完整执行且**完全可信**，上位机可据此决定是否允许人工复核后取料。
+3. **数量不一致（`BOARD_COUNT_MISMATCH`）处理**：
    - 当 `actualCount >= 1 && actualCount != expectedCount` 时，视觉仍完整返回全部 `1..actualCount` 块已定位板件的姿态、`hasManualMark`、`valid` 及双吸嘴 `targets`。上位机暂停后可由操作员选择按实际数量继续取料（跳过 `valid=false` 或 `hasManualMark=true` 的板）或停机清料。
+
+---
+
+#### 5.2.9 `teaching.result` — 远程示教结果回复
+
+`correlationId` 必须等于对应 `teaching.submit.messageId`。若示教失败（`success=false`），视觉**完整保留原有已生效的 `teaching.json` 示教数据不覆盖**；若示教成功（`success=true`）并使 `calibrationReady` 发生变化，视觉会在发送本报文之后按第 5.2.2 节规则主动推送 `system.status`。
+
+**示例 A：示教成功**
+
+```json
+{
+  "version": "1.1",
+  "messageId": "vision-teach-res-0001",
+  "correlationId": "host-teach-0001",
+  "type": "teaching.result",
+  "timestampUtc": "2026-11-23T09:00:00.180Z",
+  "data": {
+    "nozzle": "Left",
+    "axisR": "R1",
+    "success": true,
+    "errorCode": "NONE",
+    "message": "Teaching saved.",
+    "machineX": 650.120,
+    "machineY": 210.450,
+    "machineR": 0.000,
+    "imageRow": 1024.15,
+    "imageColumn": 1280.42,
+    "imageAngle": 0.12,
+    "score": 0.952
+  }
+}
+```
+
+**示例 B：示教失败（保留旧示教数据）**
+
+```json
+{
+  "version": "1.1",
+  "messageId": "vision-teach-res-0002",
+  "correlationId": "host-teach-0002",
+  "type": "teaching.result",
+  "timestampUtc": "2026-11-23T09:00:05.120Z",
+  "data": {
+    "nozzle": "Left",
+    "axisR": "R1",
+    "success": false,
+    "errorCode": "MATCH_FAILED",
+    "message": "Positioning template match was not found.",
+    "machineX": 650.120,
+    "machineY": 210.450,
+    "machineR": 0.000,
+    "imageRow": 0.0,
+    "imageColumn": 0.0,
+    "imageAngle": 0.0,
+    "score": 0.0
+  }
+}
+```
+
+| `data` 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `nozzle` / `axisR` | `string` | `"Left"/"R1"` 或 `"Right"/"R2"` |
+| `success` | `bool` | `true` 表示示教已持久化并生效；`false` 表示失败，旧示教数据保持不变 |
+| `errorCode` / `message` | `string` | 全大写下划线状态码（见第 6.5 节）与可读描述 |
+| `machineX` / `machineY` / `machineR` | `number` | 回显本次记录的实测机械坐标（mm / deg，3 位小数） |
+| `imageRow` / `imageColumn` / `imageAngle` | `number` | 基准板像素行/列与图像角（2 位小数）；失败时为 `0.0` |
+| `score` | `number` | 模板匹配得分（3 位小数）；失败时为 `0.0` |
 
 ---
 
@@ -866,19 +1044,20 @@ sequenceDiagram
 
 ### 返回消息类型边界原则
 
-- **未进入检测流程**（协议/字段校验失败、重复消息、未知类型、功能使能关闭、相机未连接、工作流忙、通信分发层未分类异常）→ **一律返回 `system.error`**。
-- **已进入检测流程**（含采图失败/超时、模板/标定/示教/ROI/期望数前置校验失败、空料、数量不符、人工标记、定位/Blob/算法内部异常）→ **一律返回 `inspection.result`**。
+- **未进入业务执行流程**（协议/字段校验失败、重复消息、未知类型、功能使能关闭、相机未连接、工作流忙、通信分发层未分类异常）→ **一律返回 `system.error`**。
+- **已进入检测流程**（含采图失败/超时、模板/标定/示教/ROI/期望数前置校验失败、空料、数量不符、未映射/映射异常、人工标记、定位/Blob/算法内部异常）→ **一律返回 `inspection.result`**。
+- **已进入远程示教流程**（含定位模板缺失、示教采图失败/超时、基准板匹配失败、示教落盘失败）→ **一律返回 `teaching.result`**（失败时完整保留旧示教）。
 
 ### 6.1 `system.error.data.code` 全量清单
 
 | 错误码 | `retryable` | 适用报文 | 含义与上位机建议动作 |
 | --- | --- | --- | --- |
-| `PROTOCOL_INVALID` | `false` | `inspection.trigger` 等 | 必填业务字段缺失或数值非法（如双 R 仅传单侧、含 `NaN`/`Infinity`、标定就绪时未传任何 R 角）；禁止自动重试，排查报文构造 |
+| `PROTOCOL_INVALID` | `false` | `inspection.trigger`、`teaching.submit` 等 | 必填业务字段缺失或数值非法（如双 R 仅传单侧、含 `NaN`/`Infinity`、标定就绪时未传任何 R 角、`nozzle`/`axisR` 冲突或坐标缺失）；禁止自动重试，排查报文构造 |
 | `INSPECTION_DISABLED` | `false` | `inspection.trigger` | 视觉端“启用检测”开关已关闭；报警提示操作员开启 |
-| `CAMERA_DISABLED` | `false` | `inspection.trigger` | 视觉端“启用相机”开关已关闭；报警提示操作员开启 |
-| `CAMERA_NOT_CONNECTED` | `true` | `inspection.trigger` | 真实相机未连接或掉线；待收到 `system.status(cameraConnected=true)` 后可用新 `messageId` 重试 |
-| `CALIBRATION_DISABLED` | `false` | 标定相关请求 | 视觉端“启用标定”开关已关闭 |
-| `BUSY` | `true` | `inspection.trigger` 等 | 视觉正在执行其他标定/检测/示教任务；稍后使用新 `messageId` 重试 |
+| `CAMERA_DISABLED` | `false` | `inspection.trigger`、`teaching.submit` | 视觉端“启用相机”开关已关闭；报警提示操作员开启 |
+| `CAMERA_NOT_CONNECTED` | `true` | `inspection.trigger`、`teaching.submit` | 真实相机未连接或掉线；待收到 `system.status(cameraConnected=true)` 后可用新 `messageId` 重试 |
+| `CALIBRATION_DISABLED` | `false` | `teaching.submit`、标定相关请求 | 视觉端“启用标定”开关已关闭 |
+| `BUSY` | `true` | `inspection.trigger`、`teaching.submit` 等 | 视觉正在执行其他标定/检测/示教任务；稍后使用新 `messageId` 重试 |
 | `DUPLICATE_MESSAGE` | `false` | 任意请求 | 当前连接内 `messageId` 重复，视觉未重复执行 |
 | `MESSAGE_TYPE_UNSUPPORTED` | `false` | 任意请求 | 未知或未支持的 `type` |
 | `INTERNAL_ERROR` | `true` | 任意请求 | 通信分发或框架层发生未分类异常 |
@@ -887,9 +1066,11 @@ sequenceDiagram
 
 | 错误码 | `executed` | `success` | `pass` | `items` 内容 | 含义与上位机建议动作 |
 | --- | --- | --- | --- | --- | --- |
-| `NONE` | `true` | `true` | `true` | 完整返回 `expectedCount` 块板 | 检测通过，正常取料 |
-| `NO_MATERIAL` | `true` | `true` | `true` | `[]`（`actualCount=0`） | 正常空料工况，继续自动流转，不报警停机 |
-| `MANUAL_MARK_FOUND` | `true` | `true` | `false` | 完整返回全部板（含逐板 `hasManualMark`） | 板数一致但检出人工坏板标记；按工艺策略单板跳过或整盘停机 |
+| `NONE` | `true` | `true` | `true` | 完整返回 `expectedCount` 块板 | 检测通过，全部板 `valid=true` 且无人工标记，正常取料 |
+| `NO_MATERIAL` | `true` | `true` | `true` | `[]`（`actualCount=0`） | 正常空料工况，继续自动流转，不报警停机（不受 `COORDINATE_NOT_MAPPED` 影响） |
+| `MANUAL_MARK_FOUND` | `true` | `true` | `false` | 完整返回全部板（含逐板 `hasManualMark`） | 板数一致、坐标全部有效但检出人工坏板标记；按工艺策略单板跳过或整盘停机 |
+| `COORDINATE_MAPPING_FAILED` | `true` | `false` | `false` | 完整返回全部板（异常板 `valid=false, targets=[]`） | 板数一致且已执行映射，但至少 1 块板 `valid=false`；禁止自动放行，提示操作员确认（各板 `hasManualMark` 仍可信） |
+| `COORDINATE_NOT_MAPPED` | `true` | `false` | `false` | 完整返回全部板（`valid=false, targets=[]`） | 有板（`actualCount ≥ 1`）但标定未启用或未就绪（`coordinateMapped=false`）；生产链路禁止取料并报警（各板 `hasManualMark` 仍可信） |
 | `BOARD_COUNT_MISMATCH` | `true` | `false` | `false` | 完整返回全部 `1..actualCount`（≥1）块已定位板 | 实际板数与期望不符；暂停并由操作员选择按实际数量继续或停止清料 |
 | `IMAGE_MISSING` | `false` | `false` | `false` | `[]` | 相机采图失败、超时（`> 2000 ms`）或未获得有效图像 |
 | `POSITIONING_TEMPLATE_MISSING` | `false` | `false` | `false` | `[]` | 定位模板未配置或模型数据为空 |
@@ -902,6 +1083,16 @@ sequenceDiagram
 | `POSITIONING_FAILED` | `true` | `false` | `false` | `[]` | 模板定位引擎失败、超时、模型失效或返回非法姿态（非正常空料） |
 | `BLOB_ANALYSIS_FAILED` | `true` | `false` | `false` | `[]` | Blob 瑕疵分析未为每块已定位板返回结果 |
 | `INSPECTION_EXCEPTION` | `true` | `false` | `false` | `[]` | 检测算法内部异常 |
+
+**有板（`actualCount ≥ 1`）错误码判定优先级（从高到低）**：
+
+| 优先级 | `errorCode` | 条件 | `success` / `pass` |
+| --- | --- | --- | --- |
+| 1 | `BOARD_COUNT_MISMATCH` | `actualCount ≥ 1` 且 `≠ expectedCount` | `false` / `false` |
+| 2 | `COORDINATE_NOT_MAPPED` | 板数一致，且 `coordinateMapped=false` | `false` / `false` |
+| 3 | `COORDINATE_MAPPING_FAILED` | 板数一致、`coordinateMapped=true`，但至少 1 块板 `valid=false` | `false` / `false` |
+| 4 | `MANUAL_MARK_FOUND` | 板数一致、坐标全部有效，且存在 `hasManualMark=true` | `true` / `false` |
+| 5 | `NONE` | 板数一致、坐标全部有效、无人工标记 | `true` / `true` |
 
 ### 6.3 `calibration.completed.data.errorCode` 全量清单
 
@@ -929,6 +1120,17 @@ sequenceDiagram
 | `SESSION_MISMATCH` | `move.request` 携带的 `sessionId` 与上位机当前活动标定会话不一致 |
 | `SETTLE_TIMEOUT` | 运动到位后停稳判定超时 |
 
+### 6.5 `teaching.result.data.errorCode` 全量清单
+
+| 错误码 | `success` | 旧示教保护 | 含义 |
+| --- | --- | --- | --- |
+| `NONE` | `true` | 更新并落盘生效 | 本次远程示教定位成功并已保存至 `teaching.json` |
+| `POSITIONING_TEMPLATE_MISSING` | `false` | **保留旧示教** | PCB 定位模板未配置或模型不可用 |
+| `CAMERA_CAPTURE_FAILED` | `false` | **保留旧示教** | 示教拍照失败或采图超时（`> 2000 ms`） |
+| `MATCH_FAILED` | `false` | **保留旧示教** | 示教基准板定位模板匹配失败 |
+| `TEACHING_SAVE_FAILED` | `false` | **保留旧示教** | `teaching.json` 写入持久化失败 |
+| `INTERNAL_ERROR` | `false` | **保留旧示教** | 示教执行过程中发生未分类异常 |
+
 ---
 
 ## 7. 上机联调核对清单
@@ -940,9 +1142,14 @@ sequenceDiagram
 3. **双吸嘴独立标定与异常保护**：
    - 左吸嘴（`Left/R1`）与右吸嘴（`Right/R2`）各完整执行 14 点标定，确认分别生成 `calibration.nprcal` 与 `calibration-right.nprcal`；
    - 分别测试 `calibration.started.ack(accepted=false)`、`motion.failed(SOFT_LIMIT)`、`calibration.cancel` 及视觉界面“停止标定”，确认立即停止下发且旧标定精度与文件均不被破坏。
-4. **双 R 轴生产检测与特殊工况**：
+4. **双吸嘴远程示教（`teaching.submit` / `teaching.result`）**：
+   - 上位机分别提交左吸嘴（`Left/R1`）与右吸嘴（`Right/R2`）机械坐标，验证 `teaching.result(success=true)` 返回像素位姿与 `score`，且在双吸嘴标定与示教全部就绪时在 `teaching.result` 之后推送 `system.status(calibrationReady=true)`；
+   - 模拟采图失败/匹配失败，确认返回 `CAMERA_CAPTURE_FAILED` / `MATCH_FAILED` 且旧示教数据不被破坏。
+5. **双 R 轴生产检测与特殊工况**：
    - 传入不同的 `currentRLeft` / `currentRRight`（含跨 `±180°` 场景），验证 `Left(R1)` 与 `Right(R2)` 各自独立映射且目标 R 保持连续不归一化；
    - 空皮带拍照验证返回 `NO_MATERIAL`（`pass=true`），不误报停机；
+   - 标定未启用或未就绪时有板触发检测，验证返回 `COORDINATE_NOT_MAPPED`（`success=false, pass=false, valid=false, targets=[]`）；
+   - 单板坐标映射异常验证返回 `COORDINATE_MAPPING_FAILED`（`success=false, pass=false`，异常板 `valid=false` 且 `hasManualMark` 仍可信）；
    - 人为缺 1 块板验证返回 `BOARD_COUNT_MISMATCH` 且 `items` 仍完整给出剩余板坐标与 `hasManualMark`；
    - 仅传单侧 R 或关闭检测开关时，确认返回对应 `system.error`。
 
@@ -951,4 +1158,4 @@ sequenceDiagram
 1. 机械 X/Y/R1/R2 正方向与视觉标定验证方向一致；
 2. 生产取料采用 `targetR` 直接补偿，或采用 `pickR`（对齐板角吸取）+ `blindPlaceR`（盲摆回正放置）工艺模式；
 3. 人工坏板标记（`MANUAL_MARK_FOUND`）按单板跳过还是整盘停机，以及皮带光电与连续 `NO_MATERIAL` 的联合异常告警阈值；
-4. 后续迭代是否需要新增 TCP 远程触发左右示教、产品配方切换或远程启动自动标定指令（当前 v1.1 在视觉工作站界面操作）。
+4. 后续迭代是否需要新增 TCP 产品配方切换或远程启动自动标定指令（远程示教 `teaching.submit` 已并入 v1.1 正式版）。

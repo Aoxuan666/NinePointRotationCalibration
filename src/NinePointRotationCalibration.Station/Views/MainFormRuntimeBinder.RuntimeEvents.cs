@@ -302,26 +302,33 @@ namespace NinePointRotationCalibration.Station.Views
                 MappedTargetPose rightTarget = item.Targets == null
                     ? null
                     : item.Targets.FirstOrDefault(target => target != null && target.Side == TeachingSide.Right);
-                string leftText = !item.Valid
+                string leftText = !result.CoordinateMappingApplied
+                    ? "--"
+                    : !item.Valid
+                        ? "无效"
+                        : leftTarget == null
+                            ? "--"
+                            : string.Format(
+                                CultureInfo.InvariantCulture,
+                                "{0:0.###}, {1:0.###}, {2:0.###}°",
+                                leftTarget.X,
+                                leftTarget.Y,
+                                leftTarget.TargetR);
+                string rightText = !result.CoordinateMappingApplied
+                    ? "--"
+                    : !item.Valid
+                        ? "无效"
+                        : rightTarget == null
+                            ? "--"
+                            : string.Format(
+                                CultureInfo.InvariantCulture,
+                                "{0:0.###}, {1:0.###}, {2:0.###}°",
+                                rightTarget.X,
+                                rightTarget.Y,
+                                rightTarget.TargetR);
+                string statusText = result.CoordinateMappingApplied && !item.Valid
                     ? "无效"
-                    : leftTarget == null
-                        ? "--"
-                        : string.Format(
-                            CultureInfo.InvariantCulture,
-                            "{0:0.###}, {1:0.###}, {2:0.###}°",
-                            leftTarget.X,
-                            leftTarget.Y,
-                            leftTarget.TargetR);
-                string rightText = !item.Valid
-                    ? "无效"
-                    : rightTarget == null
-                        ? "--"
-                        : string.Format(
-                            CultureInfo.InvariantCulture,
-                            "{0:0.###}, {1:0.###}, {2:0.###}°",
-                            rightTarget.X,
-                            rightTarget.Y,
-                            rightTarget.TargetR);
+                    : (item.HasManualMark ? "NG" : "OK");
                 rows.Add(new object[]
                 {
                     item.BoardIndex,
@@ -332,7 +339,7 @@ namespace NinePointRotationCalibration.Station.Views
                     leftText,
                     rightText,
                     item.HasManualMark ? "有" : "无",
-                    !item.Valid ? "无效" : (item.HasManualMark ? "NG" : "OK")
+                    statusText
                 });
                 foreach (BlobFinding blob in item.Blobs ?? new List<BlobFinding>())
                 {
@@ -424,6 +431,8 @@ namespace NinePointRotationCalibration.Station.Views
                 }
             }
             bool isNoMaterial = string.Equals(result.ErrorCode, ProtocolErrorCodes.NoMaterial, StringComparison.OrdinalIgnoreCase);
+            bool isNotMapped = string.Equals(result.ErrorCode, ProtocolErrorCodes.CoordinateNotMapped, StringComparison.OrdinalIgnoreCase);
+            bool isMappingFailed = string.Equals(result.ErrorCode, ProtocolErrorCodes.CoordinateMappingFailed, StringComparison.OrdinalIgnoreCase);
             string summaryMessage = result.Executed ? result.Message : TranslateInspectionError(result);
             int ngBoardCount = result.Items == null ? 0 : result.Items.Count(item => item != null && item.HasManualMark);
             int okBoardCount = (result.Items == null ? 0 : result.Items.Count) - ngBoardCount;
@@ -431,11 +440,13 @@ namespace NinePointRotationCalibration.Station.Views
                 ? "未执行"
                 : isNoMaterial
                     ? null
-                    : (!result.CountMatchesExpected && result.HasManualMarks)
-                        ? "板数不符+有标记"
-                        : !result.CountMatchesExpected
-                            ? "板数不符"
-                            : (result.HasManualMarks ? "有标记" : null);
+                    : !result.CountMatchesExpected
+                        ? (result.HasManualMarks ? "板数不符+有标记" : "板数不符")
+                        : isNotMapped
+                            ? (result.HasManualMarks ? "未映射+有标记" : "未映射坐标")
+                            : isMappingFailed
+                                ? (result.HasManualMarks ? "映射异常+有标记" : "坐标映射异常")
+                                : (result.HasManualMarks ? "有标记" : null);
             _view.SetDetectionSummary(result.ExpectedCount, result.ActualCount, result.Success && result.Pass, summaryMessage);
             if (!result.Executed)
             {

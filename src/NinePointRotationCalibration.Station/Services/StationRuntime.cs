@@ -57,6 +57,7 @@ namespace NinePointRotationCalibration.Station.Services
         private string _lastStatusPushConnectionId;
         private SystemStatusSnapshot _lastStatusPushSnapshot;
         private bool _hasLastStatusPush;
+        private bool _deferTeachingStatusPush;
         private bool _started;
         private int _disposeRequested;
         private volatile bool _disposed;
@@ -86,22 +87,37 @@ namespace NinePointRotationCalibration.Station.Services
             StationOptions options,
             ICameraDevice cameraDevice)
         {
-            return new StationRuntime(optionsPath, options, cameraDevice);
+            return new StationRuntime(optionsPath, options, cameraDevice, null);
+        }
+
+        internal static StationRuntime CreateForSelfTest(
+            string optionsPath,
+            StationOptions options,
+            ICameraDevice cameraDevice,
+            ITemplateMatchingEngine templateEngine)
+        {
+            return new StationRuntime(optionsPath, options, cameraDevice, templateEngine);
         }
 
         private StationRuntime(string optionsPath, StationOptions options)
-            : this(optionsPath, options, null)
+            : this(optionsPath, options, null, null)
         {
         }
 
-        private StationRuntime(string optionsPath, StationOptions options, ICameraDevice cameraDevice)
+        private StationRuntime(
+            string optionsPath,
+            StationOptions options,
+            ICameraDevice cameraDevice,
+            ITemplateMatchingEngine templateEngine)
         {
             LocalDebugLog.EnsureInitialized();
             _optionsPath = optionsPath;
             _options = options ?? throw new ArgumentNullException(nameof(options));
             bool migrated = _options.NormalizeAfterLoad();
             _jsonStore = new AtomicJsonStore();
-            _sdk = new NinePointRotationCalibrationSdk();
+            _sdk = templateEngine == null
+                ? new NinePointRotationCalibrationSdk()
+                : new NinePointRotationCalibrationSdk(templateEngine);
             _tcpServer = new TcpVisionServer(_options);
             _camera = new CameraAcquisitionService(
                 cameraDevice ?? CreateCameraDevice(_options),
@@ -1815,6 +1831,11 @@ namespace NinePointRotationCalibration.Station.Services
                     await HandleInspectionTriggerAsync(envelope, e.ConnectionId).ConfigureAwait(false);
                     return;
                 }
+                if (string.Equals(envelope.Type, ProtocolMessageTypes.TeachingSubmit, StringComparison.OrdinalIgnoreCase))
+                {
+                    await HandleTeachingSubmitAsync(envelope, e.ConnectionId).ConfigureAwait(false);
+                    return;
+                }
 
                 LocalDebugLog.Write("WARN", "tcp.rx", "Unsupported message type: conn=" + e.ConnectionId + ", type=" + envelope.Type);
                 await SendErrorAsync(e.ConnectionId, envelope.MessageId, ProtocolErrorCodes.MessageTypeUnsupported,
@@ -1886,6 +1907,30 @@ namespace NinePointRotationCalibration.Station.Services
                 return;
             }
 
+            int defaultExpected;
+            lock (_stateSync) defaultExpected = _options.ExpectedBoardCount;
+            int expected = ProtocolValue.Integer(request.Data, "expectedCount", defaultExpected);
+
+            double currentRLeft;
+            double currentRRight;
+            string angleError;
+            if (!TryParseInspectionTriggerAngles(
+                request.Data,
+                calibrationEnabled && IsCalibrationReady,
+                out currentRLeft,
+                out currentRRight,
+                out angleError))
+            {
+                LocalDebugLog.Write("WARN", "tcp.inspect", "Rejected inspection.trigger (PROTOCOL_INVALID): conn=" + connectionId + ", msgId=" + request.MessageId + ", detail=" + angleError);
+                await SendErrorAsync(
+                    connectionId,
+                    request.MessageId,
+                    ProtocolErrorCodes.ProtocolInvalid,
+                    angleError,
+                    false).ConfigureAwait(false);
+                return;
+            }
+
             if (!await _workflowGate.WaitAsync(0).ConfigureAwait(false))
             {
                 LocalDebugLog.Write("WARN", "tcp.inspect", "Rejected inspection.trigger (BUSY): conn=" + connectionId + ", msgId=" + request.MessageId);
@@ -1902,29 +1947,6 @@ namespace NinePointRotationCalibration.Station.Services
             bool workflowGateHeld = true;
             try
             {
-                int defaultExpected;
-                lock (_stateSync) defaultExpected = _options.ExpectedBoardCount;
-                int expected = ProtocolValue.Integer(request.Data, "expectedCount", defaultExpected);
-
-                double currentRLeft;
-                double currentRRight;
-                string angleError;
-                if (!TryParseInspectionTriggerAngles(
-                    request.Data,
-                    calibrationEnabled && IsCalibrationReady,
-                    out currentRLeft,
-                    out currentRRight,
-                    out angleError))
-                {
-                    LocalDebugLog.Write("WARN", "tcp.inspect", "Rejected inspection.trigger (PROTOCOL_INVALID): conn=" + connectionId + ", msgId=" + request.MessageId + ", detail=" + angleError);
-                    await SendErrorAsync(
-                        connectionId,
-                        request.MessageId,
-                        ProtocolErrorCodes.ProtocolInvalid,
-                        angleError,
-                        false).ConfigureAwait(false);
-                    return;
-                }
 
                 LocalDebugLog.Write(
                     "INFO",
@@ -1985,6 +2007,280 @@ namespace NinePointRotationCalibration.Station.Services
                     _workflowGate.Release();
                 }
             }
+        }
+
+        private async Task HandleTeachingSubmitAsync(ProtocolEnvelope request, string connectionId)
+        {
+            bool cameraEnabled;
+            bool calibrationEnabled;
+            int cameraTimeoutMs;
+            lock (_stateSync)
+            {
+                cameraEnabled = _options.CameraEnabled;
+                calibrationEnabled = _options.CalibrationEnabled;
+                cameraTimeoutMs = _options.CameraTimeoutMilliseconds;
+            }
+            if (!calibrationEnabled)
+            {
+                LocalDebugLog.Write("WARN", "tcp.teach", "Rejected teaching.submit (CALIBRATION_DISABLED): conn=" + connectionId + ", msgId=" + request.MessageId);
+                await SendErrorAsync(
+                    connectionId,
+                    request.MessageId,
+                    ProtocolErrorCodes.CalibrationDisabled,
+                    "Teaching is unavailable because calibration is disabled.",
+                    false).ConfigureAwait(false);
+                return;
+            }
+            if (!cameraEnabled)
+            {
+                LocalDebugLog.Write("WARN", "tcp.teach", "Rejected teaching.submit (CAMERA_DISABLED): conn=" + connectionId + ", msgId=" + request.MessageId);
+                await SendErrorAsync(
+                    connectionId,
+                    request.MessageId,
+                    ProtocolErrorCodes.CameraDisabled,
+                    "Teaching is unavailable because camera use is disabled.",
+                    false).ConfigureAwait(false);
+                return;
+            }
+            if (!IsCameraConnected)
+            {
+                LocalDebugLog.Write("WARN", "tcp.teach", "Rejected teaching.submit (CAMERA_NOT_CONNECTED): conn=" + connectionId + ", msgId=" + request.MessageId);
+                await SendErrorAsync(
+                    connectionId,
+                    request.MessageId,
+                    ProtocolErrorCodes.CameraNotConnected,
+                    "Teaching is unavailable because the camera is not connected.",
+                    true).ConfigureAwait(false);
+                return;
+            }
+
+            TeachingSide side;
+            MachinePose machinePose;
+            string parseError;
+            if (!TryParseTeachingSubmit(request.Data, out side, out machinePose, out parseError))
+            {
+                LocalDebugLog.Write("WARN", "tcp.teach", "Rejected teaching.submit (PROTOCOL_INVALID): conn=" + connectionId + ", msgId=" + request.MessageId + ", detail=" + parseError);
+                await SendErrorAsync(
+                    connectionId,
+                    request.MessageId,
+                    ProtocolErrorCodes.ProtocolInvalid,
+                    parseError,
+                    false).ConfigureAwait(false);
+                return;
+            }
+
+            if (!await _workflowGate.WaitAsync(0).ConfigureAwait(false))
+            {
+                LocalDebugLog.Write("WARN", "tcp.teach", "Rejected teaching.submit (BUSY): conn=" + connectionId + ", msgId=" + request.MessageId);
+                await SendErrorAsync(
+                    connectionId,
+                    request.MessageId,
+                    ProtocolErrorCodes.Busy,
+                    "Another vision workflow is already running.",
+                    true).ConfigureAwait(false);
+                return;
+            }
+
+            bool workflowGateHeld = true;
+            bool teachingSucceeded = false;
+            bool responseSent = false;
+            ProtocolEnvelope response = null;
+            try
+            {
+                LocalDebugLog.Write(
+                    "INFO",
+                    "tcp.teach",
+                    string.Format(
+                        CultureInfo.InvariantCulture,
+                        "Executing teaching.submit: conn={0}, msgId={1}, nozzle={2}, axisR={3}, machine=({4:0.###},{5:0.###},{6:0.###}deg)",
+                        connectionId,
+                        request.MessageId,
+                        ProtocolNozzle.GetNozzleName(side),
+                        ProtocolNozzle.GetAxisR(side),
+                        machinePose.X,
+                        machinePose.Y,
+                        machinePose.ThetaDegrees));
+
+                int teachingCaptureLimitMs = Math.Max(200, Math.Min(cameraTimeoutMs <= 0 ? 2000 : cameraTimeoutMs, 2000));
+                lock (_statusPushSync) _deferTeachingStatusPush = true;
+                try
+                {
+                    TeachingPose savedPose = await _teaching
+                        .CaptureAsync(side, machinePose, teachingCaptureLimitMs, CancellationToken.None)
+                        .ConfigureAwait(false);
+                    teachingSucceeded = true;
+                    response = BuildTeachingResultEnvelope(
+                        request.MessageId,
+                        side,
+                        true,
+                        ProtocolErrorCodes.None,
+                        "Teaching saved.",
+                        savedPose,
+                        machinePose);
+                }
+                catch (TeachingWorkflowException ex)
+                {
+                    response = BuildTeachingResultEnvelope(
+                        request.MessageId,
+                        side,
+                        false,
+                        ex.ErrorCode,
+                        ex.Message,
+                        null,
+                        machinePose);
+                }
+                catch (Exception ex)
+                {
+                    LocalDebugLog.WriteException("ERROR", "tcp.teach", "Unexpected exception during teaching.submit", ex);
+                    response = BuildTeachingResultEnvelope(
+                        request.MessageId,
+                        side,
+                        false,
+                        ProtocolErrorCodes.InternalError,
+                        ex.Message,
+                        null,
+                        machinePose);
+                }
+                finally
+                {
+                    if (workflowGateHeld)
+                    {
+                        workflowGateHeld = false;
+                        _workflowGate.Release();
+                    }
+                }
+
+                if (response != null)
+                {
+                    await _tcpServer.SendAsync(connectionId, response).ConfigureAwait(false);
+                    responseSent = true;
+                    LocalDebugLog.Write(
+                        teachingSucceeded ? "INFO" : "WARN",
+                        "tcp.tx",
+                        "conn=" + connectionId + " " + StationLogFormatter.FormatEnvelope(response, _logCodec));
+                }
+            }
+            finally
+            {
+                lock (_statusPushSync) _deferTeachingStatusPush = false;
+                if (workflowGateHeld)
+                {
+                    workflowGateHeld = false;
+                    _workflowGate.Release();
+                }
+                if (responseSent && teachingSucceeded)
+                {
+                    NotifySystemStatusChangedIfNeeded();
+                }
+            }
+        }
+
+        private static bool TryParseTeachingSubmit(
+            IDictionary<string, object> data,
+            out TeachingSide side,
+            out MachinePose machinePose,
+            out string errorMessage)
+        {
+            side = TeachingSide.Left;
+            machinePose = null;
+            errorMessage = null;
+
+            string rawNozzle = ProtocolValue.String(data, "nozzle", string.Empty).Trim();
+            string rawAxis = ProtocolValue.String(data, "axisR", string.Empty).Trim();
+            bool hasNozzle = !string.IsNullOrWhiteSpace(rawNozzle);
+            bool hasAxis = !string.IsNullOrWhiteSpace(rawAxis);
+            if (!hasNozzle && !hasAxis)
+            {
+                errorMessage = "teaching.submit requires nozzle (Left/Right) or axisR (R1/R2).";
+                return false;
+            }
+
+            TeachingSide nozzleSide = TeachingSide.Left;
+            if (hasNozzle)
+            {
+                if (string.Equals(rawNozzle, "Left", StringComparison.OrdinalIgnoreCase))
+                    nozzleSide = TeachingSide.Left;
+                else if (string.Equals(rawNozzle, "Right", StringComparison.OrdinalIgnoreCase))
+                    nozzleSide = TeachingSide.Right;
+                else
+                {
+                    errorMessage = "teaching.submit nozzle must be Left or Right.";
+                    return false;
+                }
+            }
+
+            TeachingSide axisSide = TeachingSide.Left;
+            if (hasAxis)
+            {
+                if (string.Equals(rawAxis, "R1", StringComparison.OrdinalIgnoreCase))
+                    axisSide = TeachingSide.Left;
+                else if (string.Equals(rawAxis, "R2", StringComparison.OrdinalIgnoreCase))
+                    axisSide = TeachingSide.Right;
+                else
+                {
+                    errorMessage = "teaching.submit axisR must be R1 or R2.";
+                    return false;
+                }
+            }
+
+            if (hasNozzle && hasAxis && nozzleSide != axisSide)
+            {
+                errorMessage = "teaching.submit nozzle '" + rawNozzle + "' conflicts with axisR '" + rawAxis + "'.";
+                return false;
+            }
+
+            side = hasNozzle ? nozzleSide : axisSide;
+
+            double x;
+            double y;
+            double r;
+            if (!ProtocolValue.TryDouble(data, "x", out x) || double.IsNaN(x) || double.IsInfinity(x))
+            {
+                errorMessage = "teaching.submit requires a finite numeric x coordinate.";
+                return false;
+            }
+            if (!ProtocolValue.TryDouble(data, "y", out y) || double.IsNaN(y) || double.IsInfinity(y))
+            {
+                errorMessage = "teaching.submit requires a finite numeric y coordinate.";
+                return false;
+            }
+            if (!ProtocolValue.TryDouble(data, "r", out r) || double.IsNaN(r) || double.IsInfinity(r))
+            {
+                errorMessage = "teaching.submit requires a finite numeric r angle.";
+                return false;
+            }
+
+            machinePose = new MachinePose(x, y, r);
+            return true;
+        }
+
+        private static ProtocolEnvelope BuildTeachingResultEnvelope(
+            string correlationId,
+            TeachingSide side,
+            bool success,
+            string errorCode,
+            string message,
+            TeachingPose savedPose,
+            MachinePose inputPose)
+        {
+            ProtocolEnvelope envelope = ProtocolEnvelope.Create(ProtocolMessageTypes.TeachingResult);
+            envelope.CorrelationId = correlationId;
+            IDictionary<string, object> data = envelope.Data;
+            data["nozzle"] = ProtocolNozzle.GetNozzleName(side);
+            data["axisR"] = ProtocolNozzle.GetAxisR(side);
+            data["success"] = success;
+            data["errorCode"] = string.IsNullOrWhiteSpace(errorCode)
+                ? ProtocolErrorCodes.None
+                : errorCode.Trim().ToUpperInvariant();
+            data["message"] = message ?? string.Empty;
+            data["machineX"] = ProtocolNumber.Round3(savedPose != null ? savedPose.MachineX : (inputPose != null ? inputPose.X : 0.0));
+            data["machineY"] = ProtocolNumber.Round3(savedPose != null ? savedPose.MachineY : (inputPose != null ? inputPose.Y : 0.0));
+            data["machineR"] = ProtocolNumber.Round3(savedPose != null ? savedPose.MachineR : (inputPose != null ? inputPose.ThetaDegrees : 0.0));
+            data["imageRow"] = ProtocolNumber.Round2(savedPose != null ? savedPose.ImageRow : 0.0);
+            data["imageColumn"] = ProtocolNumber.Round2(savedPose != null ? savedPose.ImageColumn : 0.0);
+            data["imageAngle"] = ProtocolNumber.Round2(savedPose != null ? savedPose.ImageAngleDegrees : 0.0);
+            data["score"] = ProtocolNumber.Round3(savedPose != null ? savedPose.MatchScore : 0.0);
+            return envelope;
         }
 
         private static bool TryParseInspectionTriggerAngles(
@@ -2171,13 +2467,7 @@ namespace NinePointRotationCalibration.Station.Services
                         currentRLeft,
                         currentRRight,
                         canMapTargets), cancellationToken).ConfigureAwait(false);
-                    if (calibrationEnabled && !canMapTargets && result != null && result.Executed &&
-                        !string.Equals(result.ErrorCode, ProtocolErrorCodes.NoMaterial, StringComparison.OrdinalIgnoreCase))
-                    {
-                        result.Message = string.IsNullOrWhiteSpace(result.Message)
-                            ? "双吸嘴标定或左右示教未完成，当前仅输出视觉定位与瑕疵检测结果。"
-                            : result.Message + "（双吸嘴标定或左右示教未完成，当前仅输出视觉检测结果）";
-                    }
+                    RefineUnmappedInspectionMessage(result, calibrationEnabled, canMapTargets, false);
 
                     if (sendResponse == null)
                     {
@@ -2270,13 +2560,7 @@ namespace NinePointRotationCalibration.Station.Services
                         canMapTargets,
                         frameCache),
                     cancellationToken).ConfigureAwait(false);
-                if (calibrationEnabled && !canMapTargets && result != null && result.Executed &&
-                    !string.Equals(result.ErrorCode, ProtocolErrorCodes.NoMaterial, StringComparison.OrdinalIgnoreCase))
-                {
-                    result.Message = string.IsNullOrWhiteSpace(result.Message)
-                        ? "双吸嘴标定或左右示教未完成，当前仅展示视觉定位与瑕疵检测结果。"
-                        : result.Message + "（双吸嘴标定或左右示教未完成，当前仅展示视觉定位与瑕疵检测结果）";
-                }
+                RefineUnmappedInspectionMessage(result, calibrationEnabled, canMapTargets, true);
                 LocalDebugLog.Write(
                     result != null && result.Success && result.Pass ? "INFO" : "WARN",
                     "inspection.offline",
@@ -2287,6 +2571,42 @@ namespace NinePointRotationCalibration.Station.Services
             finally
             {
                 _inspectionGate.Release();
+            }
+        }
+
+        private static void RefineUnmappedInspectionMessage(
+            InspectionResult result,
+            bool calibrationEnabled,
+            bool canMapTargets,
+            bool offline)
+        {
+            if (canMapTargets || result == null || !result.Executed) return;
+            if (string.Equals(result.ErrorCode, ProtocolErrorCodes.NoMaterial, StringComparison.OrdinalIgnoreCase)) return;
+
+            if (string.Equals(result.ErrorCode, ProtocolErrorCodes.CoordinateNotMapped, StringComparison.OrdinalIgnoreCase))
+            {
+                int ngCount = result.Items == null ? 0 : result.Items.Count(item => item != null && item.HasManualMark);
+                int okCount = (result.Items == null ? 0 : result.Items.Count) - ngCount;
+                result.Message = calibrationEnabled
+                    ? string.Format(
+                        CultureInfo.InvariantCulture,
+                        "检测已完成，但双吸嘴标定或左右示教未就绪，未生成取料坐标（OK {0} / NG {1}）",
+                        okCount, ngCount)
+                    : string.Format(
+                        CultureInfo.InvariantCulture,
+                        "检测已完成，但标定未启用，未生成取料坐标（OK {0} / NG {1}）",
+                        okCount, ngCount);
+                return;
+            }
+
+            if (string.Equals(result.ErrorCode, ProtocolErrorCodes.BoardCountMismatch, StringComparison.OrdinalIgnoreCase))
+            {
+                string detail = calibrationEnabled
+                    ? (offline ? "双吸嘴标定或左右示教未完成，当前仅展示视觉定位与瑕疵检测结果" : "双吸嘴标定或左右示教未完成，未生成取料坐标")
+                    : "标定未启用，未生成取料坐标";
+                result.Message = string.IsNullOrWhiteSpace(result.Message)
+                    ? detail
+                    : result.Message + "（" + detail + "）";
             }
         }
 
@@ -2991,7 +3311,9 @@ namespace NinePointRotationCalibration.Station.Services
         private void OnTeachingChanged(object sender, TeachingEventArgs e)
         {
             lock (_stateSync) _teachingData = _teaching.GetSnapshot();
-            NotifySystemStatusChangedIfNeeded();
+            bool deferPush;
+            lock (_statusPushSync) deferPush = _deferTeachingStatusPush;
+            if (!deferPush) NotifySystemStatusChangedIfNeeded();
             EventHandler<TeachingEventArgs> handler = TeachingChanged;
             if (handler != null) handler(this, e);
         }

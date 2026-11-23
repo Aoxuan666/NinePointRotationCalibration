@@ -13,6 +13,7 @@ using NinePointRotationCalibration.Station.Devices;
 using NinePointRotationCalibration.Station.Models;
 using NinePointRotationCalibration.Station.Services.Calibration;
 using NinePointRotationCalibration.Station.Services.Inspection;
+using NinePointRotationCalibration.Station.Services.Teaching;
 
 namespace NinePointRotationCalibration.Station.Services.Communication
 {
@@ -37,6 +38,7 @@ namespace NinePointRotationCalibration.Station.Services.Communication
             VerifyInspectionSemantics();
             await VerifyCalibrationSessionsAndPreservationAsync(cancellationToken).ConfigureAwait(false);
             await VerifyRuntimeProtocolV11EndToEndAsync(codec, cancellationToken).ConfigureAwait(false);
+            await VerifyTeachingServiceAndProtocolAsync(codec, cancellationToken).ConfigureAwait(false);
         }
 
         private static void VerifyCodec(ProtocolJsonCodec codec)
@@ -448,7 +450,7 @@ namespace NinePointRotationCalibration.Station.Services.Communication
                     Assert(item.Targets.Any(t => t.Side == TeachingSide.Right && t.Axis == "R2"), "Missing Right/R2 target.");
                 }
 
-                // 4. 单板映射溢出异常 -> 仅该板置 valid=false 且 targets=[]，其余板正常保留（不整体置空 items）
+                // 4. 单板映射溢出异常 -> 仅该板置 valid=false 且 targets=[]，其余板正常保留，整帧必为 COORDINATE_MAPPING_FAILED 且 pass=false
                 CalibrationResult overflowLeftCal = CreateSyntheticCalibration(1.0, 0.0, 0.0);
                 overflowLeftCal.PixelToStageMatrix = new AffineMatrix2D(1e306, 0.0, 0.0, 0.0, -1.0, 0.0);
                 engine.NextCollectionResult = new TemplateMatchCollectionResult
@@ -463,9 +465,101 @@ namespace NinePointRotationCalibration.Station.Services.Communication
                     }
                 };
                 InspectionResult partialValidRes = service.Inspect(frame, positioningJob, overflowLeftCal, rightCal, teaching, profile, 2, 10.0, -10.0);
+                Assert(partialValidRes.Executed && !partialValidRes.Success && !partialValidRes.Pass,
+                    "COORDINATE_MAPPING_FAILED must set executed=true, success=false, pass=false.");
+                Assert(string.Equals(partialValidRes.ErrorCode, ProtocolErrorCodes.CoordinateMappingFailed, StringComparison.Ordinal),
+                    "Expected COORDINATE_MAPPING_FAILED, got " + partialValidRes.ErrorCode);
                 Assert(partialValidRes.Items.Count == 2, "Single-board mapping failure must not clear items.");
                 Assert(partialValidRes.Items[0].Valid && partialValidRes.Items[0].Targets.Count == 2, "Board #1 must remain valid with 2 targets.");
                 Assert(!partialValidRes.Items[1].Valid && partialValidRes.Items[1].Targets.Count == 0, "Board #2 must be marked valid=false with empty targets.");
+
+                // 5. 有板但未执行坐标映射 -> COORDINATE_NOT_MAPPED (executed=true, success=false, pass=false, valid=false, targets=[])
+                InspectionResult unmappedRes = service.InspectWithoutMapping(frame, positioningJob, profile, 2);
+                Assert(unmappedRes.Executed && !unmappedRes.Success && !unmappedRes.Pass && !unmappedRes.CoordinateMappingApplied,
+                    "COORDINATE_NOT_MAPPED must set executed=true, success=false, pass=false, coordinateMapped=false.");
+                Assert(string.Equals(unmappedRes.ErrorCode, ProtocolErrorCodes.CoordinateNotMapped, StringComparison.Ordinal),
+                    "Expected COORDINATE_NOT_MAPPED, got " + unmappedRes.ErrorCode);
+                Assert(unmappedRes.Items.Count == 2 && unmappedRes.Items.All(item => !item.Valid && item.Targets.Count == 0),
+                    "Unmapped boards must return valid=false and empty targets.");
+
+                // 5b. 未映射模式下空料（actualCount=0）仍返回 NO_MATERIAL (pass=true)
+                engine.NextCollectionResult = TemplateMatchCollectionResult.NoMatch("No PCB in FOV.");
+                InspectionResult unmappedEmptyRes = service.InspectWithoutMapping(frame, positioningJob, profile, 2);
+                Assert(unmappedEmptyRes.Executed && unmappedEmptyRes.Success && unmappedEmptyRes.Pass &&
+                       string.Equals(unmappedEmptyRes.ErrorCode, ProtocolErrorCodes.NoMaterial, StringComparison.Ordinal),
+                    "Empty FOV without mapping must still return NO_MATERIAL with pass=true.");
+
+                // 6. 构造第 2 块板带人工白标点的图像与 ROI，验证 5 级错误码优先级与 valid=false 板 hasManualMark 可信性
+                CalibrationJob roiJob = positioningJob.DeepClone();
+                roiJob.Template.ModelReference = new ImagePose(64.0, 64.0, 0.0);
+                roiJob.Template.DetectionRoi = new RegionDefinition
+                {
+                    Kind = RegionKind.Rectangle2,
+                    CenterRow = 64.0,
+                    CenterColumn = 64.0,
+                    PhiRadians = 0.0,
+                    Length1 = 18.0,
+                    Length2 = 18.0
+                };
+                DetectionProfile markProfile = new DetectionProfile
+                {
+                    TemplateMatchingEnabled = true,
+                    FollowTemplateTransform = true,
+                    AutoThreshold = false,
+                    DetectDarkForeground = false,
+                    BrightThreshold = 128,
+                    MinimumBlobArea = 10.0,
+                    MaximumBlobArea = 5000.0,
+                    RectangleFilterEnabled = false
+                };
+                using (Bitmap markedFrame = new Bitmap(256, 256, System.Drawing.Imaging.PixelFormat.Format24bppRgb))
+                {
+                    using (Graphics g = Graphics.FromImage(markedFrame))
+                    {
+                        g.Clear(Color.Black);
+                        // 在第 2 块板中心 (col=200, row=160) 绘制交叉白标记，避免矩形过滤干扰并产生明确 Blob
+                        g.FillRectangle(Brushes.White, 198, 152, 4, 16);
+                        g.FillRectangle(Brushes.White, 192, 158, 16, 4);
+                    }
+                    engine.NextCollectionResult = new TemplateMatchCollectionResult
+                    {
+                        Success = true,
+                        ErrorCode = CalibrationErrorCode.None,
+                        Message = "Matched 2 boards.",
+                        Matches = new List<TemplateMatchResult>
+                        {
+                            new TemplateMatchResult { Success = true, Row = 64.0, Column = 10.0, ModelPose = new ImagePose(64.0, 10.0, 0.0), AngleDegrees = 0.0, Score = 0.95 },
+                            new TemplateMatchResult { Success = true, Row = 160.0, Column = 200.0, ModelPose = new ImagePose(160.0, 200.0, 0.0), AngleDegrees = 0.0, Score = 0.94 }
+                        }
+                    };
+
+                    // 优先级 1 > 2：BOARD_COUNT_MISMATCH 优先于 COORDINATE_NOT_MAPPED
+                    InspectionResult prioMismatchUnmapped = service.InspectWithoutMapping(markedFrame, roiJob, markProfile, 3);
+                    Assert(string.Equals(prioMismatchUnmapped.ErrorCode, ProtocolErrorCodes.BoardCountMismatch, StringComparison.Ordinal) &&
+                           !prioMismatchUnmapped.Pass && prioMismatchUnmapped.Items[1].HasManualMark,
+                        "BOARD_COUNT_MISMATCH must take precedence over COORDINATE_NOT_MAPPED.");
+
+                    // 优先级 1 > 3：BOARD_COUNT_MISMATCH 优先于 COORDINATE_MAPPING_FAILED
+                    InspectionResult prioMismatchInvalid = service.Inspect(markedFrame, roiJob, overflowLeftCal, rightCal, teaching, markProfile, 3, 10.0, -10.0);
+                    Assert(string.Equals(prioMismatchInvalid.ErrorCode, ProtocolErrorCodes.BoardCountMismatch, StringComparison.Ordinal) &&
+                           !prioMismatchInvalid.Pass && !prioMismatchInvalid.Items[1].Valid && prioMismatchInvalid.Items[1].HasManualMark,
+                        "BOARD_COUNT_MISMATCH must take precedence over COORDINATE_MAPPING_FAILED.");
+
+                    // 优先级 2 > 4：COORDINATE_NOT_MAPPED 优先于 MANUAL_MARK_FOUND，且 hasManualMark 仍可信
+                    InspectionResult prioUnmappedMark = service.InspectWithoutMapping(markedFrame, roiJob, markProfile, 2);
+                    Assert(string.Equals(prioUnmappedMark.ErrorCode, ProtocolErrorCodes.CoordinateNotMapped, StringComparison.Ordinal) &&
+                           !prioUnmappedMark.Success && !prioUnmappedMark.Pass &&
+                           !prioUnmappedMark.Items[0].HasManualMark && prioUnmappedMark.Items[1].HasManualMark,
+                        "COORDINATE_NOT_MAPPED must beat MANUAL_MARK_FOUND and preserve trustworthy hasManualMark.");
+
+                    // 优先级 3 > 4：COORDINATE_MAPPING_FAILED 优先于 MANUAL_MARK_FOUND，且 valid=false 板 hasManualMark 仍可信
+                    InspectionResult prioInvalidMark = service.Inspect(markedFrame, roiJob, overflowLeftCal, rightCal, teaching, markProfile, 2, 10.0, -10.0);
+                    Assert(string.Equals(prioInvalidMark.ErrorCode, ProtocolErrorCodes.CoordinateMappingFailed, StringComparison.Ordinal) &&
+                           !prioInvalidMark.Success && !prioInvalidMark.Pass &&
+                           prioInvalidMark.Items[0].Valid && !prioInvalidMark.Items[0].HasManualMark &&
+                           !prioInvalidMark.Items[1].Valid && prioInvalidMark.Items[1].HasManualMark,
+                        "COORDINATE_MAPPING_FAILED must beat MANUAL_MARK_FOUND and preserve trustworthy hasManualMark on valid=false board.");
+                }
             }
         }
 
@@ -784,6 +878,349 @@ namespace NinePointRotationCalibration.Station.Services.Communication
                     try { Directory.Delete(tempDir, true); } catch { }
                 }
             }
+        }
+
+        private static async Task VerifyTeachingServiceAndProtocolAsync(
+            ProtocolJsonCodec codec,
+            CancellationToken cancellationToken)
+        {
+            // 1. 单元测试：保存示教失败时抛出 TEACHING_SAVE_FAILED，且必须完整保留旧示教数据
+            using (NinePointRotationCalibrationSdk unitSdk = new NinePointRotationCalibrationSdk(new FakeSelfTestTemplateEngine
+            {
+                NextCollectionResult = new TemplateMatchCollectionResult
+                {
+                    Success = true,
+                    ErrorCode = CalibrationErrorCode.None,
+                    Matches = new List<TemplateMatchResult>
+                    {
+                        new TemplateMatchResult { Success = true, Row = 100.0, Column = 200.0, AngleDegrees = 1.5, Score = 0.96 }
+                    }
+                }
+            }))
+            {
+                bool failSave = false;
+                TeachingData initial = new TeachingData
+                {
+                    Left = new TeachingPose
+                    {
+                        Side = TeachingSide.Left,
+                        IsValid = true,
+                        ImageRow = 88.0,
+                        ImageColumn = 99.0,
+                        ImageAngleDegrees = 0.5,
+                        MatchScore = 0.91,
+                        MachineX = 500.0,
+                        MachineY = 200.0,
+                        MachineR = 0.0
+                    }
+                };
+                using (TeachingService teachingService = new TeachingService(
+                    unitSdk,
+                    ct => Task.FromResult(new CameraFrame(new Bitmap(64, 64, System.Drawing.Imaging.PixelFormat.Format24bppRgb), 1, DateTime.UtcNow)),
+                    () => CreateJobWithDummyTemplateAndSample("Pos", "P"),
+                    data => failSave ? Task.FromException(new IOException("Disk full")) : Task.CompletedTask,
+                    initial))
+                {
+                    failSave = true;
+                    bool threwSaveFailed = false;
+                    try
+                    {
+                        await teachingService.CaptureAsync(TeachingSide.Left, new MachinePose(610.0, 220.0, 1.0), 1000, cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (TeachingWorkflowException ex)
+                    {
+                        threwSaveFailed = ex.ErrorCode == ProtocolErrorCodes.TeachingSaveFailed;
+                    }
+                    Assert(threwSaveFailed, "Save failure must throw TeachingWorkflowException(TEACHING_SAVE_FAILED).");
+                    TeachingPose preserved = teachingService.GetSnapshot().Left;
+                    Assert(preserved.IsValid && Math.Abs(preserved.MachineX - 500.0) < 1e-6 && Math.Abs(preserved.ImageRow - 88.0) < 1e-6,
+                        "Old teaching data must be preserved when persistence fails.");
+                }
+            }
+
+            // 2. 端到端 TCP 验证：teaching.submit / teaching.result、system.status 顺序推送、错误保留旧示教，及未就绪 COORDINATE_NOT_MAPPED
+            string tempDir = Path.Combine(Path.GetTempPath(), "nprcal-teach-selftest-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+            int port = ReserveLoopbackPort();
+            StationOptions options = new StationOptions
+            {
+                TcpBindAddress = "127.0.0.1",
+                TcpPort = port,
+                TcpMaxMessageBytes = 64 * 1024,
+                CameraEnabled = true,
+                CalibrationEnabled = false,
+                InspectionEnabled = true,
+                LiveAcquisitionEnabled = false,
+                CameraTimeoutMilliseconds = 500,
+                HeartbeatTimeoutMilliseconds = 6000
+            };
+            options.ApplyConfigDirectory(tempDir);
+            string optionsPath = Path.Combine(tempDir, "station.json");
+
+            using (NinePointRotationCalibrationSdk prepSdk = new NinePointRotationCalibrationSdk())
+            {
+                CalibrationJob leftJob = CreateValid9Plus5CalibrationJob("Calibration-Left", 100.0, 50.0);
+                CalibrationJob rightJob = CreateValid9Plus5CalibrationJob("Calibration-Right", 122.0, 50.0);
+                CalibrationJob posJob = CreateJobWithDummyTemplateAndSample("Positioning", "POS");
+                posJob.Template.ModelHash = TemplateDefinition.ComputeModelHash(posJob.Template.ModelData);
+                posJob.Template.ReferenceImageWidth = 256;
+                posJob.Template.ReferenceImageHeight = 256;
+                posJob.Template.ReferenceAnchor = new ImagePoint(100.0, 100.0);
+                posJob.Template.DetectionRoi = new RegionDefinition
+                {
+                    Kind = RegionKind.Rectangle2,
+                    CenterRow = 100.0,
+                    CenterColumn = 100.0,
+                    PhiRadians = 0.0,
+                    Length1 = 16.0,
+                    Length2 = 16.0
+                };
+                Assert(prepSdk.TrySaveJob(options.CalibrationJobPath, leftJob).Success, "Failed to seed left calibration job.");
+                Assert(prepSdk.TrySaveJob(options.RightCalibrationJobPath, rightJob).Success, "Failed to seed right calibration job.");
+                Assert(prepSdk.TrySaveJob(options.PositioningJobPath, posJob).Success, "Failed to seed positioning job.");
+            }
+
+            FakeSelfTestCamera camera = new FakeSelfTestCamera();
+            FakeSelfTestTemplateEngine fakeEngine = new FakeSelfTestTemplateEngine();
+            using (CancellationTokenSource timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+            using (StationRuntime runtime = StationRuntime.CreateForSelfTest(optionsPath, options, camera, fakeEngine))
+            using (TcpClient client = new TcpClient(AddressFamily.InterNetwork))
+            {
+                timeout.CancelAfter(TimeSpan.FromSeconds(15));
+                try
+                {
+                    Assert(runtime.IsLeftCalibrationValid && runtime.IsRightCalibrationValid,
+                        "Seeded 9+5 calibration files must validate on runtime startup.");
+                    await runtime.StartAsync(timeout.Token).ConfigureAwait(false);
+                    await client.ConnectAsync(IPAddress.Loopback, port).ConfigureAwait(false);
+                    NetworkStream stream = client.GetStream();
+
+                    ProtocolEnvelope hello = ProtocolEnvelope.Create(ProtocolMessageTypes.Hello);
+                    hello.Data["role"] = "host";
+                    await WriteEnvelopeAsync(stream, codec, hello, timeout.Token).ConfigureAwait(false);
+                    ProtocolEnvelope ack = await ReadEnvelopeAsync(stream, codec, options.TcpMaxMessageBytes, timeout.Token).ConfigureAwait(false);
+                    bool readyFlag;
+                    Assert(ack.Type == ProtocolMessageTypes.Acknowledge &&
+                           ProtocolValue.TryBool(ack.Data, "calibrationReady", out readyFlag) && !readyFlag,
+                        "Initial calibrationReady must be false before left/right teaching.");
+
+                    // A. 标定未启用且有 2 块板 -> inspection.result 必为 COORDINATE_NOT_MAPPED, pass=false, valid=false, targets=[]
+                    fakeEngine.NextCollectionResult = new TemplateMatchCollectionResult
+                    {
+                        Success = true,
+                        ErrorCode = CalibrationErrorCode.None,
+                        Matches = new List<TemplateMatchResult>
+                        {
+                            new TemplateMatchResult { Success = true, Row = 1000.0, Column = 1000.0, AngleDegrees = 0.0, Score = 0.95 },
+                            new TemplateMatchResult { Success = true, Row = 1000.0, Column = 1100.0, AngleDegrees = 0.0, Score = 0.94 }
+                        }
+                    };
+                    ProtocolEnvelope trigUnmapped = ProtocolEnvelope.Create(ProtocolMessageTypes.InspectionTrigger);
+                    trigUnmapped.Data["expectedCount"] = 2;
+                    await WriteEnvelopeAsync(stream, codec, trigUnmapped, timeout.Token).ConfigureAwait(false);
+                    ProtocolEnvelope resUnmapped = await ReadEnvelopeAsync(stream, codec, options.TcpMaxMessageBytes, timeout.Token).ConfigureAwait(false);
+                    Assert(resUnmapped.Type == ProtocolMessageTypes.InspectionResult &&
+                           ProtocolValue.String(resUnmapped.Data, "errorCode") == ProtocolErrorCodes.CoordinateNotMapped,
+                        "Expected COORDINATE_NOT_MAPPED when calibration is disabled and boards exist.");
+                    bool resSuccess;
+                    bool resPass;
+                    bool resMapped;
+                    Assert(ProtocolValue.TryBool(resUnmapped.Data, "success", out resSuccess) && !resSuccess &&
+                           ProtocolValue.TryBool(resUnmapped.Data, "pass", out resPass) && !resPass &&
+                           ProtocolValue.TryBool(resUnmapped.Data, "coordinateMapped", out resMapped) && !resMapped,
+                        "COORDINATE_NOT_MAPPED must set success=false, pass=false, coordinateMapped=false.");
+                    System.Collections.IList unmappedItems = resUnmapped.Data["items"] as System.Collections.IList;
+                    Assert(unmappedItems != null && unmappedItems.Count == 2, "Expected 2 items in COORDINATE_NOT_MAPPED.");
+                    foreach (object rawItem in unmappedItems)
+                    {
+                        IDictionary<string, object> itemDict = rawItem as IDictionary<string, object>;
+                        bool itemValid;
+                        Assert(itemDict != null && ProtocolValue.TryBool(itemDict, "valid", out itemValid) && !itemValid,
+                            "COORDINATE_NOT_MAPPED items must mark valid=false.");
+                        System.Collections.IList targets = itemDict["targets"] as System.Collections.IList;
+                        Assert(targets != null && targets.Count == 0, "COORDINATE_NOT_MAPPED items must have targets=[].");
+                    }
+
+                    // B. 标定关闭时发送 teaching.submit -> system.error / CALIBRATION_DISABLED
+                    ProtocolEnvelope teachDisabled = ProtocolEnvelope.Create(ProtocolMessageTypes.TeachingSubmit);
+                    teachDisabled.Data["nozzle"] = "Left";
+                    teachDisabled.Data["axisR"] = "R1";
+                    teachDisabled.Data["x"] = 650.120;
+                    teachDisabled.Data["y"] = 210.450;
+                    teachDisabled.Data["r"] = 0.0;
+                    await WriteEnvelopeAsync(stream, codec, teachDisabled, timeout.Token).ConfigureAwait(false);
+                    ProtocolEnvelope errTeachDisabled = await ReadEnvelopeAsync(stream, codec, options.TcpMaxMessageBytes, timeout.Token).ConfigureAwait(false);
+                    Assert(errTeachDisabled.Type == ProtocolMessageTypes.Error &&
+                           ProtocolValue.String(errTeachDisabled.Data, "code") == ProtocolErrorCodes.CalibrationDisabled,
+                        "teaching.submit with calibration disabled must return CALIBRATION_DISABLED.");
+
+                    // 开启标定（消费主动推送的 system.status）
+                    await runtime.ApplyEnablementAsync(true, true, true, timeout.Token).ConfigureAwait(false);
+                    ProtocolEnvelope statusEnabled = await ReadEnvelopeAsync(stream, codec, options.TcpMaxMessageBytes, timeout.Token).ConfigureAwait(false);
+                    Assert(statusEnabled.Type == ProtocolMessageTypes.SystemStatus, "Expected system.status after enabling calibration.");
+
+                    // C. nozzle 与 axisR 冲突 -> system.error / PROTOCOL_INVALID
+                    ProtocolEnvelope teachConflict = ProtocolEnvelope.Create(ProtocolMessageTypes.TeachingSubmit);
+                    teachConflict.Data["nozzle"] = "Left";
+                    teachConflict.Data["axisR"] = "R2";
+                    teachConflict.Data["x"] = 650.120;
+                    teachConflict.Data["y"] = 210.450;
+                    teachConflict.Data["r"] = 0.0;
+                    await WriteEnvelopeAsync(stream, codec, teachConflict, timeout.Token).ConfigureAwait(false);
+                    ProtocolEnvelope errTeachConflict = await ReadEnvelopeAsync(stream, codec, options.TcpMaxMessageBytes, timeout.Token).ConfigureAwait(false);
+                    Assert(errTeachConflict.Type == ProtocolMessageTypes.Error &&
+                           ProtocolValue.String(errTeachConflict.Data, "code") == ProtocolErrorCodes.ProtocolInvalid,
+                        "Conflicting nozzle/axisR must return PROTOCOL_INVALID.");
+
+                    // D. 左吸嘴 (Left/R1) teaching.submit 成功
+                    fakeEngine.NextCollectionResult = new TemplateMatchCollectionResult
+                    {
+                        Success = true,
+                        ErrorCode = CalibrationErrorCode.None,
+                        Matches = new List<TemplateMatchResult>
+                        {
+                            new TemplateMatchResult { Success = true, Row = 1024.154, Column = 1280.424, AngleDegrees = 0.124, Score = 0.9524 }
+                        }
+                    };
+                    ProtocolEnvelope teachLeft = ProtocolEnvelope.Create(ProtocolMessageTypes.TeachingSubmit);
+                    teachLeft.Data["nozzle"] = "Left";
+                    teachLeft.Data["axisR"] = "R1";
+                    teachLeft.Data["x"] = 650.1204;
+                    teachLeft.Data["y"] = 210.4506;
+                    teachLeft.Data["r"] = -0.0001;
+                    await WriteEnvelopeAsync(stream, codec, teachLeft, timeout.Token).ConfigureAwait(false);
+                    ProtocolEnvelope teachLeftRes = await ReadEnvelopeAsync(stream, codec, options.TcpMaxMessageBytes, timeout.Token).ConfigureAwait(false);
+                    Assert(teachLeftRes.Type == ProtocolMessageTypes.TeachingResult &&
+                           teachLeftRes.CorrelationId == teachLeft.MessageId,
+                        "Expected teaching.result correlated to Left teaching.submit.");
+                    bool teachOk;
+                    Assert(ProtocolValue.TryBool(teachLeftRes.Data, "success", out teachOk) && teachOk &&
+                           ProtocolValue.String(teachLeftRes.Data, "errorCode") == ProtocolErrorCodes.None &&
+                           ProtocolValue.String(teachLeftRes.Data, "nozzle") == "Left" &&
+                           ProtocolValue.String(teachLeftRes.Data, "axisR") == "R1" &&
+                           Math.Abs(ProtocolValue.Double(teachLeftRes.Data, "machineX") - 650.12) < 1e-6 &&
+                           Math.Abs(ProtocolValue.Double(teachLeftRes.Data, "machineY") - 210.451) < 1e-6 &&
+                           Math.Abs(ProtocolValue.Double(teachLeftRes.Data, "imageRow") - 1024.15) < 1e-6 &&
+                           Math.Abs(ProtocolValue.Double(teachLeftRes.Data, "imageColumn") - 1280.42) < 1e-6 &&
+                           Math.Abs(ProtocolValue.Double(teachLeftRes.Data, "imageAngle") - 0.12) < 1e-6 &&
+                           Math.Abs(ProtocolValue.Double(teachLeftRes.Data, "score") - 0.952) < 1e-6,
+                        "Left teaching.result fields or rounding mismatch.");
+                    Assert(!runtime.IsCalibrationReady, "calibrationReady must stay false before Right teaching completes.");
+
+                    // E. 左吸嘴采图失败 / 匹配失败 -> 返回对应 errorCode 且保留旧示教数据
+                    camera.FailCapture = true;
+                    ProtocolEnvelope teachCapFail = ProtocolEnvelope.Create(ProtocolMessageTypes.TeachingSubmit);
+                    teachCapFail.Data["nozzle"] = "Left";
+                    teachCapFail.Data["axisR"] = "R1";
+                    teachCapFail.Data["x"] = 999.0;
+                    teachCapFail.Data["y"] = 999.0;
+                    teachCapFail.Data["r"] = 5.0;
+                    await WriteEnvelopeAsync(stream, codec, teachCapFail, timeout.Token).ConfigureAwait(false);
+                    ProtocolEnvelope teachCapFailRes = await ReadEnvelopeAsync(stream, codec, options.TcpMaxMessageBytes, timeout.Token).ConfigureAwait(false);
+                    Assert(teachCapFailRes.Type == ProtocolMessageTypes.TeachingResult &&
+                           ProtocolValue.TryBool(teachCapFailRes.Data, "success", out teachOk) && !teachOk &&
+                           ProtocolValue.String(teachCapFailRes.Data, "errorCode") == ProtocolErrorCodes.CameraCaptureFailed,
+                        "Expected teaching.result / CAMERA_CAPTURE_FAILED.");
+                    Assert(Math.Abs(runtime.GetTeachingSnapshot().Left.MachineX - 650.1204) < 1e-6,
+                        "Old Left teaching must remain intact after CAMERA_CAPTURE_FAILED.");
+
+                    camera.FailCapture = false;
+                    fakeEngine.NextCollectionResult = TemplateMatchCollectionResult.NoMatch("No board.");
+                    ProtocolEnvelope teachMatchFail = ProtocolEnvelope.Create(ProtocolMessageTypes.TeachingSubmit);
+                    teachMatchFail.Data["nozzle"] = "Left";
+                    teachMatchFail.Data["axisR"] = "R1";
+                    teachMatchFail.Data["x"] = 888.0;
+                    teachMatchFail.Data["y"] = 888.0;
+                    teachMatchFail.Data["r"] = 3.0;
+                    await WriteEnvelopeAsync(stream, codec, teachMatchFail, timeout.Token).ConfigureAwait(false);
+                    ProtocolEnvelope teachMatchFailRes = await ReadEnvelopeAsync(stream, codec, options.TcpMaxMessageBytes, timeout.Token).ConfigureAwait(false);
+                    Assert(teachMatchFailRes.Type == ProtocolMessageTypes.TeachingResult &&
+                           ProtocolValue.TryBool(teachMatchFailRes.Data, "success", out teachOk) && !teachOk &&
+                           ProtocolValue.String(teachMatchFailRes.Data, "errorCode") == ProtocolErrorCodes.MatchFailed,
+                        "Expected teaching.result / MATCH_FAILED.");
+                    Assert(Math.Abs(runtime.GetTeachingSnapshot().Left.MachineX - 650.1204) < 1e-6,
+                        "Old Left teaching must remain intact after MATCH_FAILED.");
+
+                    // F. 右吸嘴 (Right/R2) teaching.submit 成功 -> 先收到 teaching.result，再收到 system.status(calibrationReady=true)
+                    fakeEngine.NextCollectionResult = new TemplateMatchCollectionResult
+                    {
+                        Success = true,
+                        ErrorCode = CalibrationErrorCode.None,
+                        Matches = new List<TemplateMatchResult>
+                        {
+                            new TemplateMatchResult { Success = true, Row = 1024.15, Column = 1280.42, AngleDegrees = 0.12, Score = 0.948 }
+                        }
+                    };
+                    ProtocolEnvelope teachRight = ProtocolEnvelope.Create(ProtocolMessageTypes.TeachingSubmit);
+                    teachRight.Data["nozzle"] = "Right";
+                    teachRight.Data["axisR"] = "R2";
+                    teachRight.Data["x"] = 672.340;
+                    teachRight.Data["y"] = 210.450;
+                    teachRight.Data["r"] = 0.0;
+                    await WriteEnvelopeAsync(stream, codec, teachRight, timeout.Token).ConfigureAwait(false);
+                    ProtocolEnvelope teachRightRes = await ReadEnvelopeAsync(stream, codec, options.TcpMaxMessageBytes, timeout.Token).ConfigureAwait(false);
+                    Assert(teachRightRes.Type == ProtocolMessageTypes.TeachingResult &&
+                           ProtocolValue.TryBool(teachRightRes.Data, "success", out teachOk) && teachOk &&
+                           ProtocolValue.String(teachRightRes.Data, "nozzle") == "Right" &&
+                           ProtocolValue.String(teachRightRes.Data, "axisR") == "R2",
+                        "teaching.result must arrive before system.status push when Right teaching completes.");
+
+                    ProtocolEnvelope statusReady = await ReadEnvelopeAsync(stream, codec, options.TcpMaxMessageBytes, timeout.Token).ConfigureAwait(false);
+                    bool calReadyAfter;
+                    Assert(statusReady.Type == ProtocolMessageTypes.SystemStatus &&
+                           ProtocolValue.TryBool(statusReady.Data, "calibrationReady", out calReadyAfter) && calReadyAfter,
+                        "Expected system.status(calibrationReady=true) immediately after Right teaching.result.");
+
+                    await runtime.StopAsync().ConfigureAwait(false);
+                }
+                finally
+                {
+                    try { Directory.Delete(tempDir, true); } catch { }
+                }
+            }
+        }
+
+        private static CalibrationJob CreateValid9Plus5CalibrationJob(string name, double originX, double originY)
+        {
+            CalibrationJob job = CreateJobWithDummyTemplateAndSample(name, "P1");
+            job.Template.ModelHash = TemplateDefinition.ComputeModelHash(job.Template.ModelData);
+            job.Samples.Clear();
+            IReadOnlyList<CalibrationPlanPoint> plan = CalibrationPlan.Create(10.0, 10.0, 6.0);
+            foreach (CalibrationPlanPoint pt in plan)
+            {
+                double sx = originX + pt.OffsetX;
+                double sy = originY + pt.OffsetY;
+                double sr = pt.OffsetR;
+                double row;
+                double col;
+                double imgAngle;
+                if (pt.Kind == CalibrationSampleKind.Translation)
+                {
+                    col = 1000.0 + (10.0 * pt.OffsetX);
+                    row = 1000.0 - (10.0 * pt.OffsetY);
+                    imgAngle = 0.0;
+                }
+                else
+                {
+                    double rad = pt.OffsetR * Math.PI / 180.0;
+                    col = 1000.0 + (50.0 * Math.Cos(rad));
+                    row = 1000.0 - (50.0 * Math.Sin(rad));
+                    imgAngle = pt.OffsetR;
+                }
+
+                job.Samples.Add(new CalibrationSample
+                {
+                    SampleId = Guid.NewGuid().ToString("N"),
+                    Tag = pt.Tag,
+                    Kind = pt.Kind,
+                    Enabled = true,
+                    TemplateRevision = 1,
+                    MachinePose = new MachinePose(sx, sy, sr),
+                    ImagePose = new ImagePose(row, col, imgAngle),
+                    MatchScore = 0.99
+                });
+            }
+            return job;
         }
 
         private static CalibrationResult CreateSyntheticCalibration(

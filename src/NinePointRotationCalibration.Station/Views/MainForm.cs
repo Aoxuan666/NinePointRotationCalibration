@@ -1222,7 +1222,8 @@ namespace NinePointRotationCalibration.Station.Views
                     if (rowIndex >= 0 && row != null && row.Length > 0)
                     {
                         string status = Convert.ToString(row[row.Length - 1], CultureInfo.InvariantCulture);
-                        bool isNg = string.Equals(status, "NG", StringComparison.OrdinalIgnoreCase);
+                        bool isNg = string.Equals(status, "NG", StringComparison.OrdinalIgnoreCase) ||
+                                    string.Equals(status, "无效", StringComparison.Ordinal);
                         DataGridViewRow gridRow = dgvDetectionResults.Rows[rowIndex];
                         gridRow.DefaultCellStyle.ForeColor = isNg
                             ? Color.FromArgb(185, 28, 28)

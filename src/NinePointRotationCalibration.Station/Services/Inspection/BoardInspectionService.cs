@@ -183,7 +183,7 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
                      positioningJob.Template == null ||
                      positioningJob.Template.ModelData == null ||
                      positioningJob.Template.ModelData.Length == 0))
-                    return Failure(result, "POSITIONING_TEMPLATE_MISSING", "Positioning template is not configured.");
+                    return Failure(result, ProtocolErrorCodes.PositioningTemplateMissing, "Positioning template is not configured.");
                 if (useTemplateMatching && mapTargets && !IsCalibrationValid(leftCalibration))
                     return Failure(result, "CALIBRATION_MISSING", "A valid Left (R1) 9+5 calibration result is required.");
                 if (useTemplateMatching && mapTargets && !IsCalibrationValid(rightCalibration))
@@ -239,7 +239,7 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
                         BoardInspectionItem item = new BoardInspectionItem
                         {
                             BoardIndex = 1,
-                            Valid = true,
+                            Valid = false,
                             ImageRow = image.Height / 2.0,
                             ImageColumn = image.Width / 2.0,
                             ImageAngleDegrees = 0.0,
@@ -345,7 +345,7 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
                             BoardInspectionItem item = new BoardInspectionItem
                             {
                                 BoardIndex = index + 1,
-                                Valid = true,
+                                Valid = mapTargets,
                                 ImageRow = match.Row,
                                 ImageColumn = match.Column,
                                 ImageAngleDegrees = match.AngleDegrees,
@@ -413,28 +413,54 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
                     result.CoordinateMappingApplied = mapTargets;
                 }
 
-                // 直接整图检测模式不校验目标板数；模板匹配模式要求实际板数与预期一致，Pass 还要求全板均无不良标记
+                // 直接整图检测模式不校验目标板数；模板匹配模式按 5 级优先级判定错误码与放行状态：
+                // 1. BOARD_COUNT_MISMATCH > 2. COORDINATE_NOT_MAPPED > 3. COORDINATE_MAPPING_FAILED > 4. MANUAL_MARK_FOUND > 5. NONE
                 result.CountMatchesExpected = !useTemplateMatching || result.ActualCount == result.ExpectedCount;
                 result.HasManualMarks = result.Items.Exists(item => item.HasManualMark);
+                bool hasInvalidBoard = result.Items.Exists(item => !item.Valid);
                 int ngCount = result.Items.Count(item => item.HasManualMark);
                 int okCount = result.Items.Count - ngCount;
-                result.Success = result.CountMatchesExpected;
-                result.Pass = result.CountMatchesExpected && !result.HasManualMarks;
+                int invalidCount = result.Items.Count(item => !item.Valid);
+
                 if (!result.CountMatchesExpected)
                 {
-                    result.ErrorCode = "BOARD_COUNT_MISMATCH";
+                    result.Success = false;
+                    result.Pass = false;
+                    result.ErrorCode = ProtocolErrorCodes.BoardCountMismatch;
                     result.Message = string.Format(
                         "板数不符（目标 {0} / 实际 {1}，OK {2} / NG {3}）",
                         result.ExpectedCount, result.ActualCount, okCount, ngCount);
                 }
+                else if (!result.CoordinateMappingApplied)
+                {
+                    result.Success = false;
+                    result.Pass = false;
+                    result.ErrorCode = ProtocolErrorCodes.CoordinateNotMapped;
+                    result.Message = string.Format(
+                        "检测已完成，但标定未启用或未就绪，未生成取料坐标（OK {0} / NG {1}）",
+                        okCount, ngCount);
+                }
+                else if (hasInvalidBoard)
+                {
+                    result.Success = false;
+                    result.Pass = false;
+                    result.ErrorCode = ProtocolErrorCodes.CoordinateMappingFailed;
+                    result.Message = string.Format(
+                        "存在 {0} 块板坐标映射异常，未生成完整取料坐标（OK {1} / NG {2}）",
+                        invalidCount, okCount, ngCount);
+                }
                 else if (result.HasManualMarks)
                 {
-                    result.ErrorCode = "MANUAL_MARK_FOUND";
+                    result.Success = true;
+                    result.Pass = false;
+                    result.ErrorCode = ProtocolErrorCodes.ManualMarkFound;
                     result.Message = string.Format("检出不良标记（OK {0} / NG {1}）", okCount, ngCount);
                 }
                 else
                 {
-                    result.ErrorCode = "NONE";
+                    result.Success = true;
+                    result.Pass = true;
+                    result.ErrorCode = ProtocolErrorCodes.None;
                     result.Message = string.Format("检测通过（OK {0} / NG 0）", okCount);
                 }
                 return result;

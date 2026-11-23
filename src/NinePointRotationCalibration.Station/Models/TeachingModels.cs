@@ -17,6 +17,7 @@ namespace NinePointRotationCalibration.Station.Models
         public double ImageRow { get; set; }
         public double ImageColumn { get; set; }
         public double ImageAngleDegrees { get; set; }
+        public double MatchScore { get; set; }
         public double MachineX { get; set; }
         public double MachineY { get; set; }
         public double MachineR { get; set; }

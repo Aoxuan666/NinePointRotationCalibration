@@ -21,6 +21,8 @@ namespace NinePointRotationCalibration.Station.Models
         public const string CalibrationCompleted = "calibration.completed";
         public const string InspectionTrigger = "inspection.trigger";
         public const string InspectionResult = "inspection.result";
+        public const string TeachingSubmit = "teaching.submit";
+        public const string TeachingResult = "teaching.result";
         public const string Error = "system.error";
     }
 
@@ -42,8 +44,14 @@ namespace NinePointRotationCalibration.Station.Models
 
         // inspection.result
         public const string NoMaterial = "NO_MATERIAL";
+        public const string CoordinateNotMapped = "COORDINATE_NOT_MAPPED";
+        public const string CoordinateMappingFailed = "COORDINATE_MAPPING_FAILED";
         public const string ManualMarkFound = "MANUAL_MARK_FOUND";
         public const string BoardCountMismatch = "BOARD_COUNT_MISMATCH";
+        public const string PositioningTemplateMissing = "POSITIONING_TEMPLATE_MISSING";
+
+        // teaching.result
+        public const string TeachingSaveFailed = "TEACHING_SAVE_FAILED";
 
         // calibration.completed
         public const string MotionFailed = "MOTION_FAILED";
