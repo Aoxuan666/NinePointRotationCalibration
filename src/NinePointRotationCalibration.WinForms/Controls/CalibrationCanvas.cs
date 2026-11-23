@@ -21,9 +21,13 @@ namespace NinePointRotationCalibration.WinForms.Controls
         private const double MaximumZoom = 50.0;
         private const float HandleRadius = 5.0f;
         private const float HandleHitRadius = 9.0f;
-        private const float BorderHitDistance = 6.0f;
+        private const float BorderHitDistance = 7.0f;
+        private const float CoincidentBorderTolerance = 2.0f;
         private const float AnchorHitRadius = 9.0f;
+        private const float RotateStemLength = 22.0f;
         private const float DragThresholdPixels = 3.0f;
+        private const float CycleClickRadiusPixels = 10.0f;
+        private const float CycleBreakMovePixels = 16.0f;
 
         // 重叠 ROI 本体点击测试的默认前景优先级顺序
         private static readonly CanvasRoiTarget[] RoiBodyHitOrder =
@@ -87,8 +91,18 @@ namespace NinePointRotationCalibration.WinForms.Controls
         private bool _anchorSelected;
         private bool _anchorHovered;
         private CanvasRoiTarget _hoveredRoi = CanvasRoiTarget.None;
+        private CanvasRoiTarget _hoveredLabelRoi = CanvasRoiTarget.None;
+        private bool _hoveredAnchorLabel;
         private Point _hoverScreen;
         private bool _hasHoverScreen;
+        private CanvasRoiTarget _creatingRoiTarget = CanvasRoiTarget.None;
+        private RotatedRectangle _creatingRoiDraft;
+        private bool _hasCycleAnchor;
+        private Point _cycleAnchorScreen;
+        private CanvasHitKind _dragStartHitKind = CanvasHitKind.None;
+        private bool _lastRightClickConsumed;
+        private readonly Dictionary<CanvasRoiTarget, RectangleF> _renderedRoiLabelRects = new Dictionary<CanvasRoiTarget, RectangleF>();
+        private RectangleF _renderedAnchorLabelRect;
 
         public CalibrationCanvas()
         {
@@ -115,6 +129,8 @@ namespace NinePointRotationCalibration.WinForms.Controls
         }
 
         public event EventHandler<RoiChangedEventArgs> RoiChanged;
+
+        public event EventHandler<CanvasRoiTarget> RoiDrawRejected;
 
         public event EventHandler<AnchorChangedEventArgs> AnchorChanged;
 
@@ -145,6 +161,12 @@ namespace NinePointRotationCalibration.WinForms.Controls
         }
 
         [Browsable(false)]
+        public bool LastRightClickConsumed
+        {
+            get { return _lastRightClickConsumed; }
+        }
+
+        [Browsable(false)]
         public Size ImageSize
         {
             get { return _image == null ? Size.Empty : _image.Size; }
@@ -169,6 +191,11 @@ namespace NinePointRotationCalibration.WinForms.Controls
 
                 FinishDrag(false);
                 CancelActivePolygon(false);
+                _hasCycleAnchor = false;
+                _hoveredRoi = CanvasRoiTarget.None;
+                _hoveredLabelRoi = CanvasRoiTarget.None;
+                _hoveredAnchorLabel = false;
+                _anchorHovered = false;
                 _tool = value;
                 if (_tool == CanvasEditTool.MoveAnchor)
                 {
@@ -178,6 +205,10 @@ namespace NinePointRotationCalibration.WinForms.Controls
                         _selectedRoi = CanvasRoiTarget.None;
                         OnSelectedRoiChanged();
                     }
+                }
+                else if (IsDrawRoiTool(_tool))
+                {
+                    _anchorSelected = false;
                 }
                 _lastBrushCursorRect = _hasHoverScreen && (_tool == CanvasEditTool.EraseMask || _tool == CanvasEditTool.RestoreMask)
                     ? GetBrushCursorDirtyRect(_hoverScreen)
@@ -431,6 +462,7 @@ namespace NinePointRotationCalibration.WinForms.Controls
             _offsetY = (ClientSize.Height - (_image.Height * _zoom)) / 2.0;
             _autoFit = true;
             _viewInitialized = true;
+            _hasCycleAnchor = false;
             _lastBrushCursorRect = Rectangle.Empty;
             if (_maskRefreshPending)
             {
@@ -457,6 +489,7 @@ namespace NinePointRotationCalibration.WinForms.Controls
             _offsetY = (ClientSize.Height - _image.Height) / 2.0;
             _autoFit = false;
             _viewInitialized = true;
+            _hasCycleAnchor = false;
             _lastBrushCursorRect = Rectangle.Empty;
             if (_maskRefreshPending)
             {
@@ -505,6 +538,42 @@ namespace NinePointRotationCalibration.WinForms.Controls
                 }
             }
             return -1;
+        }
+
+        /// <summary>
+        /// 获取客户端坐标处命中的所有 ROI（支持标签、边框及内部命中），按编辑优先级排序（未锁定优先、小框优先）。
+        /// </summary>
+        public IList<CanvasRoiTarget> GetRoisAtClientPoint(Point clientLocation)
+        {
+            List<CanvasRoiTarget> hits = new List<CanvasRoiTarget>();
+            if (_image == null || !ShowRois)
+            {
+                return hits;
+            }
+
+            ImageCoordinate imagePoint = ClientToImage(clientLocation);
+            double borderDistSq = BorderHitDistance * BorderHitDistance;
+            foreach (CanvasRoiTarget target in RoiBodyHitOrder)
+            {
+                RotatedRectangle candidate = GetRoi(target);
+                if (candidate == null)
+                {
+                    continue;
+                }
+
+                RectangleF labelRect;
+                bool hitLabel = _renderedRoiLabelRects.TryGetValue(target, out labelRect) &&
+                                labelRect.Contains(clientLocation);
+                if (hitLabel ||
+                    candidate.Contains(imagePoint) ||
+                    GetDistanceSquaredToBorder(candidate, clientLocation) <= borderDistSq)
+                {
+                    hits.Add(target);
+                }
+            }
+
+            hits.Sort((a, b) => CompareRoiBodyPriority(a, b));
+            return hits;
         }
 
         /// <summary>
@@ -611,9 +680,16 @@ namespace NinePointRotationCalibration.WinForms.Controls
             if (ShowRois)
             {
                 DrawEditingLayer(graphics);
+                DrawCreatingRoiDraft(graphics);
+            }
+            else
+            {
+                _renderedRoiLabelRects.Clear();
+                _renderedAnchorLabelRect = RectangleF.Empty;
             }
 
             DrawOverlayLayer(graphics, _runtimeOverlay, true);
+            DrawToolHintBanner(graphics);
             DrawViewStatus(graphics);
         }
 
@@ -652,6 +728,7 @@ namespace NinePointRotationCalibration.WinForms.Controls
             _offsetY = eventArgs.Y - (anchor.Row * _zoom);
             _autoFit = false;
             _viewInitialized = true;
+            _hasCycleAnchor = false;
             _lastBrushCursorRect = Rectangle.Empty;
             if (_maskHistory != null && _maskStrokes.Count > 0)
             {
@@ -686,6 +763,20 @@ namespace NinePointRotationCalibration.WinForms.Controls
 
             if (eventArgs.Button == MouseButtons.Right)
             {
+                _lastRightClickConsumed = false;
+                if (_dragOperation == DragOperation.CreateRoi)
+                {
+                    FinishDrag(false);
+                    Tool = CanvasEditTool.Select;
+                    _lastRightClickConsumed = true;
+                    return;
+                }
+                if (IsDrawRoiTool(_tool) || _tool == CanvasEditTool.MoveAnchor)
+                {
+                    Tool = CanvasEditTool.Select;
+                    _lastRightClickConsumed = true;
+                    return;
+                }
                 if (_polygonDrawing)
                 {
                     if (_activePolygonPoints.Count >= 3)
@@ -696,6 +787,7 @@ namespace NinePointRotationCalibration.WinForms.Controls
                     {
                         CancelActivePolygon(true);
                     }
+                    _lastRightClickConsumed = true;
                 }
                 return;
             }
@@ -817,36 +909,26 @@ namespace NinePointRotationCalibration.WinForms.Controls
                 return;
             }
 
-            if (_tool == CanvasEditTool.DrawTemplateRoi ||
-                _tool == CanvasEditTool.DrawSearchRoi ||
-                _tool == CanvasEditTool.DrawDetectionRoi)
+            if (IsDrawRoiTool(_tool))
             {
-                if (!IsInsideImage(_dragStartImage))
-                {
-                    return;
-                }
-
-                CanvasRoiTarget target = _tool == CanvasEditTool.DrawTemplateRoi
-                    ? CanvasRoiTarget.Template
-                    : _tool == CanvasEditTool.DrawSearchRoi
-                        ? CanvasRoiTarget.Search
-                        : CanvasRoiTarget.Detection;
+                CanvasRoiTarget target = GetDrawToolTarget(_tool);
                 if (IsTargetLocked(target))
                 {
                     return;
                 }
 
-                BeginEditTransaction();
-                SelectedRoi = target;
+                // 允许从图像边缘附近起笔（例如紧贴边界框选全图搜索 ROI），自动钳位到图像范围内；
+                // 按下时不立即覆盖旧 ROI 或生成默认尺寸框，待拖拽形成有效区域后再提交。
+                _dragStartImage = ClampToImage(_dragStartImage);
+                _creatingRoiTarget = target;
+                _creatingRoiDraft = null;
+                _hasCycleAnchor = false;
+                _dragStartHitKind = CanvasHitKind.None;
                 _dragOperation = DragOperation.CreateRoi;
+                _dragThresholdExceeded = false;
+                _transactionChanged = false;
                 Capture = true;
-                SetRoi(target, new RotatedRectangle(
-                    _dragStartImage.Row,
-                    _dragStartImage.Column,
-                    1.0,
-                    1.0,
-                    0.0));
-                _transactionChanged = true;
+                Invalidate();
                 return;
             }
 
@@ -855,6 +937,8 @@ namespace NinePointRotationCalibration.WinForms.Controls
                 if (HasVisibleAnchor && !AnchorLocked && IsInsideImage(_dragStartImage))
                 {
                     _anchorSelected = true;
+                    _hasCycleAnchor = false;
+                    _dragStartHitKind = CanvasHitKind.Anchor;
                     SelectedRoi = CanvasRoiTarget.None;
                     if (HitAnchor(eventArgs.Location))
                     {
@@ -879,18 +963,21 @@ namespace NinePointRotationCalibration.WinForms.Controls
                 return;
             }
 
-            // Select 模式下：优先检测当前选中 ROI 的缩放/旋转控制柄，防止缩小视图时小 ROI 控制柄被中心锚点遮挡
-            RoiHit selectedHandleHit = HitSelectedHandle(eventArgs.Location);
-            if (selectedHandleHit.Target != CanvasRoiTarget.None)
+            // Select 模式统一命中测试：与悬停预览完全同源（控制柄 > 标签 > 已选中锚点 > 最近边框 > 未遮挡锚点 > 内部区域）
+            InteractiveHit hit = HitTestInteractive(eventArgs.Location);
+            _dragStartHitKind = hit.Kind;
+            if (hit.Kind == CanvasHitKind.RoiHandle)
             {
                 _anchorSelected = false;
-                StartRoiEditDrag(selectedHandleHit);
+                _hasCycleAnchor = false;
+                StartRoiEditDrag(new RoiHit(hit.Target, hit.Handle));
                 return;
             }
 
-            if (HasVisibleAnchor && !AnchorLocked && HitAnchor(eventArgs.Location))
+            if (hit.Kind == CanvasHitKind.AnchorLabel || hit.Kind == CanvasHitKind.Anchor)
             {
                 _anchorSelected = true;
+                _hasCycleAnchor = false;
                 if (_selectedRoi != CanvasRoiTarget.None)
                 {
                     _selectedRoi = CanvasRoiTarget.None;
@@ -905,26 +992,39 @@ namespace NinePointRotationCalibration.WinForms.Controls
                 return;
             }
 
-            RoiHit hit = HitTestRois(eventArgs.Location);
-            if (hit.Target != CanvasRoiTarget.None)
+            if (hit.Kind == CanvasHitKind.RoiLabel ||
+                hit.Kind == CanvasHitKind.RoiBorder ||
+                hit.Kind == CanvasHitKind.RoiBody)
             {
                 _anchorSelected = false;
                 SelectedRoi = hit.Target;
+                if (hit.Kind == CanvasHitKind.RoiLabel)
+                {
+                    _hasCycleAnchor = false;
+                }
+                else
+                {
+                    _cycleAnchorScreen = eventArgs.Location;
+                    _hasCycleAnchor = true;
+                }
+
                 if (IsTargetLocked(hit.Target))
                 {
-                    _activeHandle = hit.Handle;
+                    _activeHandle = RoiHandle.Body;
                     _dragOperation = DragOperation.SelectRoi;
+                    _dragThresholdExceeded = false;
                     Capture = true;
                     Cursor = Cursors.Default;
                     Invalidate();
                     return;
                 }
 
-                StartRoiEditDrag(hit);
+                StartRoiEditDrag(new RoiHit(hit.Target, RoiHandle.Body));
                 return;
             }
 
             _anchorSelected = false;
+            _hasCycleAnchor = false;
             SelectedRoi = CanvasRoiTarget.None;
             if (_tool == CanvasEditTool.Select)
             {
@@ -952,7 +1052,7 @@ namespace NinePointRotationCalibration.WinForms.Controls
             }
 
             Point client = PointToClient(Cursor.Position);
-            if ((!HasVisibleAnchor || !HitAnchor(client)) && HitTestRois(client).Target == CanvasRoiTarget.None)
+            if (HitTestInteractive(client).Kind == CanvasHitKind.None)
             {
                 FitImage();
             }
@@ -966,6 +1066,10 @@ namespace NinePointRotationCalibration.WinForms.Controls
 
             if (_dragOperation == DragOperation.None)
             {
+                if (_hasCycleAnchor && !IsNearPoint(eventArgs.Location, _cycleAnchorScreen, CycleBreakMovePixels))
+                {
+                    _hasCycleAnchor = false;
+                }
                 UpdateHoverAndCursor(eventArgs.Location);
                 if (_polygonDrawing)
                 {
@@ -982,6 +1086,23 @@ namespace NinePointRotationCalibration.WinForms.Controls
                 return;
             }
 
+            if (_dragOperation == DragOperation.SelectRoi)
+            {
+                // 点击锁定 ROI 仅用于选中；若按住拖拽超过阈值则无缝切换为平移视图，避免锁定全图搜索框阻塞左键平移
+                if (!_dragThresholdExceeded && ExceededDragThreshold(eventArgs.Location))
+                {
+                    _dragThresholdExceeded = true;
+                    _hasCycleAnchor = false;
+                    _dragOperation = DragOperation.Pan;
+                    Cursor = Cursors.Hand;
+                }
+                else
+                {
+                    _lastScreen = eventArgs.Location;
+                    return;
+                }
+            }
+
             if (_dragOperation == DragOperation.Pan)
             {
                 _offsetX += eventArgs.X - _lastScreen.X;
@@ -989,6 +1110,7 @@ namespace NinePointRotationCalibration.WinForms.Controls
                 _lastScreen = eventArgs.Location;
                 _autoFit = false;
                 _viewInitialized = true;
+                _hasCycleAnchor = false;
                 _lastBrushCursorRect = Rectangle.Empty;
                 if (_maskHistory != null && _maskStrokes.Count > 0)
                 {
@@ -1001,10 +1123,20 @@ namespace NinePointRotationCalibration.WinForms.Controls
                 return;
             }
 
-            ImageCoordinate current = ClampToImage(ClientToImage(eventArgs.Location));
+            ImageCoordinate rawCurrent = ClientToImage(eventArgs.Location);
+            ImageCoordinate current = ClampToImage(rawCurrent);
             switch (_dragOperation)
             {
                 case DragOperation.CreateRoi:
+                    if (!_dragThresholdExceeded)
+                    {
+                        if (!ExceededDragThreshold(eventArgs.Location))
+                        {
+                            _lastScreen = eventArgs.Location;
+                            return;
+                        }
+                        _dragThresholdExceeded = true;
+                    }
                     UpdateCreatedRoi(current);
                     break;
                 case DragOperation.MoveRoi:
@@ -1016,15 +1148,18 @@ namespace NinePointRotationCalibration.WinForms.Controls
                             return;
                         }
                         _dragThresholdExceeded = true;
+                        _hasCycleAnchor = false;
                         BeginEditTransaction();
                     }
                     UpdateMovedRoi(current);
                     break;
                 case DragOperation.ResizeRoi:
+                    _hasCycleAnchor = false;
                     UpdateResizedRoi(current);
                     break;
                 case DragOperation.RotateRoi:
-                    UpdateRotatedRoi(current);
+                    _hasCycleAnchor = false;
+                    UpdateRotatedRoi(rawCurrent);
                     break;
                 case DragOperation.Anchor:
                     if (!_dragThresholdExceeded)
@@ -1035,6 +1170,7 @@ namespace NinePointRotationCalibration.WinForms.Controls
                             return;
                         }
                         _dragThresholdExceeded = true;
+                        _hasCycleAnchor = false;
                         BeginEditTransaction();
                     }
                     _anchor = ClampToImage(new ImageCoordinate(
@@ -1067,9 +1203,15 @@ namespace NinePointRotationCalibration.WinForms.Controls
         {
             base.OnMouseLeave(eventArgs);
             _hasHoverScreen = false;
-            if (_hoveredRoi != CanvasRoiTarget.None || _anchorHovered || _polygonDrawing)
+            if (_hoveredRoi != CanvasRoiTarget.None ||
+                _hoveredLabelRoi != CanvasRoiTarget.None ||
+                _hoveredAnchorLabel ||
+                _anchorHovered ||
+                _polygonDrawing)
             {
                 _hoveredRoi = CanvasRoiTarget.None;
+                _hoveredLabelRoi = CanvasRoiTarget.None;
+                _hoveredAnchorLabel = false;
                 _anchorHovered = false;
                 _lastBrushCursorRect = Rectangle.Empty;
                 Invalidate();
@@ -1100,6 +1242,18 @@ namespace NinePointRotationCalibration.WinForms.Controls
             }
         }
 
+        protected override bool IsInputKey(Keys keyData)
+        {
+            Keys keyCode = keyData & Keys.KeyCode;
+            if (keyCode == Keys.Up || keyCode == Keys.Down || keyCode == Keys.Left || keyCode == Keys.Right ||
+                keyCode == Keys.Escape)
+            {
+                return true;
+            }
+
+            return base.IsInputKey(keyData);
+        }
+
         protected override void OnKeyDown(KeyEventArgs eventArgs)
         {
             base.OnKeyDown(eventArgs);
@@ -1108,14 +1262,31 @@ namespace NinePointRotationCalibration.WinForms.Controls
                 return;
             }
 
-            if (_polygonDrawing)
+            if (eventArgs.KeyCode == Keys.Escape)
             {
-                if (eventArgs.KeyCode == Keys.Escape)
+                if (_dragOperation == DragOperation.CreateRoi)
+                {
+                    FinishDrag(false);
+                    Tool = CanvasEditTool.Select;
+                    eventArgs.Handled = true;
+                    return;
+                }
+                if (_polygonDrawing)
                 {
                     CancelActivePolygon(true);
                     eventArgs.Handled = true;
                     return;
                 }
+                if (IsDrawRoiTool(_tool) || _tool == CanvasEditTool.MoveAnchor)
+                {
+                    Tool = CanvasEditTool.Select;
+                    eventArgs.Handled = true;
+                    return;
+                }
+            }
+
+            if (_polygonDrawing)
+            {
                 if (eventArgs.KeyCode == Keys.Back && _activePolygonPoints.Count > 0)
                 {
                     _activePolygonPoints.RemoveAt(_activePolygonPoints.Count - 1);
@@ -1905,7 +2076,29 @@ namespace NinePointRotationCalibration.WinForms.Controls
 
         private void DrawEditingLayer(Graphics graphics)
         {
+            _renderedRoiLabelRects.Clear();
+            _renderedAnchorLabelRect = RectangleF.Empty;
+
             List<RectangleF> occupiedLabels = new List<RectangleF>();
+            CanvasRoiTarget visualSelected = (IsDrawRoiTool(_tool) || _tool == CanvasEditTool.MoveAnchor)
+                ? CanvasRoiTarget.None
+                : _selectedRoi;
+
+            // 预留当前选中 ROI 顶部旋转控制柄的空间，避免标签遮挡旋转手柄
+            if (visualSelected != CanvasRoiTarget.None && !IsTargetLocked(visualSelected))
+            {
+                RotatedRectangle selectedRoi = GetRoi(visualSelected);
+                if (selectedRoi != null)
+                {
+                    PointF rotateCenter = GetRotateHandleLocation(selectedRoi);
+                    occupiedLabels.Add(new RectangleF(
+                        rotateCenter.X - HandleRadius - 4.0f,
+                        rotateCenter.Y - HandleRadius - 4.0f,
+                        (HandleRadius + 4.0f) * 2.0f,
+                        (HandleRadius + 4.0f) * 2.0f));
+                }
+            }
+
             CanvasRoiTarget[] baseOrder =
             {
                 CanvasRoiTarget.Search,
@@ -1917,13 +2110,13 @@ namespace NinePointRotationCalibration.WinForms.Controls
             for (int i = 0; i < baseOrder.Length; i++)
             {
                 CanvasRoiTarget target = baseOrder[i];
-                if (target == _selectedRoi) continue;
-                DrawRoi(graphics, GetRoi(target), target, GetRoiColor(target), occupiedLabels);
+                if (target == visualSelected) continue;
+                DrawRoi(graphics, GetRoi(target), target, GetRoiColor(target), visualSelected, occupiedLabels);
             }
 
-            if (_selectedRoi != CanvasRoiTarget.None)
+            if (visualSelected != CanvasRoiTarget.None)
             {
-                DrawRoi(graphics, GetRoi(_selectedRoi), _selectedRoi, GetRoiColor(_selectedRoi), occupiedLabels);
+                DrawRoi(graphics, GetRoi(visualSelected), visualSelected, GetRoiColor(visualSelected), visualSelected, occupiedLabels);
             }
 
             if (HasVisibleAnchor)
@@ -1939,17 +2132,44 @@ namespace NinePointRotationCalibration.WinForms.Controls
                 : target == CanvasRoiTarget.Search ? Color.DeepSkyBlue : Color.Cyan;
         }
 
-        private void DrawRoi(Graphics graphics, RotatedRectangle roi, CanvasRoiTarget target, Color color, IList<RectangleF> occupiedLabels)
+        private static string GetRoiTitle(CanvasRoiTarget target)
+        {
+            return target == CanvasRoiTarget.Template
+                ? "模板 ROI"
+                : target == CanvasRoiTarget.Search ? "搜索 ROI" : "检测 ROI";
+        }
+
+        private void DrawRoi(
+            Graphics graphics,
+            RotatedRectangle roi,
+            CanvasRoiTarget target,
+            Color color,
+            CanvasRoiTarget visualSelected,
+            IList<RectangleF> occupiedLabels)
         {
             if (roi == null)
             {
                 return;
             }
 
-            bool selected = _selectedRoi == target;
-            bool hovered = !selected && _hoveredRoi == target;
+            bool selected = visualSelected == target;
+            bool hovered = !selected && (_hoveredRoi == target || _hoveredLabelRoi == target);
+            bool dimmedForRedraw = _dragOperation == DragOperation.CreateRoi &&
+                                   _creatingRoiTarget == target &&
+                                   _creatingRoiDraft != null;
             PointF[] corners = roi.GetCorners().Select(ImageToClient).ToArray();
-            using (Pen pen = new Pen(Color.FromArgb(selected ? 255 : (hovered ? 235 : 195), color), selected ? 2.2f : (hovered ? 1.8f : 1.25f)))
+
+            if (selected)
+            {
+                using (Pen shadow = new Pen(Color.FromArgb(145, Color.Black), 3.8f))
+                {
+                    graphics.DrawPolygon(shadow, corners);
+                }
+            }
+
+            int borderAlpha = dimmedForRedraw ? 110 : (selected ? 255 : (hovered ? 245 : 195));
+            float borderWidth = selected ? 2.2f : (hovered ? 2.0f : 1.35f);
+            using (Pen pen = new Pen(Color.FromArgb(borderAlpha, color), borderWidth))
             {
                 if (!selected)
                 {
@@ -1959,10 +2179,16 @@ namespace NinePointRotationCalibration.WinForms.Controls
                 graphics.DrawPolygon(pen, corners);
             }
 
-            string title = target == CanvasRoiTarget.Template
-                ? "模板 ROI"
-                : target == CanvasRoiTarget.Search ? "搜索 ROI" : "检测 ROI";
-            DrawAvoidingLabel(graphics, title, corners[0], color, occupiedLabels);
+            string title = GetRoiTitle(target);
+            bool emphasizeLabel = selected || hovered;
+            RectangleF labelRect = DrawAvoidingLabel(
+                graphics,
+                title,
+                corners[0],
+                dimmedForRedraw ? Color.FromArgb(140, color) : color,
+                occupiedLabels,
+                emphasizeLabel);
+            _renderedRoiLabelRects[target] = labelRect;
 
             if (!selected || IsTargetLocked(target))
             {
@@ -1974,22 +2200,34 @@ namespace NinePointRotationCalibration.WinForms.Controls
                 return;
             }
 
+            // 绘制顶边中点到旋转控制柄的连接杆
+            PointF topMid = ImageToClient(roi.LocalToImage(0.0, -roi.HalfHeight));
+            PointF rotatePos = GetRotateHandleLocation(roi);
+            using (Pen stemShadow = new Pen(Color.FromArgb(165, Color.Black), 3.0f))
+            using (Pen stemPen = new Pen(color, 1.5f))
+            {
+                graphics.DrawLine(stemShadow, topMid, rotatePos);
+                graphics.DrawLine(stemPen, topMid, rotatePos);
+            }
+
             foreach (RoiHandle handle in GetHandles(roi))
             {
                 PointF location = handle.Location;
                 if (handle.Kind == RoiHandleKind.Rotate)
                 {
-                    using (Brush fill = new SolidBrush(Color.FromArgb(235, 35, 38, 42)))
+                    using (Brush fill = new SolidBrush(Color.FromArgb(240, 24, 28, 34)))
                     using (Pen outline = new Pen(color, 2.0f))
+                    using (Brush dot = new SolidBrush(color))
                     {
                         graphics.FillEllipse(fill, location.X - HandleRadius, location.Y - HandleRadius, HandleRadius * 2.0f, HandleRadius * 2.0f);
                         graphics.DrawEllipse(outline, location.X - HandleRadius, location.Y - HandleRadius, HandleRadius * 2.0f, HandleRadius * 2.0f);
+                        graphics.FillEllipse(dot, location.X - 1.8f, location.Y - 1.8f, 3.6f, 3.6f);
                     }
                 }
                 else
                 {
-                    using (Brush fill = new SolidBrush(Color.FromArgb(245, 35, 38, 42)))
-                    using (Pen outline = new Pen(color, 1.5f))
+                    using (Brush fill = new SolidBrush(Color.FromArgb(245, 24, 28, 34)))
+                    using (Pen outline = new Pen(color, 1.6f))
                     {
                         RectangleF square = new RectangleF(
                             location.X - HandleRadius,
@@ -2003,10 +2241,46 @@ namespace NinePointRotationCalibration.WinForms.Controls
             }
         }
 
+        private void DrawCreatingRoiDraft(Graphics graphics)
+        {
+            if (_dragOperation != DragOperation.CreateRoi ||
+                _creatingRoiDraft == null ||
+                _creatingRoiTarget == CanvasRoiTarget.None)
+            {
+                return;
+            }
+
+            Color color = GetRoiColor(_creatingRoiTarget);
+            PointF[] corners = _creatingRoiDraft.GetCorners().Select(ImageToClient).ToArray();
+            using (Brush fill = new SolidBrush(Color.FromArgb(30, color)))
+            using (Pen shadow = new Pen(Color.FromArgb(165, Color.Black), 3.6f))
+            using (Pen border = new Pen(color, 2.1f))
+            {
+                graphics.FillPolygon(fill, corners);
+                graphics.DrawPolygon(shadow, corners);
+                graphics.DrawPolygon(border, corners);
+            }
+
+            using (Brush cornerFill = new SolidBrush(Color.White))
+            using (Pen cornerOutline = new Pen(color, 1.5f))
+            {
+                for (int i = 0; i < corners.Length; i++)
+                {
+                    graphics.FillRectangle(cornerFill, corners[i].X - 3.0f, corners[i].Y - 3.0f, 6.0f, 6.0f);
+                    graphics.DrawRectangle(cornerOutline, corners[i].X - 3.0f, corners[i].Y - 3.0f, 6.0f, 6.0f);
+                }
+            }
+
+            double widthPx = _creatingRoiDraft.HalfWidth * 2.0;
+            double heightPx = _creatingRoiDraft.HalfHeight * 2.0;
+            string sizeLabel = string.Format("{0}  {1:0} × {2:0} px", GetRoiTitle(_creatingRoiTarget), widthPx, heightPx);
+            DrawLabel(graphics, sizeLabel, corners[0], color);
+        }
+
         private void DrawAnchor(Graphics graphics, IList<RectangleF> occupiedLabels)
         {
             PointF center = ImageToClient(_anchor);
-            bool emphasized = _anchorSelected || _anchorHovered || _tool == CanvasEditTool.MoveAnchor;
+            bool emphasized = _anchorSelected || _anchorHovered || _hoveredAnchorLabel || _tool == CanvasEditTool.MoveAnchor;
             Color color = AnchorLocked ? Color.Silver : Color.FromArgb(255, 255, 80, 180);
             float radius = emphasized ? 6.5f : 5.0f;
             float arm = emphasized ? 14.0f : 10.0f;
@@ -2030,7 +2304,14 @@ namespace NinePointRotationCalibration.WinForms.Controls
                 }
             }
 
-            DrawAvoidingLabel(graphics, AnchorLocked ? "中心(锁)" : "中心", center, color, occupiedLabels);
+            RectangleF anchorLabel = DrawAvoidingLabel(
+                graphics,
+                AnchorLocked ? "中心(锁)" : "中心",
+                center,
+                color,
+                occupiedLabels,
+                emphasized && !AnchorLocked);
+            _renderedAnchorLabelRect = AnchorLocked ? RectangleF.Empty : anchorLabel;
         }
 
         private void DrawOverlayLayer(Graphics graphics, CanvasRuntimeOverlay overlay, bool drawHud)
@@ -2281,6 +2562,45 @@ namespace NinePointRotationCalibration.WinForms.Controls
             }
         }
 
+        private void DrawToolHintBanner(Graphics graphics)
+        {
+            string message = null;
+            Color accent = Color.DeepSkyBlue;
+            if (IsDrawRoiTool(_tool))
+            {
+                CanvasRoiTarget target = GetDrawToolTarget(_tool);
+                accent = GetRoiColor(target);
+                string action = GetRoi(target) == null ? "绘制" : "重绘";
+                message = string.Format("{0}{1}：按住左键拖拽框选区域 · 右键 / Esc 取消", action, GetRoiTitle(target));
+            }
+            else if (_tool == CanvasEditTool.MoveAnchor && !AnchorLocked)
+            {
+                accent = Color.FromArgb(255, 255, 80, 180);
+                message = "移动基准中心：点击或拖动设置中心 · 右键 / Esc 退出";
+            }
+
+            if (string.IsNullOrEmpty(message) || ClientSize.Width < 120)
+            {
+                return;
+            }
+
+            SizeF textSize = graphics.MeasureString(message, Font);
+            float boxWidth = textSize.Width + 24.0f;
+            float boxHeight = textSize.Height + 10.0f;
+            float left = Math.Max(10.0f, (ClientSize.Width - boxWidth) * 0.5f);
+            RectangleF box = new RectangleF(left, 10.0f, boxWidth, boxHeight);
+            using (Brush background = new SolidBrush(Color.FromArgb(215, 15, 23, 42)))
+            using (Brush accentBrush = new SolidBrush(accent))
+            using (Pen border = new Pen(Color.FromArgb(220, accent), 1.3f))
+            using (Brush foreground = new SolidBrush(Color.WhiteSmoke))
+            {
+                graphics.FillRectangle(background, box);
+                graphics.DrawRectangle(border, box.X, box.Y, box.Width, box.Height);
+                graphics.FillRectangle(accentBrush, box.X, box.Y, 4.0f, box.Height);
+                graphics.DrawString(message, Font, foreground, box.X + 12.0f, box.Y + 5.0f);
+            }
+        }
+
         private void DrawViewStatus(Graphics graphics)
         {
             string text = string.Format("{0:0.#}%   {1} × {2}", _zoom * 100.0, _image.Width, _image.Height);
@@ -2301,8 +2621,24 @@ namespace NinePointRotationCalibration.WinForms.Controls
         private void DrawLabel(Graphics graphics, string text, PointF location, Color color)
         {
             SizeF size = graphics.MeasureString(text, Font);
-            RectangleF box = new RectangleF(location.X + 5.0f, location.Y - size.Height - 5.0f, size.Width + 8.0f, size.Height + 3.0f);
-            using (Brush background = new SolidBrush(Color.FromArgb(190, 18, 20, 23)))
+            float boxWidth = size.Width + 8.0f;
+            float boxHeight = size.Height + 3.0f;
+            float x = location.X + 5.0f;
+            float y = location.Y - boxHeight - 5.0f;
+            if (y < 4.0f)
+            {
+                y = location.Y + 6.0f;
+            }
+            if (x + boxWidth > ClientSize.Width - 4.0f)
+            {
+                x = Math.Max(4.0f, ClientSize.Width - boxWidth - 4.0f);
+            }
+            if (x < 4.0f)
+            {
+                x = 4.0f;
+            }
+            RectangleF box = new RectangleF(x, y, boxWidth, boxHeight);
+            using (Brush background = new SolidBrush(Color.FromArgb(205, 18, 20, 23)))
             using (Brush foreground = new SolidBrush(color))
             {
                 graphics.FillRectangle(background, box);
@@ -2310,14 +2646,17 @@ namespace NinePointRotationCalibration.WinForms.Controls
             }
         }
 
-        private void DrawAvoidingLabel(
+        private RectangleF DrawAvoidingLabel(
             Graphics graphics,
             string text,
             PointF anchor,
             Color color,
-            IList<RectangleF> occupied)
+            IList<RectangleF> occupied,
+            bool emphasize = false)
         {
             SizeF textSize = graphics.MeasureString(text, Font);
+            float boxWidth = textSize.Width + 8.0f;
+            float boxHeight = textSize.Height + 3.0f;
             PointF[] offsets =
             {
                 new PointF(9.0f, -textSize.Height - 7.0f),
@@ -2326,32 +2665,69 @@ namespace NinePointRotationCalibration.WinForms.Controls
                 new PointF(-textSize.Width - 14.0f, 7.0f)
             };
             RectangleF chosen = RectangleF.Empty;
+            RectangleF fallbackInView = RectangleF.Empty;
             foreach (PointF offset in offsets)
             {
                 RectangleF candidate = new RectangleF(
                     anchor.X + offset.X,
                     anchor.Y + offset.Y,
-                    textSize.Width + 8.0f,
-                    textSize.Height + 3.0f);
-                if (occupied.All(existing => !existing.IntersectsWith(candidate)))
+                    boxWidth,
+                    boxHeight);
+                bool insideClient = candidate.Left >= 2.0f &&
+                                    candidate.Top >= 2.0f &&
+                                    candidate.Right <= ClientSize.Width - 2.0f &&
+                                    candidate.Bottom <= ClientSize.Height - 2.0f;
+                bool nonOverlapping = occupied.All(existing => !existing.IntersectsWith(candidate));
+                if (insideClient && nonOverlapping)
                 {
                     chosen = candidate;
                     break;
+                }
+                if (fallbackInView.IsEmpty && insideClient)
+                {
+                    fallbackInView = candidate;
                 }
             }
 
             if (chosen.IsEmpty)
             {
-                chosen = new RectangleF(anchor.X + 9.0f, anchor.Y + 7.0f, textSize.Width + 8.0f, textSize.Height + 3.0f);
+                foreach (PointF offset in offsets)
+                {
+                    RectangleF candidate = new RectangleF(
+                        anchor.X + offset.X,
+                        anchor.Y + offset.Y,
+                        boxWidth,
+                        boxHeight);
+                    if (occupied.All(existing => !existing.IntersectsWith(candidate)))
+                    {
+                        chosen = candidate;
+                        break;
+                    }
+                }
+            }
+
+            if (chosen.IsEmpty)
+            {
+                chosen = !fallbackInView.IsEmpty
+                    ? fallbackInView
+                    : new RectangleF(anchor.X + 9.0f, anchor.Y + 7.0f, boxWidth, boxHeight);
             }
 
             occupied.Add(chosen);
-            using (Brush background = new SolidBrush(Color.FromArgb(190, 18, 20, 23)))
+            using (Brush background = new SolidBrush(Color.FromArgb(emphasize ? 225 : 190, 18, 20, 23)))
             using (Brush foreground = new SolidBrush(color))
             {
                 graphics.FillRectangle(background, chosen);
+                if (emphasize)
+                {
+                    using (Pen outline = new Pen(Color.FromArgb(225, color), 1.2f))
+                    {
+                        graphics.DrawRectangle(outline, chosen.X, chosen.Y, chosen.Width, chosen.Height);
+                    }
+                }
                 graphics.DrawString(text, Font, foreground, chosen.X + 4.0f, chosen.Y + 1.0f);
             }
+            return chosen;
         }
 
         private static void DrawLockGlyph(Graphics graphics, PointF point, Color color)
@@ -2377,17 +2753,27 @@ namespace NinePointRotationCalibration.WinForms.Controls
 
         private void UpdateCreatedRoi(ImageCoordinate current)
         {
-            double centerRow = (_dragStartImage.Row + current.Row) / 2.0;
-            double centerColumn = (_dragStartImage.Column + current.Column) / 2.0;
-            RotatedRectangle roi = new RotatedRectangle(
+            double halfWidth = Math.Abs(current.Column - _dragStartImage.Column) * 0.5;
+            double halfHeight = Math.Abs(current.Row - _dragStartImage.Row) * 0.5;
+            if (halfWidth < 0.5 && halfHeight < 0.5)
+            {
+                _creatingRoiDraft = null;
+                _transactionChanged = false;
+                Invalidate();
+                return;
+            }
+
+            double centerRow = (_dragStartImage.Row + current.Row) * 0.5;
+            double centerColumn = (_dragStartImage.Column + current.Column) * 0.5;
+            _creatingRoiDraft = new RotatedRectangle(
                 centerRow,
                 centerColumn,
-                Math.Max(1.0, Math.Abs(current.Column - _dragStartImage.Column) / 2.0),
-                Math.Max(1.0, Math.Abs(current.Row - _dragStartImage.Row) / 2.0),
+                Math.Max(1.0, halfWidth),
+                Math.Max(1.0, halfHeight),
                 0.0);
-            SetRoi(_selectedRoi, roi);
-            _transactionChanged = true;
-            OnRoiChanged(_selectedRoi, false);
+            // 至少 4×4 图像像素（半宽 >= 2 && 半高 >= 2）才视为有效绘制，杜绝误点生成默认大框
+            _transactionChanged = halfWidth >= 2.0 && halfHeight >= 2.0;
+            Invalidate();
         }
 
         private void UpdateMovedRoi(ImageCoordinate current)
@@ -2659,7 +3045,11 @@ namespace NinePointRotationCalibration.WinForms.Controls
         private void FinishDrag(bool commit)
         {
             DragOperation operation = _dragOperation;
+            CanvasRoiTarget creatingTarget = _creatingRoiTarget;
+            RotatedRectangle creatingDraft = _creatingRoiDraft;
             _dragOperation = DragOperation.None;
+            _creatingRoiTarget = CanvasRoiTarget.None;
+            _creatingRoiDraft = null;
             if (Capture)
             {
                 Capture = false;
@@ -2685,6 +3075,48 @@ namespace NinePointRotationCalibration.WinForms.Controls
                 _maskRefreshPending = false;
             }
 
+            if (operation == DragOperation.CreateRoi)
+            {
+                if (!_dragThresholdExceeded ||
+                    !_transactionChanged ||
+                    creatingDraft == null ||
+                    creatingTarget == CanvasRoiTarget.None ||
+                    creatingDraft.HalfWidth < 2.0 ||
+                    creatingDraft.HalfHeight < 2.0)
+                {
+                    // 单击或框选过小时不自动生成默认大小 ROI，保留当前绘制模式以便继续拖动框选
+                    if (creatingTarget != CanvasRoiTarget.None)
+                    {
+                        OnRoiDrawRejected(creatingTarget);
+                    }
+                    Invalidate();
+                    return;
+                }
+
+                BeginEditTransaction();
+                ClampRoiCenter(creatingDraft);
+                SetRoi(creatingTarget, creatingDraft);
+                _anchorSelected = false;
+                SelectedRoi = creatingTarget;
+                if (creatingTarget == CanvasRoiTarget.Template && !AnchorLocked)
+                {
+                    // 手动框选或重绘模板 ROI 后，自动将未锁定的基准中心置于新模板几何中心
+                    _anchor = ClampToImage(new ImageCoordinate(creatingDraft.CenterRow, creatingDraft.CenterColumn));
+                    OnAnchorChanged(true);
+                }
+
+                OnRoiChanged(creatingTarget, true);
+                if (IsDrawRoiTool(_tool))
+                {
+                    // 画完即切回选择模式，防止继续拖动时意外覆盖刚画好的 ROI
+                    _tool = CanvasEditTool.Select;
+                    Cursor = GetDefaultCursor();
+                    OnToolChanged();
+                }
+                Invalidate();
+                return;
+            }
+
             if (!_transactionChanged)
             {
                 _activeStroke = null;
@@ -2694,12 +3126,12 @@ namespace NinePointRotationCalibration.WinForms.Controls
                 {
                     OnMaskPreviewChanged(null);
                 }
-                // 在 ROI 本体上单击（未超出拖拽死区）且按下时未从外层大框切换到内层小框时，在重叠 ROI 间循环切换
+                // 在重叠 ROI 边框/本体上原地单击（未拖动）且未刚切换到新框时，依次循环切换该位置下的所有重叠 ROI
                 if ((operation == DragOperation.MoveRoi || operation == DragOperation.SelectRoi) &&
-                    _activeHandle.Kind == RoiHandleKind.Body &&
+                    (_dragStartHitKind == CanvasHitKind.RoiBody || _dragStartHitKind == CanvasHitKind.RoiBorder) &&
                     _selectedRoi == _selectionAtMouseDown)
                 {
-                    CycleOverlappingRoiSelection(_dragStartScreen);
+                    CycleOverlappingRoiSelection(_dragStartScreen, _dragStartHitKind);
                 }
                 Invalidate();
                 return;
@@ -2753,41 +3185,6 @@ namespace NinePointRotationCalibration.WinForms.Controls
             {
                 OnAnchorChanged(true);
             }
-            else if (operation == DragOperation.CreateRoi)
-            {
-                RotatedRectangle created = GetRoi(_selectedRoi);
-                if (created != null && _image != null && (created.HalfWidth < 6.0 || created.HalfHeight < 6.0))
-                {
-                    double fallbackWidth = _selectedRoi == CanvasRoiTarget.Search
-                        ? Math.Max(24.0, _image.Width * 0.35)
-                        : Math.Max(16.0, _image.Width * 0.12);
-                    double fallbackHeight = _selectedRoi == CanvasRoiTarget.Search
-                        ? Math.Max(24.0, _image.Height * 0.35)
-                        : Math.Max(16.0, _image.Height * 0.12);
-                    created.HalfWidth = created.HalfWidth < 6.0 ? fallbackWidth : created.HalfWidth;
-                    created.HalfHeight = created.HalfHeight < 6.0 ? fallbackHeight : created.HalfHeight;
-                    ClampRoiCenter(created);
-                    SetRoi(_selectedRoi, created);
-                }
-
-                if (_selectedRoi == CanvasRoiTarget.Template && created != null &&
-                    !AnchorLocked && _anchor.Row == 0.0 && _anchor.Column == 0.0)
-                {
-                    _anchor = new ImageCoordinate(created.CenterRow, created.CenterColumn);
-                    OnAnchorChanged(true);
-                }
-
-                OnRoiChanged(_selectedRoi, true);
-                if (_tool == CanvasEditTool.DrawTemplateRoi ||
-                    _tool == CanvasEditTool.DrawSearchRoi ||
-                    _tool == CanvasEditTool.DrawDetectionRoi)
-                {
-                    // 画完即切回选择模式，防止继续拖动时意外覆盖刚画好的 ROI
-                    _tool = CanvasEditTool.Select;
-                    Cursor = GetDefaultCursor();
-                    OnToolChanged();
-                }
-            }
             else if (operation == DragOperation.MoveRoi ||
                      operation == DragOperation.ResizeRoi ||
                      operation == DragOperation.RotateRoi)
@@ -2814,6 +3211,7 @@ namespace NinePointRotationCalibration.WinForms.Controls
             }
 
             BeginEditTransaction();
+            _hasCycleAnchor = false;
             CanvasRoiTarget removed = _selectedRoi;
             SetRoi(removed, null);
             if (removed == CanvasRoiTarget.Template && !AnchorLocked)
@@ -2831,25 +3229,37 @@ namespace NinePointRotationCalibration.WinForms.Controls
             return true;
         }
 
-        private void CycleOverlappingRoiSelection(Point location)
+        private void CycleOverlappingRoiSelection(Point location, CanvasHitKind hitKind)
         {
             if (_tool != CanvasEditTool.Select)
             {
                 return;
             }
 
-            ImageCoordinate imagePoint = ClientToImage(location);
-            List<CanvasRoiTarget> hits = new List<CanvasRoiTarget>();
-            foreach (CanvasRoiTarget target in RoiBodyHitOrder)
+            List<CanvasRoiTarget> hits = null;
+            if (hitKind == CanvasHitKind.RoiBorder)
             {
-                RotatedRectangle candidate = GetRoi(target);
-                if (candidate != null && candidate.Contains(imagePoint))
+                List<CanvasRoiTarget> coincidentBorders = GetCoincidentBorderTargets(location);
+                if (coincidentBorders.Count > 1)
                 {
-                    hits.Add(target);
+                    hits = coincidentBorders;
                 }
             }
-            // 面积相近/相等时保留 RoiBodyHitOrder（Template -> Detection -> Search）；不同面积时优先内层小框
-            hits.Sort((a, b) => CompareRoiPriority(a, b));
+
+            if (hits == null || hits.Count <= 1)
+            {
+                ImageCoordinate imagePoint = ClientToImage(location);
+                hits = new List<CanvasRoiTarget>();
+                foreach (CanvasRoiTarget target in RoiBodyHitOrder)
+                {
+                    RotatedRectangle candidate = GetRoi(target);
+                    if (candidate != null && candidate.Contains(imagePoint))
+                    {
+                        hits.Add(target);
+                    }
+                }
+                hits.Sort((a, b) => CompareRoiBodyPriority(a, b));
+            }
 
             if (hits.Count <= 1)
             {
@@ -2860,6 +3270,38 @@ namespace NinePointRotationCalibration.WinForms.Controls
             SelectedRoi = selectedIndex < 0
                 ? hits[0]
                 : hits[(selectedIndex + 1) % hits.Count];
+            _cycleAnchorScreen = location;
+            _hasCycleAnchor = true;
+        }
+
+        private List<CanvasRoiTarget> GetCoincidentBorderTargets(Point location)
+        {
+            double maxDistSq = BorderHitDistance * BorderHitDistance;
+            double bestDist = double.PositiveInfinity;
+            List<KeyValuePair<CanvasRoiTarget, double>> candidates = new List<KeyValuePair<CanvasRoiTarget, double>>();
+            foreach (CanvasRoiTarget target in RoiBodyHitOrder)
+            {
+                RotatedRectangle roi = GetRoi(target);
+                if (roi == null) continue;
+                double distSq = GetDistanceSquaredToBorder(roi, location);
+                if (distSq <= maxDistSq)
+                {
+                    double dist = Math.Sqrt(distSq);
+                    if (dist < bestDist) bestDist = dist;
+                    candidates.Add(new KeyValuePair<CanvasRoiTarget, double>(target, dist));
+                }
+            }
+
+            List<CanvasRoiTarget> coincident = new List<CanvasRoiTarget>();
+            for (int i = 0; i < candidates.Count; i++)
+            {
+                if (candidates[i].Value - bestDist <= CoincidentBorderTolerance)
+                {
+                    coincident.Add(candidates[i].Key);
+                }
+            }
+            coincident.Sort((a, b) => CompareRoiBodyPriority(a, b));
+            return coincident;
         }
 
         private void StartRoiEditDrag(RoiHit hit)
@@ -2901,41 +3343,60 @@ namespace NinePointRotationCalibration.WinForms.Controls
             return handle.Kind != RoiHandleKind.None ? new RoiHit(_selectedRoi, handle) : RoiHit.None;
         }
 
-        private RoiHit HitTestRois(Point location)
+        private InteractiveHit HitTestInteractive(Point location)
         {
+            if (_image == null || !ShowRois)
+            {
+                return InteractiveHit.None;
+            }
+
+            // 1. 最高优先级：当前选中且未锁定 ROI 的缩放/旋转控制柄
+            RoiHit handleHit = HitSelectedHandle(location);
+            if (handleHit.Target != CanvasRoiTarget.None)
+            {
+                return new InteractiveHit(CanvasHitKind.RoiHandle, handleHit.Target, handleHit.Handle);
+            }
+
+            // 2. 次高优先级：点击可见标签徽章可直接精准选中对应 ROI 或基准中心（完全避免重叠误选）
+            CanvasRoiTarget labelHit = HitTestRoiLabel(location);
+            if (labelHit != CanvasRoiTarget.None)
+            {
+                return new InteractiveHit(CanvasHitKind.RoiLabel, labelHit, RoiHandle.Body);
+            }
+            if (HasVisibleAnchor && !AnchorLocked && !_renderedAnchorLabelRect.IsEmpty && _renderedAnchorLabelRect.Contains(location))
+            {
+                return new InteractiveHit(CanvasHitKind.AnchorLabel, CanvasRoiTarget.None, RoiHandle.None);
+            }
+
+            // 3. 若当前已选中基准中心，优先允许继续拖拽基准中心
+            if (HasVisibleAnchor && !AnchorLocked && _anchorSelected && HitAnchor(location))
+            {
+                return new InteractiveHit(CanvasHitKind.Anchor, CanvasRoiTarget.None, RoiHandle.None);
+            }
+
+            bool atCycleSpot = _hasCycleAnchor && IsNearPoint(location, _cycleAnchorScreen, CycleClickRadiusPixels);
+
+            // 4. ROI 边框命中（±7px）：取屏幕距离最近的边框；重合边框间支持保持当前选中或原地点击循环
+            List<CanvasRoiTarget> coincidentBorders = GetCoincidentBorderTargets(location);
+            if (coincidentBorders.Count > 0)
+            {
+                if (_selectedRoi != CanvasRoiTarget.None && coincidentBorders.Contains(_selectedRoi) &&
+                    (atCycleSpot || !IsTargetLocked(_selectedRoi) || coincidentBorders.All(IsTargetLocked)))
+                {
+                    return new InteractiveHit(CanvasHitKind.RoiBorder, _selectedRoi, RoiHandle.Body);
+                }
+                return new InteractiveHit(CanvasHitKind.RoiBorder, coincidentBorders[0], RoiHandle.Body);
+            }
+
+            // 5. 基准中心点命中：仅当中心不遮挡模板 ROI 几何中心（位于 ROI 外，或已相对模板中心偏移且模板在屏幕上足够大）时直接命中，
+            //    彻底避免拖拽模板 ROI 中心区域时误将基准中心拖偏。
+            if (HasVisibleAnchor && !AnchorLocked && HitAnchor(location) && CanDirectlyHitAnchorInSelectMode())
+            {
+                return new InteractiveHit(CanvasHitKind.Anchor, CanvasRoiTarget.None, RoiHandle.None);
+            }
+
+            // 6. ROI 内部区域命中：未锁定优先、内层小框优先；原地连续点击保持当前选中以支持完整循环并允许直接拖动刚切换到的 ROI
             ImageCoordinate imagePoint = ClientToImage(location);
-            // 1. 优先命中当前选中且未锁定 ROI 的缩放/旋转控制柄
-            if (_selectedRoi != CanvasRoiTarget.None)
-            {
-                RotatedRectangle selected = GetRoi(_selectedRoi);
-                RoiHandle handle = HitHandle(selected, location);
-                if (handle.Kind != RoiHandleKind.None)
-                {
-                    return new RoiHit(_selectedRoi, handle);
-                }
-            }
-
-            // 2. 其次命中 ROI 边框（±6px）：点在某内层 ROI 边框上可直接精准选中它，不再被外层大框吞掉
-            List<CanvasRoiTarget> borderHits = new List<CanvasRoiTarget>();
-            foreach (CanvasRoiTarget target in RoiBodyHitOrder)
-            {
-                RotatedRectangle candidate = GetRoi(target);
-                if (candidate != null && HitRoiBorder(candidate, location))
-                {
-                    borderHits.Add(target);
-                }
-            }
-            if (borderHits.Count > 0)
-            {
-                borderHits.Sort((a, b) => CompareRoiPriority(a, b));
-                if (_selectedRoi != CanvasRoiTarget.None && borderHits.Contains(_selectedRoi))
-                {
-                    return new RoiHit(_selectedRoi, RoiHandle.Body);
-                }
-                return new RoiHit(borderHits[0], RoiHandle.Body);
-            }
-
-            // 3. 本体命中：按面积从小到大排序（小 ROI 在内层优先），同尺寸重叠时保留当前已选中目标以便直接拖动或点击循环
             List<CanvasRoiTarget> bodyHits = new List<CanvasRoiTarget>();
             foreach (CanvasRoiTarget target in RoiBodyHitOrder)
             {
@@ -2947,18 +3408,93 @@ namespace NinePointRotationCalibration.WinForms.Controls
             }
             if (bodyHits.Count == 0)
             {
-                return RoiHit.None;
+                return InteractiveHit.None;
             }
 
-            bodyHits.Sort((a, b) => CompareRoiPriority(a, b));
-            CanvasRoiTarget smallest = bodyHits[0];
-            if (_selectedRoi != CanvasRoiTarget.None && bodyHits.Contains(_selectedRoi) &&
-                GetRoiArea(GetRoi(_selectedRoi)) <= GetRoiArea(GetRoi(smallest)) * 1.15)
+            bodyHits.Sort((a, b) => CompareRoiBodyPriority(a, b));
+            if (atCycleSpot && _selectedRoi != CanvasRoiTarget.None && bodyHits.Contains(_selectedRoi))
             {
-                return new RoiHit(_selectedRoi, RoiHandle.Body);
+                return new InteractiveHit(CanvasHitKind.RoiBody, _selectedRoi, RoiHandle.Body);
             }
 
-            return new RoiHit(smallest, RoiHandle.Body);
+            CanvasRoiTarget top = bodyHits[0];
+            if (_selectedRoi != CanvasRoiTarget.None &&
+                bodyHits.Contains(_selectedRoi) &&
+                !IsTargetLocked(_selectedRoi) &&
+                GetRoiArea(GetRoi(_selectedRoi)) <= GetRoiArea(GetRoi(top)) * 1.15)
+            {
+                return new InteractiveHit(CanvasHitKind.RoiBody, _selectedRoi, RoiHandle.Body);
+            }
+
+            return new InteractiveHit(CanvasHitKind.RoiBody, top, RoiHandle.Body);
+        }
+
+        private CanvasRoiTarget HitTestRoiLabel(Point location)
+        {
+            if (_renderedRoiLabelRects.Count == 0)
+            {
+                return CanvasRoiTarget.None;
+            }
+
+            // 按渲染置顶逆序检查：当前选中 ROI 标签最先，随后 Template -> Detection -> Search
+            if (_selectedRoi != CanvasRoiTarget.None)
+            {
+                RectangleF selectedRect;
+                if (_renderedRoiLabelRects.TryGetValue(_selectedRoi, out selectedRect) && selectedRect.Contains(location))
+                {
+                    return _selectedRoi;
+                }
+            }
+
+            foreach (CanvasRoiTarget target in RoiBodyHitOrder)
+            {
+                if (target == _selectedRoi) continue;
+                RectangleF rect;
+                if (_renderedRoiLabelRects.TryGetValue(target, out rect) && rect.Contains(location))
+                {
+                    return target;
+                }
+            }
+
+            return CanvasRoiTarget.None;
+        }
+
+        private bool CanDirectlyHitAnchorInSelectMode()
+        {
+            if (_templateRoi == null)
+            {
+                return true;
+            }
+
+            if (!_templateRoi.Contains(_anchor))
+            {
+                return true;
+            }
+
+            double screenWidth = _templateRoi.HalfWidth * 2.0 * _zoom;
+            double screenHeight = _templateRoi.HalfHeight * 2.0 * _zoom;
+            if (screenWidth < 80.0 || screenHeight < 80.0)
+            {
+                return false;
+            }
+
+            PointF anchorClient = ImageToClient(_anchor);
+            PointF centerClient = ImageToClient(new ImageCoordinate(_templateRoi.CenterRow, _templateRoi.CenterColumn));
+            double dx = anchorClient.X - centerClient.X;
+            double dy = anchorClient.Y - centerClient.Y;
+            return ((dx * dx) + (dy * dy)) >= 144.0;
+        }
+
+        private int CompareRoiBodyPriority(CanvasRoiTarget a, CanvasRoiTarget b)
+        {
+            bool lockedA = IsTargetLocked(a);
+            bool lockedB = IsTargetLocked(b);
+            if (lockedA != lockedB)
+            {
+                return lockedA ? 1 : -1;
+            }
+
+            return CompareRoiPriority(a, b);
         }
 
         private int CompareRoiPriority(CanvasRoiTarget a, CanvasRoiTarget b)
@@ -2978,20 +3514,21 @@ namespace NinePointRotationCalibration.WinForms.Controls
             return roi == null ? double.PositiveInfinity : Math.Max(1.0, roi.HalfWidth * roi.HalfHeight * 4.0);
         }
 
-        private bool HitRoiBorder(RotatedRectangle roi, Point location)
+        private double GetDistanceSquaredToBorder(RotatedRectangle roi, Point location)
         {
             PointF[] corners = roi.GetCorners().Select(ImageToClient).ToArray();
-            double maxDistSq = BorderHitDistance * BorderHitDistance;
+            double best = double.PositiveInfinity;
             for (int i = 0; i < 4; i++)
             {
                 PointF a = corners[i];
                 PointF b = corners[(i + 1) % 4];
-                if (DistanceSquaredToSegment(location, a, b) <= maxDistSq)
+                double distSq = DistanceSquaredToSegment(location, a, b);
+                if (distSq < best)
                 {
-                    return true;
+                    best = distSq;
                 }
             }
-            return false;
+            return best;
         }
 
         private static double DistanceSquaredToSegment(Point p, PointF a, PointF b)
@@ -3020,6 +3557,13 @@ namespace NinePointRotationCalibration.WinForms.Controls
             return (dx * dx) + (dy * dy) >= DragThresholdPixels * DragThresholdPixels;
         }
 
+        private static bool IsNearPoint(Point a, Point b, double radiusPixels)
+        {
+            double dx = a.X - b.X;
+            double dy = a.Y - b.Y;
+            return (dx * dx) + (dy * dy) <= radiusPixels * radiusPixels;
+        }
+
         private static ImageCoordinate RotatePointAround(ImageCoordinate point, double centerRow, double centerCol, double deltaDegrees)
         {
             double rad = deltaDegrees * Math.PI / 180.0;
@@ -3043,7 +3587,7 @@ namespace NinePointRotationCalibration.WinForms.Controls
             if (_image == null)
             {
                 Cursor = Cursors.Default;
-                SetHoverState(CanvasRoiTarget.None, false);
+                SetHoverState(CanvasRoiTarget.None, CanvasRoiTarget.None, false, false);
                 return;
             }
 
@@ -3052,12 +3596,10 @@ namespace NinePointRotationCalibration.WinForms.Controls
                 _tool == CanvasEditTool.MaskRectangle ||
                 _tool == CanvasEditTool.MaskCircle ||
                 _tool == CanvasEditTool.MaskPolygon ||
-                _tool == CanvasEditTool.DrawTemplateRoi ||
-                _tool == CanvasEditTool.DrawSearchRoi ||
-                _tool == CanvasEditTool.DrawDetectionRoi)
+                IsDrawRoiTool(_tool))
             {
                 Cursor = Cursors.Cross;
-                SetHoverState(CanvasRoiTarget.None, false);
+                SetHoverState(CanvasRoiTarget.None, CanvasRoiTarget.None, false, false);
                 return;
             }
 
@@ -3065,58 +3607,72 @@ namespace NinePointRotationCalibration.WinForms.Controls
             {
                 bool activeAnchor = HasVisibleAnchor && !AnchorLocked;
                 Cursor = activeAnchor ? Cursors.Cross : Cursors.Default;
-                SetHoverState(CanvasRoiTarget.None, activeAnchor);
+                SetHoverState(CanvasRoiTarget.None, CanvasRoiTarget.None, activeAnchor, false);
                 return;
             }
 
-            // 单次命中检测同时更新鼠标光标与悬停高亮状态，避免 MouseMove 重复计算 ROI 四角投影
-            RoiHit handleHit = HitSelectedHandle(location);
-            if (handleHit.Target != CanvasRoiTarget.None)
+            InteractiveHit hit = HitTestInteractive(location);
+            switch (hit.Kind)
             {
-                Cursor = handleHit.Handle.Kind == RoiHandleKind.Rotate
-                    ? Cursors.Cross
-                    : handleHit.Handle.Horizontal == 0 ? Cursors.SizeNS : Cursors.SizeWE;
-                SetHoverState(handleHit.Target, false);
-                return;
-            }
-
-            if (HasVisibleAnchor && !AnchorLocked && HitAnchor(location))
-            {
-                Cursor = Cursors.SizeAll;
-                SetHoverState(CanvasRoiTarget.None, true);
-                return;
-            }
-
-            RoiHit hit = HitTestRois(location);
-            SetHoverState(hit.Target, false);
-            if (hit.Target == CanvasRoiTarget.None || IsTargetLocked(hit.Target))
-            {
-                Cursor = Cursors.Default;
-                return;
-            }
-
-            if (hit.Handle.Kind == RoiHandleKind.Rotate)
-            {
-                Cursor = Cursors.Cross;
-            }
-            else if (hit.Handle.Kind == RoiHandleKind.Resize)
-            {
-                Cursor = hit.Handle.Horizontal == 0 ? Cursors.SizeNS : Cursors.SizeWE;
-            }
-            else
-            {
-                Cursor = Cursors.SizeAll;
+                case CanvasHitKind.RoiHandle:
+                    RotatedRectangle handleRoi = GetRoi(hit.Target);
+                    Cursor = hit.Handle.Kind == RoiHandleKind.Rotate
+                        ? Cursors.Cross
+                        : GetResizeCursorForHandle(handleRoi, hit.Handle);
+                    SetHoverState(hit.Target, CanvasRoiTarget.None, false, false);
+                    return;
+                case CanvasHitKind.RoiLabel:
+                    Cursor = Cursors.Hand;
+                    SetHoverState(hit.Target, hit.Target, false, false);
+                    return;
+                case CanvasHitKind.AnchorLabel:
+                    Cursor = Cursors.Hand;
+                    SetHoverState(CanvasRoiTarget.None, CanvasRoiTarget.None, true, true);
+                    return;
+                case CanvasHitKind.Anchor:
+                    Cursor = Cursors.SizeAll;
+                    SetHoverState(CanvasRoiTarget.None, CanvasRoiTarget.None, true, false);
+                    return;
+                case CanvasHitKind.RoiBorder:
+                case CanvasHitKind.RoiBody:
+                    SetHoverState(hit.Target, CanvasRoiTarget.None, false, false);
+                    Cursor = IsTargetLocked(hit.Target) ? Cursors.Default : Cursors.SizeAll;
+                    return;
+                default:
+                    SetHoverState(CanvasRoiTarget.None, CanvasRoiTarget.None, false, false);
+                    Cursor = Cursors.Default;
+                    return;
             }
         }
 
-        private void SetHoverState(CanvasRoiTarget nextRoi, bool nextAnchor)
+        private void SetHoverState(CanvasRoiTarget nextRoi, CanvasRoiTarget nextLabelRoi, bool nextAnchor, bool nextAnchorLabel)
         {
-            if (nextRoi != _hoveredRoi || nextAnchor != _anchorHovered)
+            if (nextRoi != _hoveredRoi ||
+                nextLabelRoi != _hoveredLabelRoi ||
+                nextAnchor != _anchorHovered ||
+                nextAnchorLabel != _hoveredAnchorLabel)
             {
                 _hoveredRoi = nextRoi;
+                _hoveredLabelRoi = nextLabelRoi;
                 _anchorHovered = nextAnchor;
+                _hoveredAnchorLabel = nextAnchorLabel;
                 Invalidate();
             }
+        }
+
+        private static Cursor GetResizeCursorForHandle(RotatedRectangle roi, RoiHandle handle)
+        {
+            double angleRad = roi == null ? 0.0 : roi.AngleDegrees * Math.PI / 180.0;
+            double cos = Math.Cos(angleRad);
+            double sin = Math.Sin(angleRad);
+            double sx = (handle.Horizontal * cos) - (handle.Vertical * sin);
+            double sy = (handle.Horizontal * sin) + (handle.Vertical * cos);
+            double deg = Math.Atan2(sy, sx) * 180.0 / Math.PI;
+            deg = ((deg % 180.0) + 180.0) % 180.0;
+            if (deg < 22.5 || deg >= 157.5) return Cursors.SizeWE;
+            if (deg < 67.5) return Cursors.SizeNWSE;
+            if (deg < 112.5) return Cursors.SizeNS;
+            return Cursors.SizeNESW;
         }
 
         private RoiHandle HitHandle(RotatedRectangle roi, Point location)
@@ -3126,47 +3682,76 @@ namespace NinePointRotationCalibration.WinForms.Controls
                 return RoiHandle.None;
             }
 
+            // 极小 ROI 在屏幕上按比例收敛角点缩放命中半径，保留中心可拖动空间，同时旋转外柄保持完整命中半径
+            double minScreenDim = Math.Min(roi.HalfWidth * 2.0 * _zoom, roi.HalfHeight * 2.0 * _zoom);
+            double resizeHitRadius = minScreenDim < 18.0
+                ? Math.Max(5.0, minScreenDim * 0.35)
+                : HandleHitRadius;
+            double resizeHitSq = resizeHitRadius * resizeHitRadius;
+            double rotateHitSq = HandleHitRadius * HandleHitRadius;
+
+            RoiHandle closest = RoiHandle.None;
+            double closestDistSq = double.PositiveInfinity;
             foreach (RoiHandle handle in GetHandles(roi))
             {
                 double deltaX = location.X - handle.Location.X;
                 double deltaY = location.Y - handle.Location.Y;
-                if ((deltaX * deltaX) + (deltaY * deltaY) <= HandleHitRadius * HandleHitRadius)
+                double distSq = (deltaX * deltaX) + (deltaY * deltaY);
+                double limitSq = handle.Kind == RoiHandleKind.Rotate ? rotateHitSq : resizeHitSq;
+                if (distSq <= limitSq && distSq < closestDistSq)
                 {
-                    return handle;
+                    closestDistSq = distSq;
+                    closest = handle;
                 }
             }
 
-            return RoiHandle.None;
+            return closest;
+        }
+
+        private PointF GetRotateHandleLocation(RotatedRectangle roi)
+        {
+            PointF topMid = ImageToClient(roi.LocalToImage(0.0, -roi.HalfHeight));
+            double rad = roi.AngleDegrees * Math.PI / 180.0;
+            return new PointF(
+                topMid.X + (float)(Math.Sin(rad) * RotateStemLength),
+                topMid.Y - (float)(Math.Cos(rad) * RotateStemLength));
         }
 
         private IEnumerable<RoiHandle> GetHandles(RotatedRectangle roi)
         {
-            yield return new RoiHandle(
-                RoiHandleKind.Resize,
-                1,
-                0,
-                ImageToClient(roi.LocalToImage(roi.HalfWidth, 0.0)));
-            yield return new RoiHandle(
-                RoiHandleKind.Resize,
-                -1,
-                0,
-                ImageToClient(roi.LocalToImage(-roi.HalfWidth, 0.0)));
-            yield return new RoiHandle(
-                RoiHandleKind.Resize,
-                0,
-                1,
-                ImageToClient(roi.LocalToImage(0.0, roi.HalfHeight)));
-            yield return new RoiHandle(
-                RoiHandleKind.Resize,
-                0,
-                -1,
-                ImageToClient(roi.LocalToImage(0.0, -roi.HalfHeight)));
+            // 四角缩放柄
+            yield return new RoiHandle(RoiHandleKind.Resize, -1, -1, ImageToClient(roi.LocalToImage(-roi.HalfWidth, -roi.HalfHeight)));
+            yield return new RoiHandle(RoiHandleKind.Resize, 1, -1, ImageToClient(roi.LocalToImage(roi.HalfWidth, -roi.HalfHeight)));
+            yield return new RoiHandle(RoiHandleKind.Resize, 1, 1, ImageToClient(roi.LocalToImage(roi.HalfWidth, roi.HalfHeight)));
+            yield return new RoiHandle(RoiHandleKind.Resize, -1, 1, ImageToClient(roi.LocalToImage(-roi.HalfWidth, roi.HalfHeight)));
 
-            yield return new RoiHandle(
-                RoiHandleKind.Rotate,
-                1,
-                -1,
-                ImageToClient(roi.LocalToImage(roi.HalfWidth, -roi.HalfHeight)));
+            // 屏幕尺寸足够时显示四边中点缩放柄，避免极小 ROI 控制柄重叠遮挡本体
+            if ((roi.HalfWidth * 2.0 * _zoom) >= 26.0 && (roi.HalfHeight * 2.0 * _zoom) >= 26.0)
+            {
+                yield return new RoiHandle(RoiHandleKind.Resize, 1, 0, ImageToClient(roi.LocalToImage(roi.HalfWidth, 0.0)));
+                yield return new RoiHandle(RoiHandleKind.Resize, -1, 0, ImageToClient(roi.LocalToImage(-roi.HalfWidth, 0.0)));
+                yield return new RoiHandle(RoiHandleKind.Resize, 0, 1, ImageToClient(roi.LocalToImage(0.0, roi.HalfHeight)));
+                yield return new RoiHandle(RoiHandleKind.Resize, 0, -1, ImageToClient(roi.LocalToImage(0.0, -roi.HalfHeight)));
+            }
+
+            // 顶边中点外伸旋转柄
+            yield return new RoiHandle(RoiHandleKind.Rotate, 0, -1, GetRotateHandleLocation(roi));
+        }
+
+        private static bool IsDrawRoiTool(CanvasEditTool tool)
+        {
+            return tool == CanvasEditTool.DrawTemplateRoi ||
+                   tool == CanvasEditTool.DrawSearchRoi ||
+                   tool == CanvasEditTool.DrawDetectionRoi;
+        }
+
+        private static CanvasRoiTarget GetDrawToolTarget(CanvasEditTool tool)
+        {
+            return tool == CanvasEditTool.DrawTemplateRoi
+                ? CanvasRoiTarget.Template
+                : tool == CanvasEditTool.DrawSearchRoi
+                    ? CanvasRoiTarget.Search
+                    : tool == CanvasEditTool.DrawDetectionRoi ? CanvasRoiTarget.Detection : CanvasRoiTarget.None;
         }
 
         private bool HitAnchor(Point point)
@@ -3294,6 +3879,15 @@ namespace NinePointRotationCalibration.WinForms.Controls
             }
         }
 
+        private void OnRoiDrawRejected(CanvasRoiTarget target)
+        {
+            EventHandler<CanvasRoiTarget> handler = RoiDrawRejected;
+            if (handler != null)
+            {
+                handler(this, target);
+            }
+        }
+
         private void OnAnchorChanged(bool isFinal)
         {
             EventHandler<AnchorChangedEventArgs> handler = AnchorChanged;
@@ -3400,6 +3994,35 @@ namespace NinePointRotationCalibration.WinForms.Controls
             public int Vertical { get; private set; }
 
             public PointF Location { get; private set; }
+        }
+
+        private enum CanvasHitKind
+        {
+            None,
+            RoiHandle,
+            RoiLabel,
+            AnchorLabel,
+            RoiBorder,
+            Anchor,
+            RoiBody
+        }
+
+        private struct InteractiveHit
+        {
+            public static readonly InteractiveHit None = new InteractiveHit(CanvasHitKind.None, CanvasRoiTarget.None, RoiHandle.None);
+
+            public InteractiveHit(CanvasHitKind kind, CanvasRoiTarget target, RoiHandle handle)
+            {
+                Kind = kind;
+                Target = target;
+                Handle = handle;
+            }
+
+            public CanvasHitKind Kind { get; private set; }
+
+            public CanvasRoiTarget Target { get; private set; }
+
+            public RoiHandle Handle { get; private set; }
         }
 
         private struct RoiHit
