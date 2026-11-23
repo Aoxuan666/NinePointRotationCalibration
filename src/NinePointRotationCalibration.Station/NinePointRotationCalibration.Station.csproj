@@ -108,4 +108,20 @@
     </ProjectReference>
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+  <!-- 每次生成后自动将 6 个纯代码更新文件同步到 artifacts\Update\$(Configuration)\，不含 .pdb/.xml/libs/data，便于改完代码直接拷贝覆盖现场 Run\ -->
+  <Target Name="SyncCleanCodeUpdate" AfterTargets="Build">
+    <PropertyGroup>
+      <CodeUpdateDir>$(MSBuildThisFileDirectory)..\..\artifacts\Update\$(Configuration)\</CodeUpdateDir>
+    </PropertyGroup>
+    <ItemGroup>
+      <CodeUpdateFiles Include="$(TargetDir)NinePointRotationCalibration.Station.exe" />
+      <CodeUpdateFiles Include="$(TargetDir)NinePointRotationCalibration.Station.exe.config" />
+      <CodeUpdateFiles Include="$(TargetDir)NinePointRotationCalibration.Core.dll" />
+      <CodeUpdateFiles Include="$(TargetDir)NinePointRotationCalibration.Halcon.dll" />
+      <CodeUpdateFiles Include="$(TargetDir)NinePointRotationCalibration.Sdk.dll" />
+      <CodeUpdateFiles Include="$(TargetDir)NinePointRotationCalibration.WinForms.dll" />
+    </ItemGroup>
+    <MakeDir Directories="$(CodeUpdateDir)" />
+    <Copy SourceFiles="@(CodeUpdateFiles)" DestinationFolder="$(CodeUpdateDir)" SkipUnchangedFiles="true" />
+  </Target>
 </Project>
