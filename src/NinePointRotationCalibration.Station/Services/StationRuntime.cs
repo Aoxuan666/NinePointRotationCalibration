@@ -2110,33 +2110,12 @@ namespace NinePointRotationCalibration.Station.Services
                     false).ConfigureAwait(false);
                 return;
             }
-            if (!cameraEnabled)
-            {
-                LocalDebugLog.Write("WARN", "tcp.teach", "Rejected teaching.submit (CAMERA_DISABLED): conn=" + connectionId + ", msgId=" + request.MessageId);
-                await SendErrorAsync(
-                    connectionId,
-                    request.MessageId,
-                    ProtocolErrorCodes.CameraDisabled,
-                    "Teaching is unavailable because camera use is disabled.",
-                    false).ConfigureAwait(false);
-                return;
-            }
-            if (!IsCameraConnected)
-            {
-                LocalDebugLog.Write("WARN", "tcp.teach", "Rejected teaching.submit (CAMERA_NOT_CONNECTED): conn=" + connectionId + ", msgId=" + request.MessageId);
-                await SendErrorAsync(
-                    connectionId,
-                    request.MessageId,
-                    ProtocolErrorCodes.CameraNotConnected,
-                    "Teaching is unavailable because the camera is not connected.",
-                    true).ConfigureAwait(false);
-                return;
-            }
 
             TeachingSide side;
             MachinePose machinePose;
+            bool captureImage;
             string parseError;
-            if (!TryParseTeachingSubmit(request.Data, out side, out machinePose, out parseError))
+            if (!TryParseTeachingSubmit(request.Data, out side, out machinePose, out captureImage, out parseError))
             {
                 LocalDebugLog.Write("WARN", "tcp.teach", "Rejected teaching.submit (PROTOCOL_INVALID): conn=" + connectionId + ", msgId=" + request.MessageId + ", detail=" + parseError);
                 await SendErrorAsync(
@@ -2146,6 +2125,33 @@ namespace NinePointRotationCalibration.Station.Services
                     parseError,
                     false).ConfigureAwait(false);
                 return;
+            }
+
+            // 默认仅记录上位机发来的当前轴坐标（不拍照，避免轴停在示教位遮挡相机）；仅在显式要求 captureImage=true 时才检查相机并立刻拍照匹配。
+            if (captureImage)
+            {
+                if (!cameraEnabled)
+                {
+                    LocalDebugLog.Write("WARN", "tcp.teach", "Rejected teaching.submit (CAMERA_DISABLED): conn=" + connectionId + ", msgId=" + request.MessageId);
+                    await SendErrorAsync(
+                        connectionId,
+                        request.MessageId,
+                        ProtocolErrorCodes.CameraDisabled,
+                        "Teaching is unavailable because camera use is disabled.",
+                        false).ConfigureAwait(false);
+                    return;
+                }
+                if (!IsCameraConnected)
+                {
+                    LocalDebugLog.Write("WARN", "tcp.teach", "Rejected teaching.submit (CAMERA_NOT_CONNECTED): conn=" + connectionId + ", msgId=" + request.MessageId);
+                    await SendErrorAsync(
+                        connectionId,
+                        request.MessageId,
+                        ProtocolErrorCodes.CameraNotConnected,
+                        "Teaching is unavailable because the camera is not connected.",
+                        true).ConfigureAwait(false);
+                    return;
+                }
             }
 
             if (!await _workflowGate.WaitAsync(0).ConfigureAwait(false))
@@ -2171,11 +2177,12 @@ namespace NinePointRotationCalibration.Station.Services
                     "tcp.teach",
                     string.Format(
                         CultureInfo.InvariantCulture,
-                        "Executing teaching.submit: conn={0}, msgId={1}, nozzle={2}, axisR={3}, machine=({4:0.###},{5:0.###},{6:0.###}deg)",
+                        "Executing teaching.submit: conn={0}, msgId={1}, nozzle={2}, axisR={3}, captureImage={4}, machine=({5:0.###},{6:0.###},{7:0.###}deg)",
                         connectionId,
                         request.MessageId,
                         ProtocolNozzle.GetNozzleName(side),
                         ProtocolNozzle.GetAxisR(side),
+                        captureImage,
                         machinePose.X,
                         machinePose.Y,
                         machinePose.ThetaDegrees));
@@ -2184,16 +2191,31 @@ namespace NinePointRotationCalibration.Station.Services
                 lock (_statusPushSync) _deferTeachingStatusPush = true;
                 try
                 {
-                    TeachingPose savedPose = await _teaching
-                        .CaptureAsync(side, machinePose, teachingCaptureLimitMs, CancellationToken.None)
-                        .ConfigureAwait(false);
+                    TeachingPose savedPose = captureImage
+                        ? await _teaching.CaptureAsync(side, machinePose, teachingCaptureLimitMs, CancellationToken.None).ConfigureAwait(false)
+                        : await _teaching.RecordMachinePoseAsync(side, machinePose, CancellationToken.None).ConfigureAwait(false);
                     teachingSucceeded = true;
+                    string resultMessage = savedPose != null && savedPose.IsValid
+                        ? "Teaching saved."
+                        : "Teaching machine pose recorded; move axis clear and run template locate.";
+                    OnLog(
+                        "INFO",
+                        string.Format(
+                            CultureInfo.InvariantCulture,
+                            "收到上位机 {0} 示教轴坐标：X={1:0.###}, Y={2:0.###}, R={3:0.###}°（已同步显示到页面，{4}）。",
+                            ProtocolNozzle.GetDisplayName(side),
+                            savedPose != null ? savedPose.MachineX : machinePose.X,
+                            savedPose != null ? savedPose.MachineY : machinePose.Y,
+                            savedPose != null ? savedPose.MachineR : machinePose.ThetaDegrees,
+                            savedPose != null && savedPose.IsValid
+                                ? "已与图像定位合并完成示教"
+                                : "未拍照，请移走轴后在视觉界面点击「模板匹配定位」"));
                     response = BuildTeachingResultEnvelope(
                         request.MessageId,
                         side,
                         true,
                         ProtocolErrorCodes.None,
-                        "Teaching saved.",
+                        resultMessage,
                         savedPose,
                         machinePose);
                 }
@@ -2258,10 +2280,12 @@ namespace NinePointRotationCalibration.Station.Services
             IDictionary<string, object> data,
             out TeachingSide side,
             out MachinePose machinePose,
+            out bool captureImage,
             out string errorMessage)
         {
             side = TeachingSide.Left;
             machinePose = null;
+            captureImage = false;
             errorMessage = null;
 
             string rawNozzle = ProtocolValue.String(data, "nozzle", string.Empty).Trim();
@@ -2313,20 +2337,29 @@ namespace NinePointRotationCalibration.Station.Services
             double x;
             double y;
             double r;
-            if (!ProtocolValue.TryDouble(data, "x", out x) || double.IsNaN(x) || double.IsInfinity(x))
+            bool hasX = ProtocolValue.TryDouble(data, "x", out x) || ProtocolValue.TryDouble(data, "machineX", out x);
+            if (!hasX || double.IsNaN(x) || double.IsInfinity(x))
             {
                 errorMessage = "teaching.submit requires a finite numeric x coordinate.";
                 return false;
             }
-            if (!ProtocolValue.TryDouble(data, "y", out y) || double.IsNaN(y) || double.IsInfinity(y))
+            bool hasY = ProtocolValue.TryDouble(data, "y", out y) || ProtocolValue.TryDouble(data, "machineY", out y);
+            if (!hasY || double.IsNaN(y) || double.IsInfinity(y))
             {
                 errorMessage = "teaching.submit requires a finite numeric y coordinate.";
                 return false;
             }
-            if (!ProtocolValue.TryDouble(data, "r", out r) || double.IsNaN(r) || double.IsInfinity(r))
+            bool hasR = ProtocolValue.TryDouble(data, "r", out r) || ProtocolValue.TryDouble(data, "machineR", out r);
+            if (!hasR || double.IsNaN(r) || double.IsInfinity(r))
             {
                 errorMessage = "teaching.submit requires a finite numeric r angle.";
                 return false;
+            }
+
+            bool parsedCaptureImage;
+            if (ProtocolValue.TryBool(data, "captureImage", out parsedCaptureImage))
+            {
+                captureImage = parsedCaptureImage;
             }
 
             machinePose = new MachinePose(x, y, r);
@@ -2355,10 +2388,13 @@ namespace NinePointRotationCalibration.Station.Services
             data["machineX"] = ProtocolNumber.Round3(savedPose != null ? savedPose.MachineX : (inputPose != null ? inputPose.X : 0.0));
             data["machineY"] = ProtocolNumber.Round3(savedPose != null ? savedPose.MachineY : (inputPose != null ? inputPose.Y : 0.0));
             data["machineR"] = ProtocolNumber.Round3(savedPose != null ? savedPose.MachineR : (inputPose != null ? inputPose.ThetaDegrees : 0.0));
-            data["imageRow"] = ProtocolNumber.Round2(savedPose != null ? savedPose.ImageRow : 0.0);
-            data["imageColumn"] = ProtocolNumber.Round2(savedPose != null ? savedPose.ImageColumn : 0.0);
-            data["imageAngle"] = ProtocolNumber.Round2(savedPose != null ? savedPose.ImageAngleDegrees : 0.0);
-            data["score"] = ProtocolNumber.Round3(savedPose != null ? savedPose.MatchScore : 0.0);
+            data["imageRow"] = ProtocolNumber.Round2(savedPose != null && savedPose.HasImagePose ? savedPose.ImageRow : 0.0);
+            data["imageColumn"] = ProtocolNumber.Round2(savedPose != null && savedPose.HasImagePose ? savedPose.ImageColumn : 0.0);
+            data["imageAngle"] = ProtocolNumber.Round2(savedPose != null && savedPose.HasImagePose ? savedPose.ImageAngleDegrees : 0.0);
+            data["score"] = ProtocolNumber.Round3(savedPose != null && savedPose.HasImagePose ? savedPose.MatchScore : 0.0);
+            data["hasMachinePose"] = savedPose != null && (savedPose.HasMachinePose || savedPose.IsValid);
+            data["hasImagePose"] = savedPose != null && (savedPose.HasImagePose || savedPose.IsValid);
+            data["teachingComplete"] = savedPose != null && savedPose.IsValid;
             return envelope;
         }
 

@@ -458,9 +458,9 @@ sequenceDiagram
 
 ---
 
-#### 5.1.8 `teaching.submit` — 提交机械坐标并触发远程示教
+#### 5.1.8 `teaching.submit` — 提交机械坐标（记录示教轴位）
 
-上位机将基准板放到示教位并将吸嘴移开后，向视觉发送本报文（`correlationId` 为 `null`），由视觉软触发拍照（`≤ 2000 ms`）、锁定基准板位姿、保存至 `teaching.json` 并刷新界面。
+上位机将吸嘴停在示教位时，向视觉发送本报文（`correlationId` 为 `null`）。视觉默认**仅记录并持久化上位机上报的真实机械轴坐标 `x / y / r`（不拍照，避免轴遮挡相机），并立刻同步刷新到视觉界面「左右示教」页**；操作员将轴移出视野后，在视觉界面点击「模板匹配定位」完成拍照定位并自动合并生效（若该侧已提前完成图像定位，收到本报文时自动合并生效并推送 `system.status`）。如确需一步完成拍照匹配，可显式携带 `"captureImage": true`。
 
 ```json
 {
@@ -483,7 +483,8 @@ sequenceDiagram
 | --- | --- | --- | --- |
 | `nozzle` | `string` | 是（或与 `axisR` 成对） | `"Left"` 或 `"Right"` |
 | `axisR` | `string` | 是（或与 `nozzle` 成对） | `"R1"`（对应 `Left`）或 `"R2"`（对应 `Right`）；若同时提供 `nozzle` 与 `axisR`，必须一致，否则返回 `system.error / PROTOCOL_INVALID` |
-| `x` / `y` / `r` | `number` | 是 | 放板至示教位时该吸嘴的实测机械坐标（mm / deg，3 位小数，有限数值）；发送前吸嘴须已移开不遮挡相机 |
+| `x` / `y` / `r` | `number` | 是 | 示教位该吸嘴的当前实测机械坐标（mm / deg，3 位小数，有限数值；兼容 `machineX` / `machineY` / `machineR` 别名）；默认不拍照，轴停在示教位即可直接发送 |
+| `captureImage` | `boolean` | 否（默认 `false`） | 缺省或 `false` 时仅记录轴坐标并立刻刷新视觉页面；为 `true` 时立刻软触发拍照并执行模板定位（要求轴已移开视野） |
 
 ---
 

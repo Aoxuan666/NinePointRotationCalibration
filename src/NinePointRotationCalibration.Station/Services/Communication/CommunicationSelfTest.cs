@@ -1614,7 +1614,53 @@ namespace NinePointRotationCalibration.Station.Services.Communication
                            ProtocolValue.String(errTeachConflict.Data, "code") == ProtocolErrorCodes.ProtocolInvalid,
                         "Conflicting nozzle/axisR must return PROTOCOL_INVALID.");
 
-                    // D. 左吸嘴 (Left/R1) teaching.submit 成功
+                    // D. 默认两步示教：上位机发送 teaching.submit（不传 captureImage）时仅记录轴坐标并同步触发 TeachingChanged，严禁拍照（即使相机采图异常也必须成功记录轴坐标）
+                    TeachingPose observedLeftEvent = null;
+                    EventHandler<TeachingEventArgs> teachListener = (s, e) =>
+                    {
+                        if (e != null && e.Pose != null && e.Pose.Side == TeachingSide.Left) observedLeftEvent = e.Pose;
+                    };
+                    runtime.TeachingChanged += teachListener;
+                    bool teachOk;
+                    bool hasMachinePose;
+                    bool hasImagePose;
+                    bool teachingComplete;
+                    try
+                    {
+                        camera.FailCapture = true;
+                        ProtocolEnvelope teachLeftAxisOnly = ProtocolEnvelope.Create(ProtocolMessageTypes.TeachingSubmit);
+                        teachLeftAxisOnly.Data["nozzle"] = "Left";
+                        teachLeftAxisOnly.Data["axisR"] = "R1";
+                        teachLeftAxisOnly.Data["x"] = 650.1204;
+                        teachLeftAxisOnly.Data["y"] = 210.4506;
+                        teachLeftAxisOnly.Data["r"] = -0.0001;
+                        await WriteEnvelopeAsync(stream, codec, teachLeftAxisOnly, timeout.Token).ConfigureAwait(false);
+                        ProtocolEnvelope teachLeftAxisRes = await ReadEnvelopeAsync(stream, codec, options.TcpMaxMessageBytes, timeout.Token).ConfigureAwait(false);
+                        Assert(teachLeftAxisRes.Type == ProtocolMessageTypes.TeachingResult &&
+                               teachLeftAxisRes.CorrelationId == teachLeftAxisOnly.MessageId,
+                            "Expected teaching.result correlated to Left axis-only teaching.submit.");
+                        Assert(ProtocolValue.TryBool(teachLeftAxisRes.Data, "success", out teachOk) && teachOk &&
+                               ProtocolValue.String(teachLeftAxisRes.Data, "errorCode") == ProtocolErrorCodes.None &&
+                               ProtocolValue.String(teachLeftAxisRes.Data, "nozzle") == "Left" &&
+                               ProtocolValue.String(teachLeftAxisRes.Data, "axisR") == "R1" &&
+                               Math.Abs(ProtocolValue.Double(teachLeftAxisRes.Data, "machineX") - 650.12) < 1e-6 &&
+                               Math.Abs(ProtocolValue.Double(teachLeftAxisRes.Data, "machineY") - 210.451) < 1e-6 &&
+                               ProtocolValue.TryBool(teachLeftAxisRes.Data, "hasMachinePose", out hasMachinePose) && hasMachinePose &&
+                               ProtocolValue.TryBool(teachLeftAxisRes.Data, "hasImagePose", out hasImagePose) && !hasImagePose &&
+                               ProtocolValue.TryBool(teachLeftAxisRes.Data, "teachingComplete", out teachingComplete) && !teachingComplete,
+                            "Default teaching.submit must record machine pose only without camera capture.");
+                        Assert(observedLeftEvent != null && observedLeftEvent.HasMachinePose && !observedLeftEvent.HasImagePose &&
+                               Math.Abs(observedLeftEvent.MachineX - 650.1204) < 1e-6,
+                            "teaching.submit must fire TeachingChanged immediately with host machine coordinates for UI sync.");
+                        Assert(!runtime.IsCalibrationReady, "calibrationReady must remain false before template locate completes.");
+                    }
+                    finally
+                    {
+                        runtime.TeachingChanged -= teachListener;
+                    }
+
+                    // D2. 轴移开后在视觉侧执行「模板匹配定位」-> 与上位机发来的 Left 轴坐标合并为完整有效示教
+                    camera.FailCapture = false;
                     fakeEngine.NextCollectionResult = new TemplateMatchCollectionResult
                     {
                         Success = true,
@@ -1624,32 +1670,15 @@ namespace NinePointRotationCalibration.Station.Services.Communication
                             new TemplateMatchResult { Success = true, Row = 1024.154, Column = 1280.424, AngleDegrees = 0.124, Score = 0.9524 }
                         }
                     };
-                    ProtocolEnvelope teachLeft = ProtocolEnvelope.Create(ProtocolMessageTypes.TeachingSubmit);
-                    teachLeft.Data["nozzle"] = "Left";
-                    teachLeft.Data["axisR"] = "R1";
-                    teachLeft.Data["x"] = 650.1204;
-                    teachLeft.Data["y"] = 210.4506;
-                    teachLeft.Data["r"] = -0.0001;
-                    await WriteEnvelopeAsync(stream, codec, teachLeft, timeout.Token).ConfigureAwait(false);
-                    ProtocolEnvelope teachLeftRes = await ReadEnvelopeAsync(stream, codec, options.TcpMaxMessageBytes, timeout.Token).ConfigureAwait(false);
-                    Assert(teachLeftRes.Type == ProtocolMessageTypes.TeachingResult &&
-                           teachLeftRes.CorrelationId == teachLeft.MessageId,
-                        "Expected teaching.result correlated to Left teaching.submit.");
-                    bool teachOk;
-                    Assert(ProtocolValue.TryBool(teachLeftRes.Data, "success", out teachOk) && teachOk &&
-                           ProtocolValue.String(teachLeftRes.Data, "errorCode") == ProtocolErrorCodes.None &&
-                           ProtocolValue.String(teachLeftRes.Data, "nozzle") == "Left" &&
-                           ProtocolValue.String(teachLeftRes.Data, "axisR") == "R1" &&
-                           Math.Abs(ProtocolValue.Double(teachLeftRes.Data, "machineX") - 650.12) < 1e-6 &&
-                           Math.Abs(ProtocolValue.Double(teachLeftRes.Data, "machineY") - 210.451) < 1e-6 &&
-                           Math.Abs(ProtocolValue.Double(teachLeftRes.Data, "imageRow") - 1024.15) < 1e-6 &&
-                           Math.Abs(ProtocolValue.Double(teachLeftRes.Data, "imageColumn") - 1280.42) < 1e-6 &&
-                           Math.Abs(ProtocolValue.Double(teachLeftRes.Data, "imageAngle") - 0.12) < 1e-6 &&
-                           Math.Abs(ProtocolValue.Double(teachLeftRes.Data, "score") - 0.952) < 1e-6,
-                        "Left teaching.result fields or rounding mismatch.");
+                    TeachingPose locatedLeft = await runtime.LocateTeachingImageAsync(TeachingSide.Left, timeout.Token).ConfigureAwait(false);
+                    Assert(locatedLeft != null && locatedLeft.IsValid &&
+                           Math.Abs(locatedLeft.MachineX - 650.1204) < 1e-6 &&
+                           Math.Abs(locatedLeft.MachineY - 210.4506) < 1e-6 &&
+                           Math.Abs(locatedLeft.ImageRow - 1024.154) < 1e-6,
+                        "Step 2 LocateTeachingImageAsync must merge image pose with host-submitted Left axis pose.");
                     Assert(!runtime.IsCalibrationReady, "calibrationReady must stay false before Right teaching completes.");
 
-                    // E. 左吸嘴采图失败 / 匹配失败 -> 返回对应 errorCode 且保留旧示教数据
+                    // E. 显式 captureImage=true 兼容一步式采图失败 / 匹配失败 -> 返回对应 errorCode 且保留旧示教数据
                     camera.FailCapture = true;
                     ProtocolEnvelope teachCapFail = ProtocolEnvelope.Create(ProtocolMessageTypes.TeachingSubmit);
                     teachCapFail.Data["nozzle"] = "Left";
@@ -1657,12 +1686,13 @@ namespace NinePointRotationCalibration.Station.Services.Communication
                     teachCapFail.Data["x"] = 999.0;
                     teachCapFail.Data["y"] = 999.0;
                     teachCapFail.Data["r"] = 5.0;
+                    teachCapFail.Data["captureImage"] = true;
                     await WriteEnvelopeAsync(stream, codec, teachCapFail, timeout.Token).ConfigureAwait(false);
                     ProtocolEnvelope teachCapFailRes = await ReadEnvelopeAsync(stream, codec, options.TcpMaxMessageBytes, timeout.Token).ConfigureAwait(false);
                     Assert(teachCapFailRes.Type == ProtocolMessageTypes.TeachingResult &&
                            ProtocolValue.TryBool(teachCapFailRes.Data, "success", out teachOk) && !teachOk &&
                            ProtocolValue.String(teachCapFailRes.Data, "errorCode") == ProtocolErrorCodes.CameraCaptureFailed,
-                        "Expected teaching.result / CAMERA_CAPTURE_FAILED.");
+                        "Expected teaching.result / CAMERA_CAPTURE_FAILED when captureImage=true.");
                     Assert(Math.Abs(runtime.GetTeachingSnapshot().Left.MachineX - 650.1204) < 1e-6,
                         "Old Left teaching must remain intact after CAMERA_CAPTURE_FAILED.");
 
@@ -1674,16 +1704,17 @@ namespace NinePointRotationCalibration.Station.Services.Communication
                     teachMatchFail.Data["x"] = 888.0;
                     teachMatchFail.Data["y"] = 888.0;
                     teachMatchFail.Data["r"] = 3.0;
+                    teachMatchFail.Data["captureImage"] = true;
                     await WriteEnvelopeAsync(stream, codec, teachMatchFail, timeout.Token).ConfigureAwait(false);
                     ProtocolEnvelope teachMatchFailRes = await ReadEnvelopeAsync(stream, codec, options.TcpMaxMessageBytes, timeout.Token).ConfigureAwait(false);
                     Assert(teachMatchFailRes.Type == ProtocolMessageTypes.TeachingResult &&
                            ProtocolValue.TryBool(teachMatchFailRes.Data, "success", out teachOk) && !teachOk &&
                            ProtocolValue.String(teachMatchFailRes.Data, "errorCode") == ProtocolErrorCodes.MatchFailed,
-                        "Expected teaching.result / MATCH_FAILED.");
+                        "Expected teaching.result / MATCH_FAILED when captureImage=true.");
                     Assert(Math.Abs(runtime.GetTeachingSnapshot().Left.MachineX - 650.1204) < 1e-6,
                         "Old Left teaching must remain intact after MATCH_FAILED.");
 
-                    // F. 右吸嘴 (Right/R2) teaching.submit 成功 -> 先收到 teaching.result，再收到 system.status(calibrationReady=true)
+                    // F. 右吸嘴 (Right/R2) 先图像定位再由上位机 teaching.submit 提交轴坐标 -> 自动合并完成，先收到 teaching.result，再收到 system.status(calibrationReady=true)
                     fakeEngine.NextCollectionResult = new TemplateMatchCollectionResult
                     {
                         Success = true,
@@ -1693,6 +1724,9 @@ namespace NinePointRotationCalibration.Station.Services.Communication
                             new TemplateMatchResult { Success = true, Row = 1024.15, Column = 1280.42, AngleDegrees = 0.12, Score = 0.948 }
                         }
                     };
+                    TeachingPose preLocatedRight = await runtime.LocateTeachingImageAsync(TeachingSide.Right, timeout.Token).ConfigureAwait(false);
+                    Assert(preLocatedRight != null && preLocatedRight.HasImagePose && !preLocatedRight.IsValid,
+                        "Pre-located Right image pose must remain pending until host submits Right axis pose.");
                     ProtocolEnvelope teachRight = ProtocolEnvelope.Create(ProtocolMessageTypes.TeachingSubmit);
                     teachRight.Data["nozzle"] = "Right";
                     teachRight.Data["axisR"] = "R2";
@@ -1704,7 +1738,8 @@ namespace NinePointRotationCalibration.Station.Services.Communication
                     Assert(teachRightRes.Type == ProtocolMessageTypes.TeachingResult &&
                            ProtocolValue.TryBool(teachRightRes.Data, "success", out teachOk) && teachOk &&
                            ProtocolValue.String(teachRightRes.Data, "nozzle") == "Right" &&
-                           ProtocolValue.String(teachRightRes.Data, "axisR") == "R2",
+                           ProtocolValue.String(teachRightRes.Data, "axisR") == "R2" &&
+                           ProtocolValue.TryBool(teachRightRes.Data, "teachingComplete", out teachingComplete) && teachingComplete,
                         "teaching.result must arrive before system.status push when Right teaching completes.");
 
                     ProtocolEnvelope statusReady = await ReadEnvelopeAsync(stream, codec, options.TcpMaxMessageBytes, timeout.Token).ConfigureAwait(false);
