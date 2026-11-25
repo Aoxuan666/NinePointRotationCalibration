@@ -9,7 +9,7 @@ namespace NinePointRotationCalibration.Station.Models
     [Serializable]
     public sealed class StationOptions
     {
-        public const int CurrentConfigurationVersion = 1;
+        public const int CurrentConfigurationVersion = 2;
 
         [OptionalField]
         private int _configurationVersion;
@@ -356,10 +356,23 @@ namespace NinePointRotationCalibration.Station.Models
             if (_configurationVersion >= CurrentConfigurationVersion) return changed;
 
             // V0 旧版配置不含相机与标定启用开关，迁移时默认置为启用，避免升级后误关闭原有站点功能。
-            _cameraEnabled = true;
-            _calibrationEnabled = true;
-            _inspectionEnabled = true;
-            _hasInspectionSetting = true;
+            if (_configurationVersion < 1)
+            {
+                _cameraEnabled = true;
+                _calibrationEnabled = true;
+                _inspectionEnabled = true;
+                _hasInspectionSetting = true;
+            }
+
+            // V1 -> V2：将旧版默认标定步长 (10 / 10 / 5 或 6) 迁移为新版默认步长 (70 / 70 / 15)。
+            if (_configurationVersion < 2)
+            {
+                if (Math.Abs(TranslationStepX - 10.0) < 1e-6) TranslationStepX = 70.0;
+                if (Math.Abs(TranslationStepY - 10.0) < 1e-6) TranslationStepY = 70.0;
+                if (Math.Abs(RotationStepDegrees - 6.0) < 1e-6 || Math.Abs(RotationStepDegrees - 5.0) < 1e-6)
+                    RotationStepDegrees = 15.0;
+            }
+
             _configurationVersion = CurrentConfigurationVersion;
             return true;
         }
