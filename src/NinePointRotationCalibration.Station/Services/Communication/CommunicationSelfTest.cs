@@ -581,6 +581,22 @@ namespace NinePointRotationCalibration.Station.Services.Communication
                        singleCalRes.Items.All(item => item.Valid && item.Targets.Count == 2),
                     "Single Left calibration + Left/Right teaching must succeed and output Left+Right targets on every board.");
 
+                // 4c. 仅左示教（Right 未示教）+ 单标定 -> 立即放行并输出每块板左吸嘴 (Left/R1) 引导取板坐标
+                TeachingData leftOnlyTeaching = new TeachingData
+                {
+                    Left = teaching.Left,
+                    Right = new TeachingPose { Side = TeachingSide.Right, IsValid = false }
+                };
+                InspectionResult leftOnlyRes = service.Inspect(frame, positioningJob, leftCal, null, leftOnlyTeaching, profile, 2, 10.0, 0.0);
+                Assert(leftOnlyRes.Executed && leftOnlyRes.Success && leftOnlyRes.Pass &&
+                       leftOnlyRes.CoordinateMappingApplied &&
+                       string.Equals(leftOnlyRes.ErrorCode, ProtocolErrorCodes.None, StringComparison.Ordinal) &&
+                       leftOnlyRes.Items.Count == 2 &&
+                       leftOnlyRes.Items.All(item => item.Valid && item.Targets.Count == 1 &&
+                                                     item.Targets[0].Side == TeachingSide.Left &&
+                                                     item.Targets[0].Axis == "R1"),
+                    "Left-only teaching + single calibration must succeed and output Left/R1 targets on every board.");
+
                 // 5. 有板但未执行坐标映射 -> COORDINATE_NOT_MAPPED (executed=true, success=false, pass=false, valid=false, targets=[])
                 InspectionResult unmappedRes = service.InspectWithoutMapping(frame, positioningJob, profile, 2);
                 Assert(unmappedRes.Executed && !unmappedRes.Success && !unmappedRes.Pass && !unmappedRes.CoordinateMappingApplied,
@@ -1705,7 +1721,29 @@ namespace NinePointRotationCalibration.Station.Services.Communication
                            Math.Abs(locatedLeft.MachineY - 210.4506) < 1e-6 &&
                            Math.Abs(locatedLeft.ImageRow - 1024.154) < 1e-6,
                         "Step 2 LocateTeachingImageAsync must merge image pose with host-submitted Left axis pose.");
-                    Assert(!runtime.IsCalibrationReady, "calibrationReady must stay false before Right teaching completes.");
+                    // 单侧左示教完成后立即就绪并推送 system.status(calibrationReady=true)，可直接引导左吸嘴 (R1) 取板
+                    Assert(runtime.IsCalibrationReady, "calibrationReady must become true immediately once Left teaching completes.");
+                    ProtocolEnvelope leftOnlyStatusReady = await ReadEnvelopeAsync(stream, codec, options.TcpMaxMessageBytes, timeout.Token).ConfigureAwait(false);
+                    bool calReadyAfterLeft;
+                    Assert(leftOnlyStatusReady.Type == ProtocolMessageTypes.SystemStatus &&
+                           ProtocolValue.TryBool(leftOnlyStatusReady.Data, "calibrationReady", out calReadyAfterLeft) && calReadyAfterLeft,
+                        "Expected system.status(calibrationReady=true) immediately after Left teaching completes.");
+                    ProtocolEnvelope trigLeftOnly = ProtocolEnvelope.Create(ProtocolMessageTypes.InspectionTrigger);
+                    trigLeftOnly.Data["expectedCount"] = 1;
+                    trigLeftOnly.Data["currentRLeft"] = 0.0;
+                    trigLeftOnly.Data["currentRRight"] = 0.0;
+                    await WriteEnvelopeAsync(stream, codec, trigLeftOnly, timeout.Token).ConfigureAwait(false);
+                    ProtocolEnvelope resLeftOnly = await ReadEnvelopeAsync(stream, codec, options.TcpMaxMessageBytes, timeout.Token).ConfigureAwait(false);
+                    Assert(resLeftOnly.Type == ProtocolMessageTypes.InspectionResult &&
+                           ProtocolValue.String(resLeftOnly.Data, "errorCode") == ProtocolErrorCodes.None &&
+                           ProtocolValue.TryBool(resLeftOnly.Data, "coordinateMapped", out resMapped) && resMapped,
+                        "Inspection with Left-only teaching must succeed and map Left/R1 targets.");
+                    System.Collections.IList leftOnlyItems = resLeftOnly.Data["items"] as System.Collections.IList;
+                    IDictionary<string, object> firstBoard = leftOnlyItems != null && leftOnlyItems.Count == 1 ? leftOnlyItems[0] as IDictionary<string, object> : null;
+                    System.Collections.IList firstTargets = firstBoard != null ? firstBoard["targets"] as System.Collections.IList : null;
+                    Assert(firstTargets != null && firstTargets.Count == 1 &&
+                           ProtocolValue.String(firstTargets[0] as IDictionary<string, object>, "axis") == "R1",
+                        "Left-only teaching must output exactly 1 Left/R1 target per board.");
 
                     // E. 显式 captureImage=true 兼容一步式采图失败 / 匹配失败 -> 返回对应 errorCode 且保留旧示教数据
                     camera.FailCapture = true;
@@ -1743,7 +1781,13 @@ namespace NinePointRotationCalibration.Station.Services.Communication
                     Assert(Math.Abs(runtime.GetTeachingSnapshot().Left.MachineX - 650.1204) < 1e-6,
                         "Old Left teaching must remain intact after MATCH_FAILED.");
 
-                    // F. 右吸嘴 (Right/R2) 先图像定位再由上位机 teaching.submit 提交轴坐标 -> 自动合并完成，先收到 teaching.result，再收到 system.status(calibrationReady=true)
+                    // F. 先清除左示教使 calibrationReady 回到 false，再验证右吸嘴 (Right/R2) 先图像定位再由上位机 teaching.submit 自动合并完成 -> 先收到 teaching.result，再收到 system.status(calibrationReady=true)
+                    await runtime.ClearTeachingAsync(TeachingSide.Left, timeout.Token).ConfigureAwait(false);
+                    ProtocolEnvelope statusCleared = await ReadEnvelopeAsync(stream, codec, options.TcpMaxMessageBytes, timeout.Token).ConfigureAwait(false);
+                    bool calReadyCleared;
+                    Assert(statusCleared.Type == ProtocolMessageTypes.SystemStatus &&
+                           ProtocolValue.TryBool(statusCleared.Data, "calibrationReady", out calReadyCleared) && !calReadyCleared,
+                        "Clearing the only taught side must push system.status(calibrationReady=false).");
                     fakeEngine.NextCollectionResult = new TemplateMatchCollectionResult
                     {
                         Success = true,
@@ -1814,10 +1858,8 @@ namespace NinePointRotationCalibration.Station.Services.Communication
                         Assert(queriedLeftEvent != null && Math.Abs(queriedLeftEvent.MachineX - 780.125) < 1e-6,
                             "TeachingChanged must fire immediately after teaching.pose.response so UI updates.");
 
-                        // 消费因左吸嘴重新开始示教而触发的 system.status(calibrationReady=false)
-                        ProtocolEnvelope statusUnready = await ReadEnvelopeAsync(stream, codec, options.TcpMaxMessageBytes, timeout.Token).ConfigureAwait(false);
-                        Assert(statusUnready.Type == ProtocolMessageTypes.SystemStatus,
-                            "Expected system.status update after starting a new Left teaching cycle.");
+                        // 此时右吸嘴仍处于已示教状态，因此 calibrationReady 保持 true（不会误发降级通知）
+                        Assert(runtime.IsCalibrationReady, "calibrationReady must stay true while Right teaching remains valid.");
 
                         // 上位机拒绝返回实时坐标时（success=false）应报错并保留已记录坐标
                         Task<TeachingPose> rejectTask = runtime.RequestAndRecordTeachingMachinePoseFromHostAsync(TeachingSide.Left, timeout.Token);

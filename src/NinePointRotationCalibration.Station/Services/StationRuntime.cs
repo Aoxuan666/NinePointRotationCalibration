@@ -2750,12 +2750,14 @@ namespace NinePointRotationCalibration.Station.Services
                 CalibrationResult effectiveLeft = ResolveEffectiveCalibration(leftCalibration, rightCalibration);
                 CalibrationResult effectiveRight = ResolveEffectiveCalibration(rightCalibration, leftCalibration);
                 bool calValid = effectiveLeft != null && effectiveRight != null;
-                bool teachValid = IsTeachingValid(teaching);
+                bool hasLeftTeach = teaching != null && teaching.Left != null && teaching.Left.IsValid;
+                bool hasRightTeach = teaching != null && teaching.Right != null && teaching.Right.IsValid;
+                bool teachValid = hasLeftTeach || hasRightTeach;
                 bool canMapTargets = calibrationEnabled &&
                     calValid &&
                     teachValid &&
-                    !double.IsNaN(currentRLeft) && !double.IsInfinity(currentRLeft) &&
-                    !double.IsNaN(currentRRight) && !double.IsInfinity(currentRRight);
+                    (!hasLeftTeach || (!double.IsNaN(currentRLeft) && !double.IsInfinity(currentRLeft))) &&
+                    (!hasRightTeach || (!double.IsNaN(currentRRight) && !double.IsInfinity(currentRRight)));
 
                 CameraFrame frame;
                 if (sendResponse != null)
@@ -2896,12 +2898,14 @@ namespace NinePointRotationCalibration.Station.Services
                 CalibrationResult effectiveLeft = ResolveEffectiveCalibration(leftCalibration, rightCalibration);
                 CalibrationResult effectiveRight = ResolveEffectiveCalibration(rightCalibration, leftCalibration);
                 bool calValid = effectiveLeft != null && effectiveRight != null;
-                bool teachValid = IsTeachingValid(teaching);
+                bool hasLeftTeach = teaching != null && teaching.Left != null && teaching.Left.IsValid;
+                bool hasRightTeach = teaching != null && teaching.Right != null && teaching.Right.IsValid;
+                bool teachValid = hasLeftTeach || hasRightTeach;
                 bool canMapTargets = calibrationEnabled &&
                     calValid &&
                     teachValid &&
-                    !double.IsNaN(currentRLeft) && !double.IsInfinity(currentRLeft) &&
-                    !double.IsNaN(currentRRight) && !double.IsInfinity(currentRRight);
+                    (!hasLeftTeach || (!double.IsNaN(currentRLeft) && !double.IsInfinity(currentRLeft))) &&
+                    (!hasRightTeach || (!double.IsNaN(currentRRight) && !double.IsInfinity(currentRRight)));
 
                 LocalDebugLog.Write(
                     "INFO",
@@ -3517,9 +3521,10 @@ namespace NinePointRotationCalibration.Station.Services
 
         private static bool IsTeachingValid(TeachingData teaching)
         {
+            // 任意一侧（例如先只做左示教）完成即可引导对应吸嘴取板；双侧都完成时同时输出左/右双吸嘴目标坐标
             return teaching != null &&
-                   teaching.Left != null && teaching.Left.IsValid &&
-                   teaching.Right != null && teaching.Right.IsValid;
+                   ((teaching.Left != null && teaching.Left.IsValid) ||
+                    (teaching.Right != null && teaching.Right.IsValid));
         }
 
         private static void ValidateOptions(StationOptions options)

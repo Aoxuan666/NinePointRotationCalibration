@@ -192,15 +192,19 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
                     : (IsCalibrationValid(leftCalibration) ? leftCalibration : null);
                 if (useTemplateMatching && mapTargets && (effectiveLeft == null || effectiveRight == null))
                     return Failure(result, "CALIBRATION_MISSING", "A valid 9+5 calibration result is required.");
-                if (useTemplateMatching && mapTargets &&
-                    (!IsUsable(teaching == null ? null : teaching.Left) ||
-                    !IsUsable(teaching == null ? null : teaching.Right)))
+                bool expectLeftTarget = IsUsable(teaching == null ? null : teaching.Left);
+                bool expectRightTarget = IsUsable(teaching == null ? null : teaching.Right);
+                if (useTemplateMatching && mapTargets && !expectLeftTarget && !expectRightTarget)
                 {
                     return Failure(result, "TEACHING_MISSING",
-                        "Valid left and right teaching data are required.");
+                        "At least one valid left or right teaching pose is required.");
                 }
-                if (useTemplateMatching && mapTargets && (!IsFinite(currentRLeft) || !IsFinite(currentRRight)))
-                    return Failure(result, "CURRENT_R_INVALID", "Finite currentRLeft and currentRRight values are required for mapping.");
+                if (useTemplateMatching && mapTargets &&
+                    ((expectLeftTarget && !IsFinite(currentRLeft)) ||
+                     (expectRightTarget && !IsFinite(currentRRight))))
+                {
+                    return Failure(result, "CURRENT_R_INVALID", "Finite currentRLeft/currentRRight values are required for taught nozzle(s).");
+                }
                 if (useTemplateMatching &&
                     positioningJob.Template.DetectionRoi == null &&
                     positioningJob.Template.TemplateRoi == null &&
@@ -376,7 +380,11 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
                                         currentRRight);
                                     bool hasLeft = mapped.Exists(t => t != null && t.Side == TeachingSide.Left);
                                     bool hasRight = mapped.Exists(t => t != null && t.Side == TeachingSide.Right);
-                                    if (hasLeft && hasRight)
+                                    bool expectedSidesMapped =
+                                        (!expectLeftTarget || hasLeft) &&
+                                        (!expectRightTarget || hasRight) &&
+                                        (hasLeft || hasRight);
+                                    if (expectedSidesMapped)
                                     {
                                         item.Targets.AddRange(mapped);
                                     }
@@ -387,7 +395,7 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
                                         LocalDebugLog.Write(
                                             "WARN",
                                             "inspect.map",
-                                            "Board #" + item.BoardIndex + " failed to produce complete Left/Right targets; marked valid=false.");
+                                            "Board #" + item.BoardIndex + " failed to produce expected nozzle target(s); marked valid=false.");
                                     }
                                 }
                                 catch (Exception mapException)
