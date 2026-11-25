@@ -184,10 +184,14 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
                      positioningJob.Template.ModelData == null ||
                      positioningJob.Template.ModelData.Length == 0))
                     return Failure(result, ProtocolErrorCodes.PositioningTemplateMissing, "Positioning template is not configured.");
-                if (useTemplateMatching && mapTargets && !IsCalibrationValid(leftCalibration))
-                    return Failure(result, "CALIBRATION_MISSING", "A valid Left (R1) 9+5 calibration result is required.");
-                if (useTemplateMatching && mapTargets && !IsCalibrationValid(rightCalibration))
-                    return Failure(result, "CALIBRATION_MISSING", "A valid Right (R2) 9+5 calibration result is required.");
+                CalibrationResult effectiveLeft = IsCalibrationValid(leftCalibration)
+                    ? leftCalibration
+                    : (IsCalibrationValid(rightCalibration) ? rightCalibration : null);
+                CalibrationResult effectiveRight = IsCalibrationValid(rightCalibration)
+                    ? rightCalibration
+                    : (IsCalibrationValid(leftCalibration) ? leftCalibration : null);
+                if (useTemplateMatching && mapTargets && (effectiveLeft == null || effectiveRight == null))
+                    return Failure(result, "CALIBRATION_MISSING", "A valid 9+5 calibration result is required.");
                 if (useTemplateMatching && mapTargets &&
                     (!IsUsable(teaching == null ? null : teaching.Left) ||
                     !IsUsable(teaching == null ? null : teaching.Right)))
@@ -364,8 +368,8 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
                                 try
                                 {
                                     List<MappedTargetPose> mapped = _poseMapper.Map(
-                                        leftCalibration,
-                                        rightCalibration,
+                                        effectiveLeft,
+                                        effectiveRight,
                                         teaching,
                                         match,
                                         currentRLeft,

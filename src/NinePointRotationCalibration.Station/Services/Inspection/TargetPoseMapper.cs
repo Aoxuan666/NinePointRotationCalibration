@@ -35,14 +35,21 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
             if (!IsFinite(boardMatch.Row) || !IsFinite(boardMatch.Column) || !IsFinite(boardMatch.AngleDegrees))
                 return result;
 
-            if (IsCalibrationUsable(leftCalibration) && IsFinite(currentRLeft))
+            CalibrationResult effectiveLeft = IsCalibrationUsable(leftCalibration)
+                ? leftCalibration
+                : (IsCalibrationUsable(rightCalibration) ? rightCalibration : null);
+            CalibrationResult effectiveRight = IsCalibrationUsable(rightCalibration)
+                ? rightCalibration
+                : (IsCalibrationUsable(leftCalibration) ? leftCalibration : null);
+
+            if (effectiveLeft != null && IsFinite(currentRLeft))
             {
-                AddMappedPose(result, leftCalibration, teaching.Left, boardMatch, currentRLeft);
+                AddMappedPose(result, effectiveLeft, teaching.Left, boardMatch, currentRLeft);
             }
 
-            if (IsCalibrationUsable(rightCalibration) && IsFinite(currentRRight))
+            if (effectiveRight != null && IsFinite(currentRRight))
             {
-                AddMappedPose(result, rightCalibration, teaching.Right, boardMatch, currentRRight);
+                AddMappedPose(result, effectiveRight, teaching.Right, boardMatch, currentRRight);
             }
 
             return result;

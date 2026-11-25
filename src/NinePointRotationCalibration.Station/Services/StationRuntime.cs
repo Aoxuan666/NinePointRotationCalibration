@@ -255,9 +255,10 @@ namespace NinePointRotationCalibration.Station.Services
             {
                 lock (_stateSync)
                 {
-                    return IsCalibrationValid(_leftCalibrationResult) &&
-                           IsCalibrationValid(_rightCalibrationResult) &&
-                           IsTeachingValid(_teaching.GetSnapshot());
+                    // 只需完成一侧（通常为左吸嘴 R1）9+5 标定并完成左右示教即可就绪；若右吸嘴 R2 也单独标定，映射时自动优先使用各自独立标定
+                    bool hasCalibration = IsCalibrationValid(_leftCalibrationResult) ||
+                                          IsCalibrationValid(_rightCalibrationResult);
+                    return hasCalibration && IsTeachingValid(_teaching.GetSnapshot());
                 }
             }
         }
@@ -2746,7 +2747,9 @@ namespace NinePointRotationCalibration.Station.Services
                     cameraTimeoutMs = _options.CameraTimeoutMilliseconds;
                 }
 
-                bool calValid = IsCalibrationValid(leftCalibration) && IsCalibrationValid(rightCalibration);
+                CalibrationResult effectiveLeft = ResolveEffectiveCalibration(leftCalibration, rightCalibration);
+                CalibrationResult effectiveRight = ResolveEffectiveCalibration(rightCalibration, leftCalibration);
+                bool calValid = effectiveLeft != null && effectiveRight != null;
                 bool teachValid = IsTeachingValid(teaching);
                 bool canMapTargets = calibrationEnabled &&
                     calValid &&
@@ -2828,8 +2831,8 @@ namespace NinePointRotationCalibration.Station.Services
                     InspectionResult result = await Task.Run(() => _inspection.InspectCore(
                         frame.Image,
                         positioning,
-                        leftCalibration,
-                        rightCalibration,
+                        effectiveLeft,
+                        effectiveRight,
                         teaching,
                         profile,
                         expectedCount,
@@ -2890,7 +2893,9 @@ namespace NinePointRotationCalibration.Station.Services
                     calibrationEnabled = _options.CalibrationEnabled;
                 }
 
-                bool calValid = IsCalibrationValid(leftCalibration) && IsCalibrationValid(rightCalibration);
+                CalibrationResult effectiveLeft = ResolveEffectiveCalibration(leftCalibration, rightCalibration);
+                CalibrationResult effectiveRight = ResolveEffectiveCalibration(rightCalibration, leftCalibration);
+                bool calValid = effectiveLeft != null && effectiveRight != null;
                 bool teachValid = IsTeachingValid(teaching);
                 bool canMapTargets = calibrationEnabled &&
                     calValid &&
@@ -2919,8 +2924,8 @@ namespace NinePointRotationCalibration.Station.Services
                     () => _inspection.InspectCore(
                         image,
                         positioning,
-                        leftCalibration,
-                        rightCalibration,
+                        effectiveLeft,
+                        effectiveRight,
                         teaching,
                         profile,
                         expectedCount,
@@ -3492,6 +3497,15 @@ namespace NinePointRotationCalibration.Station.Services
                    message.IndexOf("not found", StringComparison.OrdinalIgnoreCase) >= 0 ||
                    message.IndexOf("未检测到在线相机", StringComparison.Ordinal) >= 0 ||
                    message.IndexOf("未发现", StringComparison.Ordinal) >= 0;
+        }
+
+        private static CalibrationResult ResolveEffectiveCalibration(
+            CalibrationResult primary,
+            CalibrationResult fallback)
+        {
+            if (IsCalibrationValid(primary)) return primary;
+            if (IsCalibrationValid(fallback)) return fallback;
+            return null;
         }
 
         private static bool IsCalibrationValid(CalibrationResult calibration)

@@ -431,6 +431,15 @@ namespace NinePointRotationCalibration.Station.Services.Communication
             // Right: pickR = -180 + (-1)*5 = -185, currentRRight = -178 -> rOffset = -7, targetR = -185 (不归一化到 +175)
             Assert(Math.Abs(right.ROffset - (-7.0)) < 1e-6, "Right rOffset mismatch: " + right.ROffset);
             Assert(Math.Abs(right.TargetR - (-185.0)) < 1e-6, "Right targetR must stay in continuous frame (-185), got " + right.TargetR);
+
+            // 验证单标定（仅标左吸嘴 R1）+ 左右示教自动复用左吸嘴标定生成左右双吸嘴坐标
+            List<MappedTargetPose> sharedTargets = mapper.Map(leftCal, null, teaching, match, 179.0, -178.0);
+            Assert(sharedTargets.Count == 2, "Single Left calibration + dual teaching must still produce both Left and Right targets.");
+            MappedTargetPose sharedLeft = sharedTargets.FirstOrDefault(t => t.Side == TeachingSide.Left && t.Axis == "R1");
+            MappedTargetPose sharedRight = sharedTargets.FirstOrDefault(t => t.Side == TeachingSide.Right && t.Axis == "R2");
+            Assert(sharedLeft != null && sharedRight != null, "Single calibration reuse must produce both R1 and R2 targets.");
+            // 共用左标定 (direction=+1)：Right pickR = -180 + (+1)*5 = -175, currentRRight=-178 -> rOffset=+3, targetR=-175
+            Assert(Math.Abs(sharedRight.TargetR - (-175.0)) < 1e-6, "Shared Right targetR mismatch: " + sharedRight.TargetR);
         }
 
         private static void VerifyInspectionSemantics()
@@ -551,6 +560,26 @@ namespace NinePointRotationCalibration.Station.Services.Communication
                 Assert(partialValidRes.Items.Count == 2, "Single-board mapping failure must not clear items.");
                 Assert(partialValidRes.Items[0].Valid && partialValidRes.Items[0].Targets.Count == 2, "Board #1 must remain valid with 2 targets.");
                 Assert(!partialValidRes.Items[1].Valid && partialValidRes.Items[1].Targets.Count == 0, "Board #2 must be marked valid=false with empty targets.");
+
+                // 4b. 仅左吸嘴单标定（rightCalibration=null）+ 左右示教 -> 自动复用左吸嘴标定并输出每块板左右双吸嘴真实坐标
+                engine.NextCollectionResult = new TemplateMatchCollectionResult
+                {
+                    Success = true,
+                    ErrorCode = CalibrationErrorCode.None,
+                    Message = "Matched 2 boards.",
+                    Matches = new List<TemplateMatchResult>
+                    {
+                        new TemplateMatchResult { Success = true, Row = 64.0, Column = 10.0, ModelPose = new ImagePose(64.0, 10.0, 0.0), AngleDegrees = 0.0, Score = 0.96 },
+                        new TemplateMatchResult { Success = true, Row = 64.0, Column = 40.0, ModelPose = new ImagePose(64.0, 40.0, 0.0), AngleDegrees = 2.0, Score = 0.95 }
+                    }
+                };
+                InspectionResult singleCalRes = service.Inspect(frame, positioningJob, leftCal, null, teaching, profile, 2, 10.0, -10.0);
+                Assert(singleCalRes.Executed && singleCalRes.Success && singleCalRes.Pass &&
+                       singleCalRes.CoordinateMappingApplied &&
+                       string.Equals(singleCalRes.ErrorCode, ProtocolErrorCodes.None, StringComparison.Ordinal) &&
+                       singleCalRes.Items.Count == 2 &&
+                       singleCalRes.Items.All(item => item.Valid && item.Targets.Count == 2),
+                    "Single Left calibration + Left/Right teaching must succeed and output Left+Right targets on every board.");
 
                 // 5. 有板但未执行坐标映射 -> COORDINATE_NOT_MAPPED (executed=true, success=false, pass=false, valid=false, targets=[])
                 InspectionResult unmappedRes = service.InspectWithoutMapping(frame, positioningJob, profile, 2);
