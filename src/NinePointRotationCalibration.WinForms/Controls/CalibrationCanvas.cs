@@ -779,6 +779,22 @@ namespace NinePointRotationCalibration.WinForms.Controls
                 }
                 if (_polygonDrawing)
                 {
+                    if (_image != null && IsInsideImage(_dragStartImage) && _activePolygonPoints.Count > 0)
+                    {
+                        ImageCoordinate rightPt = ClampToImage(_dragStartImage);
+                        PointF firstClient = ImageToClient(_activePolygonPoints[0]);
+                        double dxFirst = eventArgs.X - firstClient.X;
+                        double dyFirst = eventArgs.Y - firstClient.Y;
+                        PointF lastClient = ImageToClient(_activePolygonPoints[_activePolygonPoints.Count - 1]);
+                        double dxLast = eventArgs.X - lastClient.X;
+                        double dyLast = eventArgs.Y - lastClient.Y;
+                        bool nearFirst = _activePolygonPoints.Count >= 3 && ((dxFirst * dxFirst) + (dyFirst * dyFirst) <= 100.0);
+                        bool nearLast = ((dxLast * dxLast) + (dyLast * dyLast)) <= 36.0;
+                        if (!nearFirst && !nearLast)
+                        {
+                            _activePolygonPoints.Add(rightPt);
+                        }
+                    }
                     if (_activePolygonPoints.Count >= 3)
                     {
                         CommitActivePolygon();
@@ -902,6 +918,16 @@ namespace NinePointRotationCalibration.WinForms.Controls
                 {
                     _polygonDrawing = true;
                     _activePolygonPoints.Clear();
+                }
+                else if (_activePolygonPoints.Count > 0)
+                {
+                    PointF lastClient = ImageToClient(_activePolygonPoints[_activePolygonPoints.Count - 1]);
+                    double dxLast = eventArgs.X - lastClient.X;
+                    double dyLast = eventArgs.Y - lastClient.Y;
+                    if ((dxLast * dxLast) + (dyLast * dyLast) <= 4.0)
+                    {
+                        return;
+                    }
                 }
                 _activePolygonPoints.Add(pt);
                 UpdatePolygonPreviewMask();
@@ -1715,8 +1741,13 @@ namespace NinePointRotationCalibration.WinForms.Controls
                 else if (_polygonDrawing && _activePolygonPoints.Count > 0)
                 {
                     List<PointF> screenPoints = _activePolygonPoints.Select(ImageToClient).ToList();
-                    if (_hasHoverScreen) screenPoints.Add(_hoverScreen);
-                    if (screenPoints.Count >= 2)
+                    bool showHoverVertex = _hasHoverScreen && _image != null && IsInsideImage(ClientToImage(_hoverScreen));
+                    if (showHoverVertex) screenPoints.Add(_hoverScreen);
+                    if (screenPoints.Count >= 3)
+                    {
+                        graphics.DrawPolygon(border, screenPoints.ToArray());
+                    }
+                    else if (screenPoints.Count == 2)
                     {
                         graphics.DrawLines(border, screenPoints.ToArray());
                     }
@@ -1729,6 +1760,10 @@ namespace NinePointRotationCalibration.WinForms.Controls
                             float r = (i == 0 && _activePolygonPoints.Count >= 3) ? 5.0f : 3.5f;
                             graphics.FillEllipse(vertexBrush, vp.X - r, vp.Y - r, r * 2.0f, r * 2.0f);
                             graphics.DrawEllipse(vertexPen, vp.X - r, vp.Y - r, r * 2.0f, r * 2.0f);
+                        }
+                        if (showHoverVertex)
+                        {
+                            graphics.DrawEllipse(vertexPen, _hoverScreen.X - 3.5f, _hoverScreen.Y - 3.5f, 7.0f, 7.0f);
                         }
                     }
                 }
@@ -2588,6 +2623,11 @@ namespace NinePointRotationCalibration.WinForms.Controls
             {
                 accent = Color.FromArgb(255, 255, 80, 180);
                 message = "移动基准中心：点击或拖动设置中心 · 右键 / Esc 退出";
+            }
+            else if (_tool == CanvasEditTool.MaskPolygon)
+            {
+                accent = Color.FromArgb(248, 113, 113);
+                message = "多边形掩膜：左键逐点添加 · 右键确认末点并闭合（或点回起点/双击闭合）· 退格删点 · Esc 取消";
             }
 
             if (string.IsNullOrEmpty(message) || ClientSize.Width < 120)

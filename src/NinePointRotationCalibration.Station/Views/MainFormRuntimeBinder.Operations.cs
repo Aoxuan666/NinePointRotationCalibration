@@ -556,13 +556,17 @@ namespace NinePointRotationCalibration.Station.Views
                 async token =>
                 {
                     TeachingPose saved = await _runtime.RecordTeachingMachinePoseAsync(side, pose, token).ConfigureAwait(true);
+                    if (saved != null)
+                    {
+                        ApplyTeachingToView(saved);
+                    }
                     if (saved != null && saved.IsValid)
                     {
                         _view.AppendLog(sideLabel + "示教已完成（轴坐标与图像坐标均已保存）。", false);
                     }
                     else
                     {
-                        _view.AppendLog(sideLabel + "轴坐标已记录（未拍照）。请将轴移出视野后点击「模板匹配定位」。", false);
+                        _view.AppendLog(sideLabel + "轴坐标已记录并同步到页面。请将轴移出视野后点击「模板匹配定位」。", false);
                     }
                 }).ConfigureAwait(true);
         }
@@ -578,6 +582,7 @@ namespace NinePointRotationCalibration.Station.Views
                     TeachingPose saved = await _runtime.LocateTeachingImageAsync(side, token).ConfigureAwait(true);
                     if (saved != null)
                     {
+                        ApplyTeachingToView(saved);
                         string summary = string.Format(
                             CultureInfo.InvariantCulture,
                             "{0}模板匹配定位成功：Row {1:0.###}, Col {2:0.###}, 角度 {3:0.###}°, 分数 {4:0.000}。{5}",
@@ -597,7 +602,11 @@ namespace NinePointRotationCalibration.Station.Views
             return RunOperationAsync(
                 (side == TeachingSide.Left ? "清除左侧" : "清除右侧") + "示教",
                 source,
-                token => _runtime.ClearTeachingAsync(side, token));
+                async token =>
+                {
+                    TeachingPose cleared = await _runtime.ClearTeachingAsync(side, token).ConfigureAwait(true);
+                    if (cleared != null) ApplyTeachingToView(cleared);
+                });
         }
 
         private async Task RunInspectionAsync(CancellationToken cancellationToken)

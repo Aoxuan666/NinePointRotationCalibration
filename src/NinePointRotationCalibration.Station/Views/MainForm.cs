@@ -72,6 +72,10 @@ namespace NinePointRotationCalibration.Station.Views
         private string _lastCursorText;
         private bool _leftTeachingValid;
         private bool _rightTeachingValid;
+        private bool _leftHasMachinePose;
+        private bool _leftHasImagePose;
+        private bool _rightHasMachinePose;
+        private bool _rightHasImagePose;
         private double _leftTeachX;
         private double _leftTeachY;
         private double _leftTeachR;
@@ -1111,20 +1115,59 @@ namespace NinePointRotationCalibration.Station.Views
                 if (left)
                 {
                     _leftTeachingValid = valid;
-                    _leftTeachX = machineX;
-                    _leftTeachY = machineY;
-                    _leftTeachR = machineR;
+                    _leftHasMachinePose = effectiveMachine;
+                    _leftHasImagePose = effectiveImage;
+                    if (effectiveMachine || !effectiveImage)
+                    {
+                        _leftTeachX = machineX;
+                        _leftTeachY = machineY;
+                        _leftTeachR = machineR;
+                    }
                 }
                 else
                 {
                     _rightTeachingValid = valid;
-                    _rightTeachX = machineX;
-                    _rightTeachY = machineY;
-                    _rightTeachR = machineR;
+                    _rightHasMachinePose = effectiveMachine;
+                    _rightHasImagePose = effectiveImage;
+                    if (effectiveMachine || !effectiveImage)
+                    {
+                        _rightTeachX = machineX;
+                        _rightTeachY = machineY;
+                        _rightTeachR = machineR;
+                    }
                 }
 
                 UpdateDualNozzleSummary();
+                for (int index = 0; index < values.Length; index++)
+                {
+                    if (values[index] != null && !values[index].IsDisposed) values[index].Refresh();
+                }
+                if (statusLabel != null && !statusLabel.IsDisposed) statusLabel.Refresh();
+                if (lblDualNozzleSummary != null && !lblDualNozzleSummary.IsDisposed) lblDualNozzleSummary.Refresh();
             });
+        }
+
+        private static string FormatTeachingSideSummary(
+            bool valid,
+            bool hasMachine,
+            bool hasImage,
+            double x,
+            double y,
+            double r)
+        {
+            if (valid)
+            {
+                return string.Format(CultureInfo.InvariantCulture, "已示教 ({0:0.###}, {1:0.###}, {2:0.##}°)", x, y, r);
+            }
+            if (hasMachine)
+            {
+                return string.Format(CultureInfo.InvariantCulture, "已记轴坐标 ({0:0.###}, {1:0.###}, {2:0.##}°)·待定位", x, y, r);
+            }
+            if (hasImage)
+            {
+                return "已定位图像·待记轴坐标";
+            }
+            return "未示教";
         }
 
         private void UpdateDualNozzleSummary()
@@ -1147,15 +1190,31 @@ namespace NinePointRotationCalibration.Station.Views
                     _leftTeachR,
                     _rightTeachR);
             }
+            else if (_leftHasMachinePose && _rightHasMachinePose)
+            {
+                double dx = _rightTeachX - _leftTeachX;
+                double dy = _rightTeachY - _leftTeachY;
+                double distance = Math.Sqrt((dx * dx) + (dy * dy));
+                lblDualNozzleSummary.BackColor = Color.FromArgb(239, 246, 255);
+                lblDualNozzleSummary.ForeColor = Color.FromArgb(30, 64, 175);
+                lblDualNozzleSummary.Text = string.Format(
+                    CultureInfo.InvariantCulture,
+                    "双吸嘴轴坐标已同步：ΔX={0:0.###}  ΔY={1:0.###}  |ΔD|={2:0.###} mm\r\n左 [{3}]  /  右 [{4}]",
+                    dx,
+                    dy,
+                    distance,
+                    FormatTeachingSideSummary(_leftTeachingValid, _leftHasMachinePose, _leftHasImagePose, _leftTeachX, _leftTeachY, _leftTeachR),
+                    FormatTeachingSideSummary(_rightTeachingValid, _rightHasMachinePose, _rightHasImagePose, _rightTeachX, _rightTeachY, _rightTeachR));
+            }
             else
             {
                 lblDualNozzleSummary.BackColor = Color.FromArgb(226, 232, 240);
                 lblDualNozzleSummary.ForeColor = Color.FromArgb(51, 65, 85);
                 lblDualNozzleSummary.Text = string.Format(
                     CultureInfo.InvariantCulture,
-                    "双吸嘴状态：左吸嘴 [{0}] / 右吸嘴 [{1}]（需两侧均完成示教）\r\n工艺模式：吸取时旋转 R 轴对齐来料板角 → 盲摆转回固定示教 R 角",
-                    _leftTeachingValid ? "已示教" : "未示教",
-                    _rightTeachingValid ? "已示教" : "未示教");
+                    "双吸嘴状态：左 [{0}]  /  右 [{1}]\r\n工艺模式：吸取时旋转 R 轴对齐来料板角 → 盲摆转回固定示教 R 角",
+                    FormatTeachingSideSummary(_leftTeachingValid, _leftHasMachinePose, _leftHasImagePose, _leftTeachX, _leftTeachY, _leftTeachR),
+                    FormatTeachingSideSummary(_rightTeachingValid, _rightHasMachinePose, _rightHasImagePose, _rightTeachX, _rightTeachY, _rightTeachR));
             }
         }
 
