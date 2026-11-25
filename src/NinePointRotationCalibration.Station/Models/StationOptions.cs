@@ -69,9 +69,9 @@ namespace NinePointRotationCalibration.Station.Models
             CameraTriggerMode = "Software";
             CameraFeatures = new Dictionary<string, string>(System.StringComparer.OrdinalIgnoreCase);
             CameraTimeoutMilliseconds = 2000;
-            TranslationStepX = 10.0;
-            TranslationStepY = 10.0;
-            RotationStepDegrees = 6.0;
+            TranslationStepX = 70.0;
+            TranslationStepY = 70.0;
+            RotationStepDegrees = 15.0;
             ExpectedBoardCount = 6;
             PreviewIntervalMilliseconds = 33;
             ArchiveImages = false;
@@ -290,6 +290,21 @@ namespace NinePointRotationCalibration.Station.Models
             if (CameraTimeoutMilliseconds <= 0)
             {
                 CameraTimeoutMilliseconds = 2000;
+                changed = true;
+            }
+            if (double.IsNaN(TranslationStepX) || double.IsInfinity(TranslationStepX) || TranslationStepX <= 0.0)
+            {
+                TranslationStepX = 70.0;
+                changed = true;
+            }
+            if (double.IsNaN(TranslationStepY) || double.IsInfinity(TranslationStepY) || TranslationStepY <= 0.0)
+            {
+                TranslationStepY = 70.0;
+                changed = true;
+            }
+            if (double.IsNaN(RotationStepDegrees) || double.IsInfinity(RotationStepDegrees) || RotationStepDegrees <= 0.0)
+            {
+                RotationStepDegrees = 15.0;
                 changed = true;
             }
             if (_heartbeatTimeoutMilliseconds == 0)

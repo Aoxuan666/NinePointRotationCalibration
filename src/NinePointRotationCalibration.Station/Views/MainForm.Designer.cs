@@ -560,13 +560,13 @@ namespace NinePointRotationCalibration.Station.Views
             cmbCalibrationNozzle.SelectedIndex = 0;
             cmbCalibrationNozzle.Tag = "calibration.nozzleChanged";
             toolTip.SetToolTip(cmbCalibrationNozzle, "选择当前执行 9+5 标定的独立吸嘴与 R 轴（左吸嘴对应 R1，右吸嘴对应 R2）");
-            NumericUpDown stepX = CreateDecimalInput("nudCalibrationStepX", 10.0M, 0.1M, 500.0M, 3, 1.0M, false);
-            NumericUpDown stepY = CreateDecimalInput("nudCalibrationStepY", 10.0M, 0.1M, 500.0M, 3, 1.0M, false);
-            NumericUpDown stepR = CreateDecimalInput("nudCalibrationStepR", 6.0M, 0.5M, 90.0M, 2, 0.5M, false);
+            NumericUpDown stepX = CreateDecimalInput("nudCalibrationStepX", 70.0M, 0.1M, 500.0M, 3, 1.0M, false);
+            NumericUpDown stepY = CreateDecimalInput("nudCalibrationStepY", 70.0M, 0.1M, 500.0M, 3, 1.0M, false);
+            NumericUpDown stepR = CreateDecimalInput("nudCalibrationStepR", 15.0M, 0.5M, 90.0M, 2, 0.5M, false);
             NumericUpDown motionTimeout = CreateDecimalInput("nudMotionTimeout", 30000.0M, 1000.0M, 600000.0M, 0, 1000.0M, false);
             NumericUpDown minScore = CreateDecimalInput("nudCalibrationMinScore", 0.500M, 0.000M, 1.000M, 3, 0.05M, false);
             minScore.Tag = "calibration.minScoreChanged";
-            toolTip.SetToolTip(stepR, "五点旋转依次采集 -2ΔR / -ΔR / 0 / +ΔR / +2ΔR，总跨度 4×ΔR 须 ≥ 20°（推荐 6°~10°）");
+            toolTip.SetToolTip(stepR, "五点旋转依次采集 -2ΔR / -ΔR / 0 / +ΔR / +2ΔR，总跨度 4×ΔR 须 ≥ 20°（默认 15°，总跨度 60°）");
             toolTip.SetToolTip(motionTimeout, "等待上位机运动到位的超时时间（毫秒），每次调节步进 1000 ms");
             toolTip.SetToolTip(minScore, "标定模板最低匹配分数阈值；任一点位匹配分数低于此值将立即中断标定并报 NG");
             AddField(moveFields, 0, "标定吸嘴", cmbCalibrationNozzle);
@@ -584,7 +584,7 @@ namespace NinePointRotationCalibration.Station.Views
             lblCalibrationSpanHint.ForeColor = TextMutedColor;
             lblCalibrationSpanHint.Margin = new Padding(0, 4, 0, 0);
             lblCalibrationSpanHint.Name = "lblCalibrationSpanHint";
-            lblCalibrationSpanHint.Text = "5/12 原点 · 旋转总跨度 24.0° (要求≥20°)";
+            lblCalibrationSpanHint.Text = "5/12 原点 · 旋转总跨度 60.0° (要求≥20°)";
             lblCalibrationSpanHint.TextAlign = ContentAlignment.MiddleLeft;
             moveFields.Controls.Add(lblCalibrationSpanHint, 0, 6);
             moveFields.SetColumnSpan(lblCalibrationSpanHint, 2);

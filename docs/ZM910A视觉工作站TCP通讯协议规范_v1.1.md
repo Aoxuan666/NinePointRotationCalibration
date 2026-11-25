@@ -608,8 +608,8 @@ sequenceDiagram
 | `nozzle` | `string` | 目标吸嘴：`"Left"` 或 `"Right"` |
 | `axisR` | `string` | 目标驱动 R 轴：`"R1"`（对应 `Left`）或 `"R2"`（对应 `Right`） |
 | `totalPoints` | `int` | 总点位数，9+5 标定固定为 `14` |
-| `stepX` / `stepY` | `number` | 平移步距（mm，3 位小数，默认 `10.000`，上位机可提前校验 `±stepX` / `±stepY` 软限位） |
-| `stepR` | `number` | 旋转步距（deg，3 位小数，默认 `6.000`，上位机可提前校验 `±2*stepR` 软限位） |
+| `stepX` / `stepY` | `number` | 平移步距（mm，3 位小数，默认 `70.000`，上位机可提前校验 `±stepX` / `±stepY` 软限位） |
+| `stepR` | `number` | 旋转步距（deg，3 位小数，默认 `15.000`，上位机可提前校验 `±2*stepR` 软限位） |
 
 ---
 
