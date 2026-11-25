@@ -543,19 +543,26 @@ namespace NinePointRotationCalibration.Station.Views
         {
             string sideKey = side == TeachingSide.Left ? "left" : "right";
             string sideLabel = side == TeachingSide.Left ? "左侧" : "右侧";
-            MachinePose pose = new MachinePose
+            bool queryHost = _runtime.IsHostConnected;
+            MachinePose manualPose = null;
+            if (!queryHost)
             {
-                X = ParseFiniteDouble(FindControl<TextBox>(sideKey + "MachineX").Text, "机械 X"),
-                Y = ParseFiniteDouble(FindControl<TextBox>(sideKey + "MachineY").Text, "机械 Y"),
-                ThetaDegrees = ParseFiniteDouble(FindControl<TextBox>(sideKey + "MachineR").Text, "机械 R")
-            };
+                manualPose = new MachinePose
+                {
+                    X = ParseFiniteDouble(FindControl<TextBox>(sideKey + "MachineX").Text, "机械 X"),
+                    Y = ParseFiniteDouble(FindControl<TextBox>(sideKey + "MachineY").Text, "机械 Y"),
+                    ThetaDegrees = ParseFiniteDouble(FindControl<TextBox>(sideKey + "MachineR").Text, "机械 R")
+                };
+            }
 
             await RunOperationAsync(
-                sideLabel + "记录轴坐标",
+                sideLabel + (queryHost ? "实时读取并记录轴坐标" : "记录轴坐标"),
                 source,
                 async token =>
                 {
-                    TeachingPose saved = await _runtime.RecordTeachingMachinePoseAsync(side, pose, token).ConfigureAwait(true);
+                    TeachingPose saved = queryHost
+                        ? await _runtime.RequestAndRecordTeachingMachinePoseFromHostAsync(side, token).ConfigureAwait(true)
+                        : await _runtime.RecordTeachingMachinePoseAsync(side, manualPose, token).ConfigureAwait(true);
                     if (saved != null)
                     {
                         ApplyTeachingToView(saved);
@@ -566,7 +573,10 @@ namespace NinePointRotationCalibration.Station.Views
                     }
                     else
                     {
-                        _view.AppendLog(sideLabel + "轴坐标已记录并同步到页面。请将轴移出视野后点击「模板匹配定位」。", false);
+                        _view.AppendLog(
+                            sideLabel + (queryHost ? "实时轴坐标已从上位机读取并同步到页面。" : "手动轴坐标已记录并同步到页面（上位机未连接）。") +
+                            "请将轴移出视野后点击「模板匹配定位」。",
+                            false);
                     }
                 }).ConfigureAwait(true);
         }

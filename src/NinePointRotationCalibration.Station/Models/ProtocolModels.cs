@@ -23,6 +23,8 @@ namespace NinePointRotationCalibration.Station.Models
         public const string InspectionResult = "inspection.result";
         public const string TeachingSubmit = "teaching.submit";
         public const string TeachingResult = "teaching.result";
+        public const string TeachingPoseRequest = "teaching.pose.request";
+        public const string TeachingPoseResponse = "teaching.pose.response";
         public const string Error = "system.error";
     }
 
@@ -189,6 +191,19 @@ namespace NinePointRotationCalibration.Station.Models
         public string SessionId { get; set; }
         public int PointNumber { get; set; }
         public string Code { get; set; }
+        public string Message { get; set; }
+    }
+
+    /// <summary>上位机对 teaching.pose.request 的实时机械轴坐标应答数据。</summary>
+    public sealed class TeachingPoseResponse
+    {
+        public string MessageId { get; set; }
+        public string CorrelationId { get; set; }
+        public TeachingSide Side { get; set; }
+        public bool Success { get; set; }
+        public double X { get; set; }
+        public double Y { get; set; }
+        public double R { get; set; }
         public string Message { get; set; }
     }
 

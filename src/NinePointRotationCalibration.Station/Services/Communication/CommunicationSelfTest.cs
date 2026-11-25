@@ -1748,6 +1748,74 @@ namespace NinePointRotationCalibration.Station.Services.Communication
                            ProtocolValue.TryBool(statusReady.Data, "calibrationReady", out calReadyAfter) && calReadyAfter,
                         "Expected system.status(calibrationReady=true) immediately after Right teaching.result.");
 
+                    // G. 视觉界面点击「记录轴坐标」时主动向上位机请求实时轴坐标：teaching.pose.request -> teaching.pose.response
+                    camera.FailCapture = true;
+                    TeachingPose queriedLeftEvent = null;
+                    EventHandler<TeachingEventArgs> queryListener = (s, e) =>
+                    {
+                        if (e != null && e.Pose != null && e.Pose.Side == TeachingSide.Left) queriedLeftEvent = e.Pose;
+                    };
+                    runtime.TeachingChanged += queryListener;
+                    try
+                    {
+                        Task<TeachingPose> queryTask = runtime.RequestAndRecordTeachingMachinePoseFromHostAsync(TeachingSide.Left, timeout.Token);
+                        ProtocolEnvelope poseReq = await ReadEnvelopeAsync(stream, codec, options.TcpMaxMessageBytes, timeout.Token).ConfigureAwait(false);
+                        Assert(poseReq.Type == ProtocolMessageTypes.TeachingPoseRequest &&
+                               ProtocolValue.String(poseReq.Data, "nozzle") == "Left" &&
+                               ProtocolValue.String(poseReq.Data, "axisR") == "R1" &&
+                               ProtocolValue.String(poseReq.Data, "replyType") == ProtocolMessageTypes.TeachingPoseResponse,
+                            "Vision must send teaching.pose.request(Left/R1) when querying real-time axis pose.");
+
+                        ProtocolEnvelope poseRes = ProtocolEnvelope.Create(ProtocolMessageTypes.TeachingPoseResponse);
+                        poseRes.CorrelationId = poseReq.MessageId;
+                        poseRes.Data["nozzle"] = "Left";
+                        poseRes.Data["axisR"] = "R1";
+                        poseRes.Data["success"] = true;
+                        poseRes.Data["x"] = 780.125;
+                        poseRes.Data["y"] = 139.420;
+                        poseRes.Data["r"] = 24.0;
+                        await WriteEnvelopeAsync(stream, codec, poseRes, timeout.Token).ConfigureAwait(false);
+
+                        TeachingPose recordedFromHost = await queryTask.ConfigureAwait(false);
+                        Assert(recordedFromHost != null && recordedFromHost.HasMachinePose && !recordedFromHost.HasImagePose &&
+                               Math.Abs(recordedFromHost.MachineX - 780.125) < 1e-6 &&
+                               Math.Abs(recordedFromHost.MachineY - 139.420) < 1e-6 &&
+                               Math.Abs(recordedFromHost.MachineR - 24.0) < 1e-6,
+                            "teaching.pose.response must be saved immediately without camera capture.");
+                        Assert(queriedLeftEvent != null && Math.Abs(queriedLeftEvent.MachineX - 780.125) < 1e-6,
+                            "TeachingChanged must fire immediately after teaching.pose.response so UI updates.");
+
+                        // 消费因左吸嘴重新开始示教而触发的 system.status(calibrationReady=false)
+                        ProtocolEnvelope statusUnready = await ReadEnvelopeAsync(stream, codec, options.TcpMaxMessageBytes, timeout.Token).ConfigureAwait(false);
+                        Assert(statusUnready.Type == ProtocolMessageTypes.SystemStatus,
+                            "Expected system.status update after starting a new Left teaching cycle.");
+
+                        // 上位机拒绝返回实时坐标时（success=false）应报错并保留已记录坐标
+                        Task<TeachingPose> rejectTask = runtime.RequestAndRecordTeachingMachinePoseFromHostAsync(TeachingSide.Left, timeout.Token);
+                        ProtocolEnvelope rejectReq = await ReadEnvelopeAsync(stream, codec, options.TcpMaxMessageBytes, timeout.Token).ConfigureAwait(false);
+                        ProtocolEnvelope rejectRes = ProtocolEnvelope.Create(ProtocolMessageTypes.TeachingPoseResponse);
+                        rejectRes.CorrelationId = rejectReq.MessageId;
+                        rejectRes.Data["success"] = false;
+                        rejectRes.Data["message"] = "Servo not ready";
+                        await WriteEnvelopeAsync(stream, codec, rejectRes, timeout.Token).ConfigureAwait(false);
+                        bool rejectedPose = false;
+                        try
+                        {
+                            await rejectTask.ConfigureAwait(false);
+                        }
+                        catch (InvalidOperationException ex)
+                        {
+                            rejectedPose = ex.Message.Contains("Servo not ready");
+                        }
+                        Assert(rejectedPose, "Host rejection of teaching.pose.request must fail with host message.");
+                        Assert(Math.Abs(runtime.GetTeachingSnapshot().Left.MachineX - 780.125) < 1e-6,
+                            "Existing Left machine pose must remain intact when host rejects teaching.pose.request.");
+                    }
+                    finally
+                    {
+                        runtime.TeachingChanged -= queryListener;
+                    }
+
                     await runtime.StopAsync().ConfigureAwait(false);
                 }
                 finally

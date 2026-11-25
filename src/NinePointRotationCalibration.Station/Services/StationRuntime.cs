@@ -45,6 +45,7 @@ namespace NinePointRotationCalibration.Station.Services
         private readonly ConcurrentDictionary<string, byte> _seenMessages;
         private readonly ConcurrentQueue<string> _seenMessageOrder = new ConcurrentQueue<string>();
         private readonly ConcurrentDictionary<string, string> _calibrationRequestConnections;
+        private readonly ConcurrentDictionary<string, PendingTeachingPoseRequest> _pendingTeachingPoseRequests;
         private StationOptions _options;
         private CalibrationJob _leftCalibrationJob;
         private CalibrationJob _rightCalibrationJob;
@@ -127,6 +128,8 @@ namespace NinePointRotationCalibration.Station.Services
             _workflowGate = new SemaphoreSlim(1, 1);
             _seenMessages = new ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
             _calibrationRequestConnections = new ConcurrentDictionary<string, string>(
+                StringComparer.OrdinalIgnoreCase);
+            _pendingTeachingPoseRequests = new ConcurrentDictionary<string, PendingTeachingPoseRequest>(
                 StringComparer.OrdinalIgnoreCase);
 
             _leftCalibrationJob = LoadJobOrDefault(_options.CalibrationJobPath, "Calibration-Left");
@@ -798,6 +801,18 @@ namespace NinePointRotationCalibration.Station.Services
             return RunExclusiveAsync(
                 side + " teaching record machine",
                 () => _teaching.RecordMachinePoseAsync(side, machinePose, cancellationToken),
+                cancellationToken);
+        }
+
+        /// <summary>向上位机发送 teaching.pose.request 实时读取当前一瞬间的机械轴坐标，收到后不拍照直接记录并同步到页面。</summary>
+        public Task<TeachingPose> RequestAndRecordTeachingMachinePoseFromHostAsync(
+            TeachingSide side,
+            CancellationToken cancellationToken)
+        {
+            EnsureCalibrationEnabled();
+            return RunExclusiveAsync(
+                side + " teaching query host pose",
+                () => RequestAndRecordTeachingMachinePoseCoreAsync(side, cancellationToken),
                 cancellationToken);
         }
 
@@ -1806,6 +1821,7 @@ namespace NinePointRotationCalibration.Station.Services
         private void OnTcpDisconnected(object sender, TcpDisconnectedEventArgs e)
         {
             ClearCalibrationRequestConnectionsFor(e.ConnectionId);
+            CancelPendingTeachingPoseRequestsFor(e.ConnectionId, "上位机连接已断开：" + e.Reason);
 
             string activeConnectionId = _tcpServer.ActiveConnectionId;
             if (!string.IsNullOrWhiteSpace(activeConnectionId) && !string.Equals(
@@ -1885,6 +1901,7 @@ namespace NinePointRotationCalibration.Station.Services
                 }
 
                 if (HandleCalibrationProtocolMessage(envelope, e.ConnectionId)) return;
+                if (HandleTeachingPoseResponseMessage(envelope, e.ConnectionId)) return;
                 if (string.Equals(envelope.Type, ProtocolMessageTypes.CalibrationCancel, StringComparison.OrdinalIgnoreCase))
                 {
                     await _calibration.HandleCalibrationCancelAsync(envelope).ConfigureAwait(false);
@@ -2274,6 +2291,243 @@ namespace NinePointRotationCalibration.Station.Services
                     NotifySystemStatusChangedIfNeeded();
                 }
             }
+        }
+
+        private async Task<TeachingPose> RequestAndRecordTeachingMachinePoseCoreAsync(
+            TeachingSide side,
+            CancellationToken cancellationToken)
+        {
+            string connectionId = _tcpServer.ActiveConnectionId;
+            if (string.IsNullOrWhiteSpace(connectionId))
+            {
+                throw new InvalidOperationException("上位机未连接，无法实时读取当前轴坐标。");
+            }
+
+            int timeoutMs;
+            lock (_stateSync)
+            {
+                timeoutMs = _options.CalibrationStartAckTimeoutMilliseconds;
+            }
+            if (timeoutMs < 2000) timeoutMs = 3000;
+            if (timeoutMs > 10000) timeoutMs = 10000;
+
+            ProtocolEnvelope request = ProtocolEnvelope.Create(ProtocolMessageTypes.TeachingPoseRequest);
+            request.CorrelationId = null;
+            request.Data["nozzle"] = ProtocolNozzle.GetNozzleName(side);
+            request.Data["axisR"] = ProtocolNozzle.GetAxisR(side);
+            request.Data["replyType"] = ProtocolMessageTypes.TeachingPoseResponse;
+
+            PendingTeachingPoseRequest pending = new PendingTeachingPoseRequest(request.MessageId, connectionId, side);
+            if (!_pendingTeachingPoseRequests.TryAdd(request.MessageId, pending))
+            {
+                throw new InvalidOperationException("Duplicate teaching.pose.request messageId.");
+            }
+
+            TeachingPoseResponse poseResponse;
+            try
+            {
+                LocalDebugLog.Write(
+                    "INFO",
+                    "tcp.teach.pose",
+                    string.Format(
+                        CultureInfo.InvariantCulture,
+                        "Sending teaching.pose.request: conn={0}, msgId={1}, nozzle={2}, axisR={3}, timeout={4}ms",
+                        connectionId,
+                        request.MessageId,
+                        ProtocolNozzle.GetNozzleName(side),
+                        ProtocolNozzle.GetAxisR(side),
+                        timeoutMs));
+                await _tcpServer.SendAsync(connectionId, request, cancellationToken).ConfigureAwait(false);
+                LocalDebugLog.Write("INFO", "tcp.tx", "conn=" + connectionId + " " + StationLogFormatter.FormatEnvelope(request, _logCodec));
+
+                using (CancellationTokenSource timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+                {
+                    Task delayTask = Task.Delay(timeoutMs, timeoutCts.Token);
+                    Task completed = await Task.WhenAny(pending.Completion.Task, delayTask).ConfigureAwait(false);
+                    if (completed == pending.Completion.Task)
+                    {
+                        timeoutCts.Cancel();
+                        poseResponse = await pending.Completion.Task.ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        throw new TimeoutException(
+                            "等待上位机回复实时轴坐标超时（未收到 teaching.pose.response，> " + timeoutMs + " ms）。请确认上位机已对接 teaching.pose.request / teaching.pose.response。");
+                    }
+                }
+            }
+            finally
+            {
+                PendingTeachingPoseRequest ignored;
+                _pendingTeachingPoseRequests.TryRemove(request.MessageId, out ignored);
+            }
+
+            if (poseResponse == null || !poseResponse.Success)
+            {
+                string reason = poseResponse == null || string.IsNullOrWhiteSpace(poseResponse.Message)
+                    ? "上位机未返回有效实时轴坐标"
+                    : poseResponse.Message.Trim();
+                throw new InvalidOperationException("上位机拒绝或未能返回实时轴坐标：" + reason);
+            }
+
+            if (double.IsNaN(poseResponse.X) || double.IsInfinity(poseResponse.X) ||
+                double.IsNaN(poseResponse.Y) || double.IsInfinity(poseResponse.Y) ||
+                double.IsNaN(poseResponse.R) || double.IsInfinity(poseResponse.R))
+            {
+                throw new InvalidOperationException("上位机返回的实时轴坐标包含无效数值 (NaN/Infinity)。");
+            }
+
+            MachinePose machinePose = new MachinePose(poseResponse.X, poseResponse.Y, poseResponse.R);
+            TeachingPose saved = await _teaching.RecordMachinePoseAsync(side, machinePose, cancellationToken).ConfigureAwait(false);
+            OnLog(
+                "INFO",
+                string.Format(
+                    CultureInfo.InvariantCulture,
+                    "已从上位机实时读取并记录 {0} 轴坐标：X={1:0.###}, Y={2:0.###}, R={3:0.###}°（未拍照；{4}）。",
+                    ProtocolNozzle.GetDisplayName(side),
+                    saved.MachineX,
+                    saved.MachineY,
+                    saved.MachineR,
+                    saved.IsValid ? "已与图像定位合并完成示教" : "请移走轴后点击「模板匹配定位」"));
+            return saved;
+        }
+
+        private bool HandleTeachingPoseResponseMessage(ProtocolEnvelope envelope, string connectionId)
+        {
+            if (envelope == null) return false;
+            bool isPoseResponse = string.Equals(envelope.Type, ProtocolMessageTypes.TeachingPoseResponse, StringComparison.OrdinalIgnoreCase);
+            bool isCorrelatedSubmit = !isPoseResponse &&
+                string.Equals(envelope.Type, ProtocolMessageTypes.TeachingSubmit, StringComparison.OrdinalIgnoreCase) &&
+                !string.IsNullOrWhiteSpace(envelope.CorrelationId) &&
+                _pendingTeachingPoseRequests.ContainsKey(envelope.CorrelationId);
+            if (!isPoseResponse && !isCorrelatedSubmit) return false;
+
+            PendingTeachingPoseRequest pending = null;
+            if (!string.IsNullOrWhiteSpace(envelope.CorrelationId))
+            {
+                _pendingTeachingPoseRequests.TryGetValue(envelope.CorrelationId, out pending);
+            }
+            else if (isPoseResponse)
+            {
+                // 若上位机遗漏 correlationId，且当前连接仅有唯一挂起的实时轴坐标查询，则按连接匹配兜底
+                List<PendingTeachingPoseRequest> candidates = _pendingTeachingPoseRequests.Values
+                    .Where(item => string.Equals(item.ConnectionId, connectionId, StringComparison.Ordinal))
+                    .ToList();
+                if (candidates.Count == 1)
+                {
+                    pending = candidates[0];
+                    LocalDebugLog.Write("WARN", "tcp.teach.pose", "Matched teaching.pose.response without correlationId to single pending request " + pending.RequestId);
+                }
+            }
+
+            if (pending == null)
+            {
+                LocalDebugLog.Write("WARN", "tcp.teach.pose", "Ignored teaching.pose.response with unknown correlationId='" + (envelope.CorrelationId ?? string.Empty) + "'.");
+                return true;
+            }
+
+            if (!string.Equals(pending.ConnectionId, connectionId, StringComparison.Ordinal))
+            {
+                LocalDebugLog.Write("WARN", "tcp.teach.pose", "Ignored teaching.pose.response from mismatched connection: expected=" + pending.ConnectionId + ", actual=" + connectionId);
+                return true;
+            }
+
+            bool success = true;
+            bool parsedSuccess;
+            if (ProtocolValue.TryBool(envelope.Data, "success", out parsedSuccess))
+            {
+                success = parsedSuccess;
+            }
+            string message = ProtocolValue.String(envelope.Data, "message", string.Empty);
+            if (!success)
+            {
+                pending.Completion.TrySetResult(new TeachingPoseResponse
+                {
+                    MessageId = envelope.MessageId,
+                    CorrelationId = envelope.CorrelationId,
+                    Side = pending.Side,
+                    Success = false,
+                    Message = string.IsNullOrWhiteSpace(message) ? "Host returned success=false." : message
+                });
+                return true;
+            }
+
+            double x;
+            double y;
+            double r;
+            bool hasX = ProtocolValue.TryDouble(envelope.Data, "x", out x)
+                || ProtocolValue.TryDouble(envelope.Data, "machineX", out x)
+                || ProtocolValue.TryDouble(envelope.Data, "originX", out x);
+            bool hasY = ProtocolValue.TryDouble(envelope.Data, "y", out y)
+                || ProtocolValue.TryDouble(envelope.Data, "machineY", out y)
+                || ProtocolValue.TryDouble(envelope.Data, "originY", out y);
+            string axisKey = pending.Side == TeachingSide.Right ? "r2" : "r1";
+            bool hasR = ProtocolValue.TryDouble(envelope.Data, "r", out r)
+                || ProtocolValue.TryDouble(envelope.Data, "machineR", out r)
+                || ProtocolValue.TryDouble(envelope.Data, "originR", out r)
+                || ProtocolValue.TryDouble(envelope.Data, axisKey, out r);
+
+            if (!hasX || !hasY || !hasR ||
+                double.IsNaN(x) || double.IsInfinity(x) ||
+                double.IsNaN(y) || double.IsInfinity(y) ||
+                double.IsNaN(r) || double.IsInfinity(r))
+            {
+                pending.Completion.TrySetResult(new TeachingPoseResponse
+                {
+                    MessageId = envelope.MessageId,
+                    CorrelationId = envelope.CorrelationId,
+                    Side = pending.Side,
+                    Success = false,
+                    Message = "teaching.pose.response 缺少有效的有限实数坐标 (x/y/r)。"
+                });
+                return true;
+            }
+
+            pending.Completion.TrySetResult(new TeachingPoseResponse
+            {
+                MessageId = envelope.MessageId,
+                CorrelationId = envelope.CorrelationId,
+                Side = pending.Side,
+                Success = true,
+                X = x,
+                Y = y,
+                R = r,
+                Message = message
+            });
+            return true;
+        }
+
+        private void CancelPendingTeachingPoseRequestsFor(string connectionId, string reason)
+        {
+            foreach (KeyValuePair<string, PendingTeachingPoseRequest> pair in _pendingTeachingPoseRequests)
+            {
+                if (string.IsNullOrWhiteSpace(connectionId) ||
+                    string.Equals(pair.Value.ConnectionId, connectionId, StringComparison.Ordinal))
+                {
+                    PendingTeachingPoseRequest removed;
+                    if (_pendingTeachingPoseRequests.TryRemove(pair.Key, out removed))
+                    {
+                        removed.Completion.TrySetException(new IOException(reason));
+                    }
+                }
+            }
+        }
+
+        private sealed class PendingTeachingPoseRequest
+        {
+            public PendingTeachingPoseRequest(string requestId, string connectionId, TeachingSide side)
+            {
+                RequestId = requestId;
+                ConnectionId = connectionId;
+                Side = side;
+                Completion = new TaskCompletionSource<TeachingPoseResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+            }
+
+            public string RequestId { get; private set; }
+            public string ConnectionId { get; private set; }
+            public TeachingSide Side { get; private set; }
+            public TaskCompletionSource<TeachingPoseResponse> Completion { get; private set; }
         }
 
         private static bool TryParseTeachingSubmit(
@@ -3557,6 +3811,7 @@ namespace NinePointRotationCalibration.Station.Services
             Task postProcessing;
             lock (_postProcessingSync) postProcessing = _postProcessingTail;
             try { postProcessing.Wait(TimeSpan.FromSeconds(5)); } catch { }
+            CancelPendingTeachingPoseRequestsFor(null, "视觉工作站正在关闭。");
             _inspectionGate.Dispose();
             _workflowGate.Dispose();
             _teaching.Dispose();

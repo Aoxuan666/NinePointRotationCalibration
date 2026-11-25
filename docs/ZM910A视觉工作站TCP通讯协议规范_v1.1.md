@@ -488,6 +488,38 @@ sequenceDiagram
 
 ---
 
+#### 5.1.9 `teaching.pose.response` — 回复视觉示教实时轴坐标查询
+
+当操作员在视觉工作站「左右示教」页点击「记录轴坐标」时，视觉向已连接的上位机发送 `teaching.pose.request`（见 5.2.10 节）；上位机收到后**立即读取当前瞬间的实时机械坐标**并回复本报文（`correlationId` 等于对应 `teaching.pose.request.messageId`）。视觉收到后**不拍照**，直接保存并同步刷新到视觉页面。
+
+```json
+{
+  "version": "1.1",
+  "messageId": "host-teach-pose-0001",
+  "correlationId": "vision-teach-pose-0001",
+  "type": "teaching.pose.response",
+  "timestampUtc": "2026-11-25T03:20:00.015Z",
+  "data": {
+    "nozzle": "Left",
+    "axisR": "R1",
+    "success": true,
+    "x": 780.125,
+    "y": 139.420,
+    "r": 24.000,
+    "message": "OK"
+  }
+}
+```
+
+| `data` 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `nozzle` / `axisR` | `string` | 建议 | `"Left"` / `"R1"` 或 `"Right"` / `"R2"` |
+| `success` | `boolean` | 否（默认 `true`） | 为 `false` 时表示当前无法读取轴坐标，视觉提示 `message` 并保留原示教数据 |
+| `x` / `y` / `r` | `number` | `success=true` 时必填 | 点击瞬间该吸嘴的实时机械轴坐标（兼容 `machineX/machineY/machineR`、`originX/originY/originR` 及 `r1`/`r2` 字段名） |
+| `message` | `string` | 否 | 正常或失败原因说明 |
+
+---
+
 ### 5.2 视觉 → 上位机（Vision → Host）
 
 #### 5.2.1 `system.ack` — 握手 / 心跳应答
@@ -1038,6 +1070,33 @@ sequenceDiagram
 | `machineX` / `machineY` / `machineR` | `number` | 回显本次记录的实测机械坐标（mm / deg，3 位小数） |
 | `imageRow` / `imageColumn` / `imageAngle` | `number` | 基准板像素行/列与图像角（2 位小数）；失败时为 `0.0` |
 | `score` | `number` | 模板匹配得分（3 位小数）；失败时为 `0.0` |
+
+---
+
+#### 5.2.10 `teaching.pose.request` — 视觉主动查询示教实时轴坐标
+
+当操作员在视觉界面「左右示教」页点击左侧或右侧「记录轴坐标」且上位机已连接时，视觉立即发送本报文（`correlationId` 为 `null`），请求上位机返回该瞬间的实时机械坐标（上位机需按 5.1.9 节回复 `teaching.pose.response`，超时上限 `3000 ms`）。
+
+```json
+{
+  "version": "1.1",
+  "messageId": "vision-teach-pose-0001",
+  "correlationId": null,
+  "type": "teaching.pose.request",
+  "timestampUtc": "2026-11-25T03:20:00.000Z",
+  "data": {
+    "nozzle": "Left",
+    "axisR": "R1",
+    "replyType": "teaching.pose.response"
+  }
+}
+```
+
+| `data` 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `nozzle` | `string` | `"Left"` 或 `"Right"` |
+| `axisR` | `string` | `"R1"`（左吸嘴）或 `"R2"`（右吸嘴） |
+| `replyType` | `string` | 固定 `"teaching.pose.response"` |
 
 ---
 
