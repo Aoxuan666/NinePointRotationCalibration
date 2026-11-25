@@ -647,6 +647,15 @@ namespace NinePointRotationCalibration.Station.Views
         {
             RunOnUiThread(delegate
             {
+                if (imageViewport != null)
+                {
+                    imageViewport.ShowCenterCrosshair = active;
+                }
+                if (effectViewport != null)
+                {
+                    effectViewport.ShowCenterCrosshair = active;
+                }
+
                 if (_dualViewStateInitialized && _dualViewActive == active)
                 {
                     return;

@@ -111,6 +111,8 @@ namespace NinePointRotationCalibration.Station.Controls
         private PointF _pan = PointF.Empty;
         private bool _isPanning;
         private Point _lastMousePoint;
+        private bool _showCenterCrosshair;
+        private Color _centerCrosshairColor = Color.FromArgb(230, 0, 230, 0);
 
         public ImageViewport()
         {
@@ -160,6 +162,34 @@ namespace NinePointRotationCalibration.Station.Controls
         public bool IsFitMode
         {
             get { return _fitMode; }
+        }
+
+        /// <summary>是否在视口中绘制贯通全屏的中心十字参考线。</summary>
+        [Browsable(false)]
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+        public bool ShowCenterCrosshair
+        {
+            get { return _showCenterCrosshair; }
+            set
+            {
+                if (_showCenterCrosshair == value) return;
+                _showCenterCrosshair = value;
+                InvalidateSafe();
+            }
+        }
+
+        /// <summary>全屏中心十字参考线的颜色。</summary>
+        [Browsable(false)]
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+        public Color CenterCrosshairColor
+        {
+            get { return _centerCrosshairColor; }
+            set
+            {
+                if (_centerCrosshairColor == value) return;
+                _centerCrosshairColor = value;
+                if (_showCenterCrosshair) InvalidateSafe();
+            }
         }
 
         [Browsable(false)]
@@ -552,12 +582,23 @@ namespace NinePointRotationCalibration.Station.Controls
                 Bitmap image = _displayedImage;
                 if (image == null || _disposed)
                 {
+                    if (!_disposed && _showCenterCrosshair)
+                    {
+                        DrawCenterCrosshair(e.Graphics, ClientSize.Width * 0.5f, ClientSize.Height * 0.5f);
+                    }
                     return;
                 }
 
                 float scale;
                 PointF origin;
-                if (!TryGetTransform(out scale, out origin)) return;
+                if (!TryGetTransform(out scale, out origin))
+                {
+                    if (_showCenterCrosshair)
+                    {
+                        DrawCenterCrosshair(e.Graphics, ClientSize.Width * 0.5f, ClientSize.Height * 0.5f);
+                    }
+                    return;
+                }
 
                 // 无论实时采集流还是静态检测/调试图，在缩小时统一复用最长边 1600px 的 32bppPArgb 预降采样缓存，
                 // 彻底消除高像素实时预览与静态图在 UI 线程缩放重绘引起的卡顿。
@@ -605,6 +646,15 @@ namespace NinePointRotationCalibration.Station.Controls
                     e.Graphics.CompositingMode = CompositingMode.SourceCopy;
                     e.Graphics.DrawImage(drawSource, dstRect, srcRect, GraphicsUnit.Pixel);
                     e.Graphics.CompositingMode = CompositingMode.SourceOver;
+                }
+
+                if (_showCenterCrosshair)
+                {
+                    PointF imageCenter = Transform(
+                        new PointF(image.Width * 0.5f, image.Height * 0.5f),
+                        scale,
+                        origin);
+                    DrawCenterCrosshair(e.Graphics, imageCenter.X, imageCenter.Y);
                 }
 
                 DrawOverlays(e.Graphics, scale, origin);
@@ -1191,6 +1241,39 @@ namespace NinePointRotationCalibration.Station.Controls
             return new PointF(
                 (ClientSize.Width - _displayedImage.Width * scale) / 2.0f,
                 (ClientSize.Height - _displayedImage.Height * scale) / 2.0f);
+        }
+
+        private void DrawCenterCrosshair(Graphics graphics, float centerX, float centerY)
+        {
+            int width = ClientSize.Width;
+            int height = ClientSize.Height;
+            if (width <= 0 || height <= 0) return;
+
+            SmoothingMode previousSmoothing = graphics.SmoothingMode;
+            PixelOffsetMode previousPixelOffset = graphics.PixelOffsetMode;
+            graphics.SmoothingMode = SmoothingMode.None;
+            graphics.PixelOffsetMode = PixelOffsetMode.Default;
+            try
+            {
+                float x = (float)Math.Round(centerX);
+                float y = (float)Math.Round(centerY);
+                using (Pen pen = new Pen(_centerCrosshairColor, 1.0f))
+                {
+                    if (y >= -1.0f && y <= height + 1.0f)
+                    {
+                        graphics.DrawLine(pen, 0.0f, y, width, y);
+                    }
+                    if (x >= -1.0f && x <= width + 1.0f)
+                    {
+                        graphics.DrawLine(pen, x, 0.0f, x, height);
+                    }
+                }
+            }
+            finally
+            {
+                graphics.SmoothingMode = previousSmoothing;
+                graphics.PixelOffsetMode = previousPixelOffset;
+            }
         }
 
         private void DrawOverlays(Graphics graphics, float scale, PointF origin)
