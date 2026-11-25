@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace NinePointRotationCalibration.Station.Models
 {
@@ -145,16 +146,29 @@ namespace NinePointRotationCalibration.Station.Models
     /// <summary>吸嘴示教位姿更新事件参数。</summary>
     public sealed class TeachingEventArgs : EventArgs
     {
-        public TeachingEventArgs(TeachingPose pose)
+        public TeachingEventArgs(TeachingPose pose, IList<List<ImagePoint>> contourSegments = null)
         {
+            ContourSegments = new List<List<ImagePoint>>();
+            if (contourSegments != null)
+            {
+                foreach (List<ImagePoint> segment in contourSegments)
+                {
+                    if (segment != null && segment.Count > 0)
+                        ContourSegments.Add(new List<ImagePoint>(segment));
+                }
+            }
+
             if (pose == null) return;
             Pose = new TeachingPose
             {
                 Side = pose.Side,
                 IsValid = pose.IsValid,
+                HasMachinePose = pose.HasMachinePose || pose.IsValid,
+                HasImagePose = pose.HasImagePose || pose.IsValid,
                 ImageRow = pose.ImageRow,
                 ImageColumn = pose.ImageColumn,
                 ImageAngleDegrees = pose.ImageAngleDegrees,
+                MatchScore = pose.MatchScore,
                 MachineX = pose.MachineX,
                 MachineY = pose.MachineY,
                 MachineR = pose.MachineR,
@@ -163,6 +177,7 @@ namespace NinePointRotationCalibration.Station.Models
         }
 
         public TeachingPose Pose { get; private set; }
+        public List<List<ImagePoint>> ContourSegments { get; private set; }
     }
 
     /// <summary>整盘视觉检测完成事件参数。</summary>

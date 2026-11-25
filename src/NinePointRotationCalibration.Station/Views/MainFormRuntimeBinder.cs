@@ -62,6 +62,7 @@ namespace NinePointRotationCalibration.Station.Views
         private bool _suppressDetectionEvents;
         private bool _suppressCameraProviderEvents;
         private bool _suppressCalibrationNozzleEvents;
+        private bool _suppressCalibrationMinScoreEvents;
         private decimal? _readExposure;
         private int _lastLiveInfoUpdateTick;
         private int _lastCameraWidth;
@@ -132,6 +133,7 @@ namespace NinePointRotationCalibration.Station.Views
             SelectCalibrationNozzle(_runtime.ActiveCalibrationNozzle);
             CalibrationJob initialCalibrationJob = _runtime.GetCalibrationJobSnapshot(_runtime.ActiveCalibrationNozzle);
             CalibrationJob initialPositioningJob = _runtime.GetPositioningJobSnapshot();
+            SyncCalibrationMinScoreToView(initialCalibrationJob);
             UpdateTemplateStatusLabel(false, initialCalibrationJob == null ? null : initialCalibrationJob.Template);
             UpdateTemplateStatusLabel(true, initialPositioningJob == null ? null : initialPositioningJob.Template);
             SetText("txtTeachingFile", options.TeachingPath);
@@ -292,16 +294,32 @@ namespace NinePointRotationCalibration.Station.Views
                     return;
                 }
 
-                // 在非检测页之间切换时无需重复折叠视口或重绘叠加层，保证切页瞬时完成
+                bool enteringCalibration = string.Equals(
+                    _view.WorkTabs.SelectedTab.Name,
+                    "tabCalibration",
+                    StringComparison.Ordinal);
+
+                // 在非检测页之间切换时无需重复折叠视口，切入标定页时按需同步标定点十字线与连线
                 if (!_view.IsDetectionDualViewActive)
                 {
+                    if (enteringCalibration && _view.Viewport.HasImage)
+                    {
+                        RenderCalibrationViewportOverlays(_runtime.ActiveCalibrationNozzle);
+                    }
                     return;
                 }
 
                 // 切离检测页时折叠检测效果图窗口，取消在途重绘，并恢复单窗口锁定帧叠加层
                 CancelBinaryPreview();
                 _view.SetDetectionDualViewActive(false);
-                RestoreSingleViewportOverlays();
+                if (enteringCalibration && _view.Viewport.HasImage)
+                {
+                    RenderCalibrationViewportOverlays(_runtime.ActiveCalibrationNozzle);
+                }
+                else
+                {
+                    RestoreSingleViewportOverlays();
+                }
             }
             catch (ObjectDisposedException)
             {
@@ -384,6 +402,10 @@ namespace NinePointRotationCalibration.Station.Views
                     case "calibration.nozzleChanged":
                         if (_suppressCalibrationNozzleEvents) return;
                         SwitchCalibrationNozzleFromView();
+                        return;
+                    case "calibration.minScoreChanged":
+                        if (_suppressCalibrationMinScoreEvents) return;
+                        ApplyCalibrationMinScoreFromView();
                         return;
                     case "calibration.manual":
                         await RunOperationAsync("启动手动标定", e.Source, async token =>
@@ -522,10 +544,16 @@ namespace NinePointRotationCalibration.Station.Views
                         await RunOperationAsync("停止 TCP 监听", e.Source, token => _runtime.StopTcpServerAsync()).ConfigureAwait(true);
                         return;
                     case "teaching.left.capture":
-                        await CaptureTeachingAsync(TeachingSide.Left, e.Source).ConfigureAwait(true);
+                        await RecordTeachingMachinePoseAsync(TeachingSide.Left, e.Source).ConfigureAwait(true);
                         return;
                     case "teaching.right.capture":
-                        await CaptureTeachingAsync(TeachingSide.Right, e.Source).ConfigureAwait(true);
+                        await RecordTeachingMachinePoseAsync(TeachingSide.Right, e.Source).ConfigureAwait(true);
+                        return;
+                    case "teaching.left.locate":
+                        await LocateTeachingImageAsync(TeachingSide.Left, e.Source).ConfigureAwait(true);
+                        return;
+                    case "teaching.right.locate":
+                        await LocateTeachingImageAsync(TeachingSide.Right, e.Source).ConfigureAwait(true);
                         return;
                     case "teaching.left.clear":
                         await ClearTeachingAsync(TeachingSide.Left, e.Source).ConfigureAwait(true);
@@ -736,6 +764,7 @@ namespace NinePointRotationCalibration.Station.Views
                 : options.CalibrationJobPath;
             SetText("txtCalibrationTemplatePath", activeCalPath);
             CalibrationJob calJob = _runtime.GetCalibrationJobSnapshot(nozzle);
+            SyncCalibrationMinScoreToView(calJob);
             UpdateTemplateStatusLabel(false, calJob == null ? null : calJob.Template);
             foreach (CalibrationPointRecord record in _runtime.GetCalibrationRecordsSnapshot(nozzle))
             {
@@ -744,6 +773,42 @@ namespace NinePointRotationCalibration.Station.Views
             CalibrationResult result = _runtime.GetCalibrationResultSnapshot(nozzle);
             _view.SetCalibrationRmsSummary(result);
             _view.ApplyCalibrationDiagnostics(result);
+            if (!_view.IsDetectionDualViewActive && IsCalibrationTabActive() && _view.Viewport.HasImage)
+            {
+                RenderCalibrationViewportOverlays(nozzle);
+            }
+        }
+
+        private bool IsCalibrationTabActive()
+        {
+            return _view.WorkTabs != null &&
+                   _view.WorkTabs.SelectedTab != null &&
+                   string.Equals(_view.WorkTabs.SelectedTab.Name, "tabCalibration", StringComparison.Ordinal);
+        }
+
+        private void SyncCalibrationMinScoreToView(CalibrationJob job)
+        {
+            double minScore = (job != null && job.Template != null && job.Template.MatchParameters != null &&
+                               !double.IsNaN(job.Template.MatchParameters.MinScore) &&
+                               !double.IsInfinity(job.Template.MatchParameters.MinScore))
+                ? Math.Max(0.0, Math.Min(1.0, job.Template.MatchParameters.MinScore))
+                : 0.5;
+            _suppressCalibrationMinScoreEvents = true;
+            try
+            {
+                SetNumeric("nudCalibrationMinScore", minScore);
+            }
+            finally
+            {
+                _suppressCalibrationMinScoreEvents = false;
+            }
+        }
+
+        private void ApplyCalibrationMinScoreFromView()
+        {
+            TeachingSide nozzle = GetSelectedCalibrationNozzle();
+            double minScore = ReadNumeric("nudCalibrationMinScore");
+            _runtime.UpdateCalibrationMinScore(nozzle, minScore);
         }
 
         private string GetSelectedCameraId()

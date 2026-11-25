@@ -196,6 +196,10 @@ namespace NinePointRotationCalibration.Station.Views
                 if (e.Nozzle != _runtime.ActiveCalibrationNozzle) return;
                 ApplyCalibrationRecord(e.Record);
                 _view.SelectCalibrationPoint(e.Record.PointNumber);
+                if (!_view.IsDetectionDualViewActive)
+                {
+                    RenderCalibrationViewportOverlays(e.Nozzle, e.Record.PointNumber);
+                }
             }
             catch (Exception exception)
             {
@@ -207,15 +211,23 @@ namespace NinePointRotationCalibration.Station.Views
         {
             if (record == null) return;
             bool hasSample = record.CapturedAtUtc.HasValue || record.Status == CalibrationPointStatus.Completed;
+            bool isFailed = record.Status == CalibrationPointStatus.Failed;
+            bool hasMachine = hasSample || (isFailed && !double.IsNaN(record.MachineX) && !double.IsNaN(record.MachineY));
+            bool hasImage = (hasSample || isFailed) &&
+                            !double.IsNaN(record.ImageRow) && !double.IsInfinity(record.ImageRow) &&
+                            !double.IsNaN(record.ImageColumn) && !double.IsInfinity(record.ImageColumn);
+            bool hasAngle = hasImage && !double.IsNaN(record.ImageAngle) && !double.IsInfinity(record.ImageAngle);
+            bool hasScore = (hasSample || isFailed) && !double.IsNaN(record.MatchScore) && !double.IsInfinity(record.MatchScore);
             _view.UpdateCalibrationSample(
                 record.PointNumber,
-                hasSample ? (double?)record.MachineX : null,
-                hasSample ? (double?)record.MachineY : null,
-                hasSample ? (double?)record.MachineR : null,
-                hasSample ? (double?)record.ImageRow : null,
-                hasSample ? (double?)record.ImageColumn : null,
-                hasSample ? (double?)record.ImageAngle : null,
-                FormatCalibrationStatus(record.Status));
+                hasMachine ? (double?)record.MachineX : null,
+                hasMachine ? (double?)record.MachineY : null,
+                hasMachine ? (double?)record.MachineR : null,
+                hasImage ? (double?)record.ImageRow : null,
+                hasImage ? (double?)record.ImageColumn : null,
+                hasAngle ? (double?)record.ImageAngle : null,
+                FormatCalibrationStatus(record.Status),
+                hasScore ? (double?)record.MatchScore : null);
         }
 
         private void Runtime_CalibrationCompleted(object sender, CalibrationResultEventArgs e)
@@ -260,7 +272,13 @@ namespace NinePointRotationCalibration.Station.Views
         {
             try
             {
-                ApplyTeachingToView(e == null ? null : e.Pose);
+                TeachingPose pose = e == null ? null : e.Pose;
+                ApplyTeachingToView(pose);
+                if (pose != null && pose.HasImagePose &&
+                    ((e.ContourSegments != null && e.ContourSegments.Count > 0) || pose.MatchScore > 0.0))
+                {
+                    RenderTeachingViewportOverlays(pose, e.ContourSegments);
+                }
             }
             catch (Exception exception)
             {
@@ -279,7 +297,10 @@ namespace NinePointRotationCalibration.Station.Views
                 pose.MachineX,
                 pose.MachineY,
                 pose.MachineR,
-                pose.IsValid);
+                pose.IsValid,
+                pose.HasMachinePose,
+                pose.HasImagePose,
+                pose.MatchScore);
         }
 
         private void Runtime_InspectionCompleted(object sender, InspectionEventArgs e)

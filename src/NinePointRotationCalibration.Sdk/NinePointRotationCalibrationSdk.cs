@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Drawing;
+using System.Globalization;
 using System.Linq;
 using System.Threading;
 using System.Windows.Forms;
@@ -229,6 +230,21 @@ namespace NinePointRotationCalibration
             }
             if (!match.Anchor.IsFinite || match.ModelPose == null || !match.ModelPose.IsFinite || !IsFinite(match.Score))
                 return SampleCaptureResult.Failure(CalibrationErrorCode.ParameterInvalid, "Template match result contains invalid values.", job, match);
+            double minScore = (job.Template != null && job.Template.MatchParameters != null && IsFinite(job.Template.MatchParameters.MinScore))
+                ? job.Template.MatchParameters.MinScore
+                : 0.0;
+            if (match.Score < minScore)
+            {
+                return SampleCaptureResult.Failure(
+                    CalibrationErrorCode.TemplateMatchFailed,
+                    string.Format(
+                        CultureInfo.InvariantCulture,
+                        "模板匹配分数 {0:0.###} 低于设定匹配分数 {1:0.###}。",
+                        match.Score,
+                        minScore),
+                    job,
+                    match);
+            }
             if (!IsFinite(machineX) || !IsFinite(machineY) || !IsFinite(machineThetaDegrees))
                 return SampleCaptureResult.Failure(CalibrationErrorCode.ParameterInvalid, "Machine pose contains a non-finite value.", job, match);
 

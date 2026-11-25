@@ -202,6 +202,30 @@ namespace NinePointRotationCalibration.Station.Services.Calibration
             SetJob(ActiveNozzle, job);
         }
 
+        /// <summary>更新指定吸嘴标定模板的最低匹配分数（同步作用于已提交任务与当前活动会话，不清空采样）。</summary>
+        public void UpdateTemplateMinScore(TeachingSide nozzle, double minScore)
+        {
+            if (!IsFinite(minScore)) return;
+            double clamped = Math.Max(0.0, Math.Min(1.0, minScore));
+            lock (_sync)
+            {
+                CalibrationJob committed = _committedJobs[nozzle];
+                if (committed != null && committed.Template != null)
+                {
+                    if (committed.Template.MatchParameters == null)
+                        committed.Template.MatchParameters = new MatchParameters();
+                    committed.Template.MatchParameters.MinScore = clamped;
+                }
+                if (_activeSession != null && _activeSession.Nozzle == nozzle &&
+                    _activeSession.WorkingJob != null && _activeSession.WorkingJob.Template != null)
+                {
+                    if (_activeSession.WorkingJob.Template.MatchParameters == null)
+                        _activeSession.WorkingJob.Template.MatchParameters = new MatchParameters();
+                    _activeSession.WorkingJob.Template.MatchParameters.MinScore = clamped;
+                }
+            }
+        }
+
         /// <summary>主动开启指定吸嘴的手动标定会话（发送 calibration.started 并锁存原点）。</summary>
         public async Task<string> StartManualSessionAsync(TeachingSide nozzle, CancellationToken cancellationToken)
         {
@@ -948,6 +972,7 @@ namespace NinePointRotationCalibration.Station.Services.Calibration
                         if (oldSample != null) baseline = _sdk.RemoveSample(baseline, oldSample.SampleId);
                     }
 
+                    double minScore = GetTemplateMinScore(baseline);
                     SampleCaptureResult capture = _sdk.CaptureSample(
                         baseline,
                         frame.Image,
@@ -956,21 +981,59 @@ namespace NinePointRotationCalibration.Station.Services.Calibration
                         arrival.R,
                         point.Tag,
                         point.Kind);
-                    if (!capture.Success)
+                    bool scoreBelowThreshold = capture != null && capture.Match != null &&
+                        IsFinite(capture.Match.Score) && capture.Match.Score < minScore;
+                    if (capture == null || !capture.Success || capture.Match == null ||
+                        !IsFinite(capture.Match.Score) || scoreBelowThreshold)
                     {
+                        string failMsg;
+                        if (scoreBelowThreshold && capture.Match.Score > 0.0)
+                        {
+                            failMsg = string.Format(
+                                CultureInfo.InvariantCulture,
+                                "NG：点 {0} 模板匹配分数 {1:0.###} 低于设定匹配分数 {2:0.###}，标定中断。",
+                                point.PointNumber,
+                                capture.Match.Score,
+                                minScore);
+                        }
+                        else
+                        {
+                            string rawReason = capture == null || string.IsNullOrWhiteSpace(capture.Message)
+                                ? "未找到满足最低匹配分数的目标"
+                                : capture.Message.Trim();
+                            failMsg = string.Format(
+                                CultureInfo.InvariantCulture,
+                                "NG：点 {0} 模板匹配失败（最低匹配分数 {1:0.###}）：{2}，标定中断。",
+                                point.PointNumber,
+                                minScore,
+                                rawReason);
+                        }
                         LocalDebugLog.Write(
                             "WARN",
                             "calibration.locate",
-                            "Locate failed for " + session.AxisR + " P" + point.PointNumber + " (" + point.Tag + "): code=" +
-                            capture.ErrorCode + ", msg=" + capture.Message);
+                            "Locate NG for " + session.AxisR + " P" + point.PointNumber + " (" + point.Tag + "): " + failMsg);
+                        OnLog("ERROR", failMsg);
                         CalibrationPointRecord failed = UpdateRecord(
                             session.Nozzle,
                             session.SessionId,
                             point,
                             CalibrationPointStatus.Failed,
-                            capture.ErrorCode + ": " + capture.Message);
+                            failMsg,
+                            arrival,
+                            capture);
                         await SendPointResultAsync(session, request.MessageId, failed, CancellationToken.None)
                             .ConfigureAwait(false);
+                        if (session.IsManual)
+                        {
+                            await EndSessionAndNotifyLockedOrUnlockedAsync(
+                                session,
+                                false,
+                                ProtocolErrorCodes.MatchFailed,
+                                failMsg,
+                                null,
+                                null).ConfigureAwait(false);
+                            throw new CalibrationWorkflowException(ProtocolErrorCodes.MatchFailed, failMsg);
+                        }
                         return failed;
                     }
 
@@ -1347,13 +1410,13 @@ namespace NinePointRotationCalibration.Station.Services.Calibration
             response.Data["pointNumber"] = record.PointNumber;
             response.Data["success"] = record.Status == CalibrationPointStatus.Completed;
             response.Data["status"] = record.Status.ToString();
-            response.Data["machineX"] = ProtocolNumber.Round3(record.MachineX);
-            response.Data["machineY"] = ProtocolNumber.Round3(record.MachineY);
-            response.Data["machineR"] = ProtocolNumber.Round3(record.MachineR);
-            response.Data["imageRow"] = ProtocolNumber.Round2(record.ImageRow);
-            response.Data["imageColumn"] = ProtocolNumber.Round2(record.ImageColumn);
-            response.Data["imageAngle"] = ProtocolNumber.Round2(record.ImageAngle);
-            response.Data["score"] = ProtocolNumber.Round3(record.MatchScore);
+            response.Data["machineX"] = ProtocolNumber.Round3(IsFinite(record.MachineX) ? record.MachineX : 0.0);
+            response.Data["machineY"] = ProtocolNumber.Round3(IsFinite(record.MachineY) ? record.MachineY : 0.0);
+            response.Data["machineR"] = ProtocolNumber.Round3(IsFinite(record.MachineR) ? record.MachineR : 0.0);
+            response.Data["imageRow"] = ProtocolNumber.Round2(IsFinite(record.ImageRow) ? record.ImageRow : 0.0);
+            response.Data["imageColumn"] = ProtocolNumber.Round2(IsFinite(record.ImageColumn) ? record.ImageColumn : 0.0);
+            response.Data["imageAngle"] = ProtocolNumber.Round2(IsFinite(record.ImageAngle) ? record.ImageAngle : 0.0);
+            response.Data["score"] = ProtocolNumber.Round3(IsFinite(record.MatchScore) ? record.MatchScore : 0.0);
             response.Data["message"] = record.Message ?? string.Empty;
             try
             {
@@ -1565,13 +1628,36 @@ namespace NinePointRotationCalibration.Station.Services.Calibration
                     record.MachineY = arrival.Y;
                     record.MachineR = arrival.R;
                 }
-                if (capture != null && capture.Match != null)
+                if (status == CalibrationPointStatus.Completed && capture != null && capture.Match != null)
                 {
                     record.ImageRow = capture.Match.Row;
                     record.ImageColumn = capture.Match.Column;
                     record.ImageAngle = capture.Match.AngleDegrees;
                     record.MatchScore = capture.Match.Score;
                     record.CapturedAtUtc = DateTime.UtcNow;
+                }
+                else if (status == CalibrationPointStatus.Failed)
+                {
+                    bool hasLowScoreLocation = capture != null && capture.Match != null &&
+                        IsFinite(capture.Match.Score) && capture.Match.Score > 0.0 &&
+                        capture.Match.Anchor.IsFinite;
+                    if (hasLowScoreLocation)
+                    {
+                        record.ImageRow = capture.Match.Row;
+                        record.ImageColumn = capture.Match.Column;
+                        record.ImageAngle = IsFinite(capture.Match.AngleDegrees) ? capture.Match.AngleDegrees : double.NaN;
+                        record.MatchScore = capture.Match.Score;
+                    }
+                    else
+                    {
+                        record.ImageRow = double.NaN;
+                        record.ImageColumn = double.NaN;
+                        record.ImageAngle = double.NaN;
+                        record.MatchScore = (capture != null && capture.Match != null && IsFinite(capture.Match.Score))
+                            ? capture.Match.Score
+                            : 0.0;
+                    }
+                    record.CapturedAtUtc = null;
                 }
                 snapshot = record.DeepClone();
             }
@@ -1634,6 +1720,14 @@ namespace NinePointRotationCalibration.Station.Services.Calibration
         private void ThrowIfDisposed()
         {
             if (_disposed) throw new ObjectDisposedException(nameof(CalibrationCoordinator));
+        }
+
+        private static double GetTemplateMinScore(CalibrationJob job)
+        {
+            if (job == null || job.Template == null || job.Template.MatchParameters == null) return 0.5;
+            double configured = job.Template.MatchParameters.MinScore;
+            if (!IsFinite(configured)) return 0.5;
+            return Math.Max(0.0, Math.Min(1.0, configured));
         }
 
         private static bool IsFinite(double value)

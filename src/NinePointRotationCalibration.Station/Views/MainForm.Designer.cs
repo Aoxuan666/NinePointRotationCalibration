@@ -463,7 +463,7 @@ namespace NinePointRotationCalibration.Station.Views
             layout.MinimumSize = new Size(0, 520);
             layout.Padding = new Padding(10);
             layout.RowCount = 4;
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 276.0F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 306.0F));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 44.0F));
             layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100.0F));
@@ -564,14 +564,18 @@ namespace NinePointRotationCalibration.Station.Views
             NumericUpDown stepY = CreateDecimalInput("nudCalibrationStepY", 10.0M, 0.1M, 500.0M, 3, 1.0M, false);
             NumericUpDown stepR = CreateDecimalInput("nudCalibrationStepR", 6.0M, 0.5M, 90.0M, 2, 0.5M, false);
             NumericUpDown motionTimeout = CreateDecimalInput("nudMotionTimeout", 30000.0M, 1000.0M, 600000.0M, 0, 1000.0M, false);
+            NumericUpDown minScore = CreateDecimalInput("nudCalibrationMinScore", 0.500M, 0.000M, 1.000M, 3, 0.05M, false);
+            minScore.Tag = "calibration.minScoreChanged";
             toolTip.SetToolTip(stepR, "五点旋转依次采集 -2ΔR / -ΔR / 0 / +ΔR / +2ΔR，总跨度 4×ΔR 须 ≥ 20°（推荐 6°~10°）");
             toolTip.SetToolTip(motionTimeout, "等待上位机运动到位的超时时间（毫秒），每次调节步进 1000 ms");
+            toolTip.SetToolTip(minScore, "标定模板最低匹配分数阈值；任一点位匹配分数低于此值将立即中断标定并报 NG");
             AddField(moveFields, 0, "标定吸嘴", cmbCalibrationNozzle);
             AddField(moveFields, 1, "X 步距 (mm)", stepX);
             AddField(moveFields, 2, "Y 步距 (mm)", stepY);
             AddField(moveFields, 3, "R 步距 (°)", stepR);
             AddField(moveFields, 4, "到位超时 (ms)", motionTimeout);
-            moveFields.RowCount = 6;
+            AddField(moveFields, 5, "最低分数", minScore);
+            moveFields.RowCount = 7;
             moveFields.RowStyles.Add(new RowStyle(SizeType.Percent, 100.0F));
             lblCalibrationSpanHint = new Label();
             lblCalibrationSpanHint.AutoEllipsis = true;
@@ -582,7 +586,7 @@ namespace NinePointRotationCalibration.Station.Views
             lblCalibrationSpanHint.Name = "lblCalibrationSpanHint";
             lblCalibrationSpanHint.Text = "5/12 原点 · 旋转总跨度 24.0° (要求≥20°)";
             lblCalibrationSpanHint.TextAlign = ContentAlignment.MiddleLeft;
-            moveFields.Controls.Add(lblCalibrationSpanHint, 0, 5);
+            moveFields.Controls.Add(lblCalibrationSpanHint, 0, 6);
             moveFields.SetColumnSpan(lblCalibrationSpanHint, 2);
             Panel moveGroup = CreateCard("点位参数", moveFields);
             moveGroup.Margin = new Padding(4, 0, 0, 8);
@@ -629,8 +633,9 @@ namespace NinePointRotationCalibration.Station.Views
             AddTextColumn(dgvCalibration, "ImageRow", "图像 Row", 70);
             AddTextColumn(dgvCalibration, "ImageColumn", "图像 Col", 70);
             AddTextColumn(dgvCalibration, "ImageAngle", "图像角(°)", 66);
-            AddTextColumn(dgvCalibration, "Residual", "残差(px)", 64);
-            AddTextColumn(dgvCalibration, "Status", "状态", 52);
+            AddTextColumn(dgvCalibration, "Score", "分数", 54);
+            AddTextColumn(dgvCalibration, "Residual", "残差(px)", 62);
+            AddTextColumn(dgvCalibration, "Status", "状态", 50);
 
             layout.Controls.Add(editor, 0, 0);
             layout.Controls.Add(actions, 0, 1);
@@ -646,10 +651,10 @@ namespace NinePointRotationCalibration.Station.Views
             TabPage page = CreateTabPage("tabTeaching", "左右示教");
             TableLayoutPanel layout = CreateScrollableStack(page);
             layout.RowCount = 4;
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 220.0F));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 220.0F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 246.0F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 246.0F));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 62.0F));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 54.0F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 64.0F));
 
             TextBox[] leftValues;
             TextBox[] rightValues;
@@ -670,7 +675,7 @@ namespace NinePointRotationCalibration.Station.Views
             lblDualNozzleSummary.Text = "双吸嘴状态：等待左右吸嘴完成示教\r\n工艺模式：吸取时旋转 R 轴对齐来料板角 → 盲摆转回固定示教 R 角";
             lblDualNozzleSummary.TextAlign = ContentAlignment.MiddleLeft;
 
-            Label hint = CreateHintLabel("多板治具下，记录左/右吸嘴示教均自动锁定左上角 1 号基准板；吸取时 R 轴旋转对齐 PCB，盲摆时转回示教固定 R 角，并自动补偿旋转中心偏心摆臂。");
+            Label hint = CreateHintLabel("示教步骤：① 对位并填入机械 X/Y/R 后点「记录轴坐标」（不拍照，防止轴遮挡）；② 移走轴后点「模板匹配定位」触发拍照并定位第 1 号基准板图像坐标，自动合并保存。");
             layout.Controls.Add(leftGroup, 0, 0);
             layout.Controls.Add(rightGroup, 0, 1);
             layout.Controls.Add(lblDualNozzleSummary, 0, 2);
@@ -1359,11 +1364,11 @@ namespace NinePointRotationCalibration.Station.Views
             fields.Margin = Padding.Empty;
             fields.Padding = Padding.Empty;
             fields.RowCount = 5;
-            fields.RowStyles.Add(new RowStyle(SizeType.Absolute, 36.0F));
-            fields.RowStyles.Add(new RowStyle(SizeType.Absolute, 36.0F));
-            fields.RowStyles.Add(new RowStyle(SizeType.Absolute, 36.0F));
-            fields.RowStyles.Add(new RowStyle(SizeType.Absolute, 38.0F));
-            fields.RowStyles.Add(new RowStyle(SizeType.Percent, 100.0F));
+            fields.RowStyles.Add(new RowStyle(SizeType.Absolute, 34.0F));
+            fields.RowStyles.Add(new RowStyle(SizeType.Absolute, 34.0F));
+            fields.RowStyles.Add(new RowStyle(SizeType.Absolute, 34.0F));
+            fields.RowStyles.Add(new RowStyle(SizeType.Absolute, 26.0F));
+            fields.RowStyles.Add(new RowStyle(SizeType.Absolute, 40.0F));
 
             TextBox imageRow = CreateReadOnlyValue(sideKey + "ImageRow");
             TextBox imageColumn = CreateReadOnlyValue(sideKey + "ImageColumn");
@@ -1381,27 +1386,33 @@ namespace NinePointRotationCalibration.Station.Views
             AddTeachingField(fields, 2, 2, "机械 R(°)", machineR);
 
             statusLabel = new Label();
-            statusLabel.AutoSize = true;
+            statusLabel.AutoEllipsis = true;
             statusLabel.Dock = DockStyle.Fill;
-            statusLabel.Font = new Font("Microsoft YaHei UI", 8.75F, FontStyle.Bold, GraphicsUnit.Point, 134);
+            statusLabel.Font = new Font("Microsoft YaHei UI", 8.5F, FontStyle.Bold, GraphicsUnit.Point, 134);
             statusLabel.ForeColor = Color.FromArgb(185, 28, 28);
             statusLabel.Name = sideKey == "left" ? "lblLeftTeachingStatus" : "lblRightTeachingStatus";
             statusLabel.Text = "○ 未示教";
             statusLabel.TextAlign = ContentAlignment.MiddleLeft;
             fields.Controls.Add(statusLabel, 0, 3);
-            fields.SetColumnSpan(statusLabel, 2);
+            fields.SetColumnSpan(statusLabel, 4);
 
             FlowLayoutPanel actions = new FlowLayoutPanel();
             actions.AutoSize = true;
             actions.Dock = DockStyle.Fill;
             actions.FlowDirection = FlowDirection.RightToLeft;
             actions.Margin = Padding.Empty;
-            actions.Padding = new Padding(0, 3, 0, 0);
+            actions.Padding = new Padding(0, 4, 0, 0);
             actions.WrapContents = false;
-            actions.Controls.Add(CreateButton("btnClear" + sideKey + "Teaching", "清除", 68, 30, false, "teaching." + sideKey + ".clear"));
-            actions.Controls.Add(CreateButton("btnCapture" + sideKey + "Teaching", "记录当前", 86, 30, true, "teaching." + sideKey + ".capture"));
-            fields.Controls.Add(actions, 2, 3);
-            fields.SetColumnSpan(actions, 2);
+            Button clearBtn = CreateButton("btnClear" + sideKey + "Teaching", "清除", 62, 30, false, "teaching." + sideKey + ".clear");
+            Button locateBtn = CreateButton("btnLocate" + sideKey + "Teaching", "模板匹配定位", 108, 30, true, "teaching." + sideKey + ".locate");
+            Button recordBtn = CreateButton("btnCapture" + sideKey + "Teaching", "记录轴坐标", 94, 30, false, "teaching." + sideKey + ".capture");
+            toolTip.SetToolTip(recordBtn, "步骤 1：仅保存当前填写的机械 X/Y/R 轴坐标（不拍照，避免轴遮挡相机）");
+            toolTip.SetToolTip(locateBtn, "步骤 2：轴移走后点击，触发拍照并用检测定位模板匹配当前基准板图像坐标");
+            actions.Controls.Add(clearBtn);
+            actions.Controls.Add(locateBtn);
+            actions.Controls.Add(recordBtn);
+            fields.Controls.Add(actions, 0, 4);
+            fields.SetColumnSpan(actions, 4);
             return CreateCard(title, fields);
         }
 

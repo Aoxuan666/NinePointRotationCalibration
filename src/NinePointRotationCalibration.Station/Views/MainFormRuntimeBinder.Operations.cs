@@ -331,6 +331,10 @@ namespace NinePointRotationCalibration.Station.Views
                     lock (_displaySync) ClearInspectionPreviewCache();
                     if (_view.IsDetectionDualViewActive) ScheduleBinaryPreview(false);
                 }
+                else
+                {
+                    SyncCalibrationMinScoreToView(_runtime.GetCalibrationJobSnapshot(_runtime.ActiveCalibrationNozzle));
+                }
                 _view.AppendLog(positioning ? "定位模板已更新。" : "标定模板已更新。", false);
             }
             return Task.CompletedTask;
@@ -356,6 +360,8 @@ namespace NinePointRotationCalibration.Station.Views
             UpdateTemplateStatusLabel(positioning, loadedJob == null ? null : loadedJob.Template);
             if (positioning)
                 ApplyDetectionProfileToView(_runtime.GetDetectionProfileSnapshot());
+            else
+                SyncCalibrationMinScoreToView(loadedJob);
             _view.AppendLog((positioning ? "定位" : "标定") + "文件已加载：" + path, false);
             return Task.CompletedTask;
         }
@@ -533,9 +539,10 @@ namespace NinePointRotationCalibration.Station.Views
             }
         }
 
-        private async Task CaptureTeachingAsync(TeachingSide side, Control source)
+        private async Task RecordTeachingMachinePoseAsync(TeachingSide side, Control source)
         {
             string sideKey = side == TeachingSide.Left ? "left" : "right";
+            string sideLabel = side == TeachingSide.Left ? "左侧" : "右侧";
             MachinePose pose = new MachinePose
             {
                 X = ParseFiniteDouble(FindControl<TextBox>(sideKey + "MachineX").Text, "机械 X"),
@@ -544,9 +551,45 @@ namespace NinePointRotationCalibration.Station.Views
             };
 
             await RunOperationAsync(
-                (side == TeachingSide.Left ? "左侧" : "右侧") + "示教",
+                sideLabel + "记录轴坐标",
                 source,
-                token => _runtime.CaptureTeachingAsync(side, pose, token)).ConfigureAwait(true);
+                async token =>
+                {
+                    TeachingPose saved = await _runtime.RecordTeachingMachinePoseAsync(side, pose, token).ConfigureAwait(true);
+                    if (saved != null && saved.IsValid)
+                    {
+                        _view.AppendLog(sideLabel + "示教已完成（轴坐标与图像坐标均已保存）。", false);
+                    }
+                    else
+                    {
+                        _view.AppendLog(sideLabel + "轴坐标已记录（未拍照）。请将轴移出视野后点击「模板匹配定位」。", false);
+                    }
+                }).ConfigureAwait(true);
+        }
+
+        private async Task LocateTeachingImageAsync(TeachingSide side, Control source)
+        {
+            string sideLabel = side == TeachingSide.Left ? "左侧" : "右侧";
+            await RunOperationAsync(
+                sideLabel + "模板匹配定位",
+                source,
+                async token =>
+                {
+                    TeachingPose saved = await _runtime.LocateTeachingImageAsync(side, token).ConfigureAwait(true);
+                    if (saved != null)
+                    {
+                        string summary = string.Format(
+                            CultureInfo.InvariantCulture,
+                            "{0}模板匹配定位成功：Row {1:0.###}, Col {2:0.###}, 角度 {3:0.###}°, 分数 {4:0.000}。{5}",
+                            sideLabel,
+                            saved.ImageRow,
+                            saved.ImageColumn,
+                            saved.ImageAngleDegrees,
+                            saved.MatchScore,
+                            saved.IsValid ? "示教数据已合并保存。" : "请继续点击「记录轴坐标」以完成示教。");
+                        _view.AppendLog(summary, false);
+                    }
+                }).ConfigureAwait(true);
         }
 
         private Task ClearTeachingAsync(TeachingSide side, Control source)
@@ -714,6 +757,7 @@ namespace NinePointRotationCalibration.Station.Views
             options.RotationStepDegrees = ReadNumeric("nudCalibrationStepR");
             options.MotionTimeoutMilliseconds = Convert.ToInt32(ReadNumeric("nudMotionTimeout"), CultureInfo.InvariantCulture);
             _runtime.UpdateOptions(options);
+            _runtime.UpdateCalibrationMinScore(GetSelectedCalibrationNozzle(), ReadNumeric("nudCalibrationMinScore"));
         }
 
         private void SaveAllSettings()
@@ -879,6 +923,7 @@ namespace NinePointRotationCalibration.Station.Views
 
             CalibrationJob calibrationJob = _runtime.GetCalibrationJobSnapshot(activeNozzle);
             CalibrationJob positioningJob = _runtime.GetPositioningJobSnapshot();
+            SyncCalibrationMinScoreToView(calibrationJob);
             UpdateTemplateStatusLabel(false, calibrationJob == null ? null : calibrationJob.Template);
             UpdateTemplateStatusLabel(true, positioningJob == null ? null : positioningJob.Template);
             ApplyDetectionProfileToView(_runtime.GetDetectionProfileSnapshot());

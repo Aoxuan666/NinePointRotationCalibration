@@ -38,6 +38,8 @@ namespace NinePointRotationCalibration.Station.Services.Communication
             VerifyDualRTargetMapping();
             VerifyInspectionSemantics();
             await VerifyCalibrationSessionsAndPreservationAsync(cancellationToken).ConfigureAwait(false);
+            await VerifyLowScoreCalibrationAbortAsync(cancellationToken).ConfigureAwait(false);
+            await VerifyTwoStepTeachingAsync(cancellationToken).ConfigureAwait(false);
             await VerifyRuntimeProtocolV11EndToEndAsync(codec, cancellationToken).ConfigureAwait(false);
             await VerifyTeachingServiceAndProtocolAsync(codec, cancellationToken).ConfigureAwait(false);
         }
@@ -838,6 +840,298 @@ namespace NinePointRotationCalibration.Station.Services.Communication
                        string.IsNullOrWhiteSpace(uiCancelDone.CorrelationId) &&
                        ProtocolValue.String(uiCancelDone.Data, "axisR") == "R2",
                     "Vision UI cancel must send calibration.completed(CANCELLED, corrId=null, axisR=R2).");
+            }
+        }
+
+        private static async Task VerifyLowScoreCalibrationAbortAsync(CancellationToken cancellationToken)
+        {
+            // 验证需求：标定期间任一点位模板匹配分数低于设定最低匹配分数时立即中断并报 NG（自动与手动模式均适用，且保留旧标定）
+            CalibrationJob committedLeft = CreateJobWithDummyTemplateAndSample("Calibration-Left", "EXISTING_L1");
+            committedLeft.Template.MatchParameters.MinScore = 0.75;
+            CalibrationJob committedRight = CreateJobWithDummyTemplateAndSample("Calibration-Right", "EXISTING_R1");
+            committedRight.Template.MatchParameters.MinScore = 0.75;
+
+            FakeSelfTestTemplateEngine engine = new FakeSelfTestTemplateEngine();
+            using (NinePointRotationCalibrationSdk sdk = new NinePointRotationCalibrationSdk(engine))
+            {
+                // 1. SDK 直接校验分数低于 MinScore
+                TemplateMatchResult lowMatch = new TemplateMatchResult
+                {
+                    Success = true,
+                    Row = 500.0,
+                    Column = 600.0,
+                    ModelPose = new ImagePose(500.0, 600.0, 1.0),
+                    AngleDegrees = 1.0,
+                    Score = 0.52
+                };
+                SampleCaptureResult sdkReject = sdk.AddSampleFromMatch(committedLeft, lowMatch, 100.0, 50.0, 0.0, "P1", CalibrationSampleKind.Translation);
+                Assert(!sdkReject.Success && sdkReject.ErrorCode == CalibrationErrorCode.TemplateMatchFailed,
+                    "SDK AddSampleFromMatch must reject match score below Template.MatchParameters.MinScore.");
+
+                // 2. 自动标定：点 1 成功 (0.94 >= 0.75)，点 2 低分 (0.52 < 0.75) -> 立即中断不下发点 3，回传 MATCH_FAILED 并保留旧标定
+                int saveCount = 0;
+                int captureCount = 0;
+                List<ProtocolEnvelope> sent = new List<ProtocolEnvelope>();
+                object sentSync = new object();
+                CalibrationCoordinator coordinator = null;
+                Func<ProtocolEnvelope, CancellationToken, Task> responder = null;
+
+                using (coordinator = new CalibrationCoordinator(
+                    sdk,
+                    async (envelope, ct) =>
+                    {
+                        lock (sentSync) sent.Add(envelope);
+                        if (responder != null) await responder(envelope, ct).ConfigureAwait(false);
+                    },
+                    ct =>
+                    {
+                        int index = Interlocked.Increment(ref captureCount);
+                        if (index == 1)
+                        {
+                            engine.NextCollectionResult = new TemplateMatchCollectionResult
+                            {
+                                Success = true,
+                                ErrorCode = CalibrationErrorCode.None,
+                                Matches = new List<TemplateMatchResult>
+                                {
+                                    new TemplateMatchResult
+                                    {
+                                        Success = true,
+                                        Row = 500.0,
+                                        Column = 600.0,
+                                        ModelPose = new ImagePose(500.0, 600.0, 0.0),
+                                        AngleDegrees = 0.0,
+                                        Score = 0.94
+                                    }
+                                }
+                            };
+                        }
+                        else
+                        {
+                            engine.NextCollectionResult = new TemplateMatchCollectionResult
+                            {
+                                Success = true,
+                                ErrorCode = CalibrationErrorCode.None,
+                                Matches = new List<TemplateMatchResult>
+                                {
+                                    new TemplateMatchResult
+                                    {
+                                        Success = true,
+                                        Row = 520.0,
+                                        Column = 620.0,
+                                        ModelPose = new ImagePose(520.0, 620.0, 0.0),
+                                        AngleDegrees = 0.0,
+                                        Score = 0.52
+                                    }
+                                }
+                            };
+                        }
+                        return Task.FromResult(new CameraFrame(new Bitmap(64, 64), index, DateTime.UtcNow));
+                    },
+                    (side, job) =>
+                    {
+                        Interlocked.Increment(ref saveCount);
+                        return Task.CompletedTask;
+                    },
+                    new StationOptions { CalibrationStartAckTimeoutMilliseconds = 2000, MotionTimeoutMilliseconds = 2000 },
+                    committedLeft,
+                    committedRight))
+                {
+                    string sessionId = null;
+                    responder = (msg, ct) =>
+                    {
+                        if (msg.Type == ProtocolMessageTypes.CalibrationStarted)
+                        {
+                            sessionId = ProtocolValue.String(msg.Data, "sessionId");
+                            ProtocolEnvelope ack = ProtocolEnvelope.Create(ProtocolMessageTypes.CalibrationStartedAck);
+                            ack.CorrelationId = msg.MessageId;
+                            ack.Data["sessionId"] = sessionId;
+                            ack.Data["accepted"] = true;
+                            ack.Data["originX"] = 100.0;
+                            ack.Data["originY"] = 50.0;
+                            ack.Data["originR"] = 0.0;
+                            coordinator.HandleProtocolMessage(ack);
+                        }
+                        else if (msg.Type == ProtocolMessageTypes.MoveRequest)
+                        {
+                            int ptNum = ProtocolValue.Integer(msg.Data, "pointNumber", 0);
+                            ProtocolEnvelope arrived = ProtocolEnvelope.Create(ProtocolMessageTypes.MotionArrived);
+                            arrived.CorrelationId = msg.MessageId;
+                            arrived.Data["sessionId"] = sessionId;
+                            arrived.Data["pointNumber"] = ptNum;
+                            arrived.Data["x"] = 100.0 + ProtocolValue.Double(msg.Data, "offsetX");
+                            arrived.Data["y"] = 50.0 + ProtocolValue.Double(msg.Data, "offsetY");
+                            arrived.Data["r"] = ProtocolValue.Double(msg.Data, "offsetR");
+                            coordinator.HandleProtocolMessage(arrived);
+                        }
+                        return Task.CompletedTask;
+                    };
+
+                    bool autoAbortedNg = false;
+                    try
+                    {
+                        await coordinator.RunAutomaticAsync(TeachingSide.Left, cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (CalibrationWorkflowException ex)
+                    {
+                        autoAbortedNg = ex.ErrorCode == ProtocolErrorCodes.MatchFailed && ex.Message.Contains("NG");
+                    }
+                    Assert(autoAbortedNg, "Automatic calibration must immediately abort with MATCH_FAILED / NG when score < MinScore.");
+                    Assert(sent.Count(m => m.Type == ProtocolMessageTypes.MoveRequest) == 2,
+                        "Automatic calibration must stop at point 2 and never request point 3.");
+                    ProtocolEnvelope autoDone = sent.LastOrDefault(m => m.Type == ProtocolMessageTypes.CalibrationCompleted);
+                    Assert(autoDone != null &&
+                           ProtocolValue.String(autoDone.Data, "errorCode") == ProtocolErrorCodes.MatchFailed,
+                        "calibration.completed(MATCH_FAILED) expected on low score abort.");
+                    IReadOnlyList<CalibrationPointRecord> records = coordinator.GetRecordsSnapshot(TeachingSide.Left);
+                    Assert(records.First(r => r.PointNumber == 1).Status == CalibrationPointStatus.Completed,
+                        "Point 1 should remain Completed before Point 2 low-score abort.");
+                    Assert(records.First(r => r.PointNumber == 2).Status == CalibrationPointStatus.Failed,
+                        "Point 2 should be marked Failed (NG) on low score.");
+                    Assert(saveCount == 0 && coordinator.GetJobSnapshot(TeachingSide.Left).Samples.Count == 1,
+                        "Committed calibration must be preserved untouched after low-score abort.");
+
+                    // 3. 手动标定：单点匹配分数低于 MinScore 同样立即中断会话并报 NG
+                    sent.Clear();
+                    captureCount = 10; // ensure index > 1 -> score 0.52 < 0.75
+                    bool manualAbortedNg = false;
+                    try
+                    {
+                        await coordinator.CapturePointAsync(TeachingSide.Right, 1, cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (CalibrationWorkflowException ex)
+                    {
+                        manualAbortedNg = ex.ErrorCode == ProtocolErrorCodes.MatchFailed && ex.Message.Contains("NG");
+                    }
+                    Assert(manualAbortedNg, "Manual calibration point must immediately abort session with NG when score < MinScore.");
+                    Assert(!coordinator.HasActiveSession, "Manual calibration session must close immediately on low-score NG.");
+                    Assert(sent.Any(m => m.Type == ProtocolMessageTypes.CalibrationCompleted &&
+                                         ProtocolValue.String(m.Data, "errorCode") == ProtocolErrorCodes.MatchFailed),
+                        "Manual low-score NG must send calibration.completed(MATCH_FAILED).");
+                }
+            }
+        }
+
+        private static async Task VerifyTwoStepTeachingAsync(CancellationToken cancellationToken)
+        {
+            // 验证需求：示教分两步——步骤 1 仅记录轴坐标（不触发拍照），步骤 2 移轴后触发拍照并用定位模板匹配图像坐标并合并保存
+            FakeSelfTestTemplateEngine engine = new FakeSelfTestTemplateEngine();
+            CalibrationJob positioningJob = CreateJobWithDummyTemplateAndSample("SelfTestPositioning", "P1");
+            positioningJob.Template.MatchParameters.MinScore = 0.60;
+            int captureCount = 0;
+            int saveCount = 0;
+            TeachingData lastSaved = null;
+            List<List<ImagePoint>> receivedContours = null;
+
+            using (NinePointRotationCalibrationSdk sdk = new NinePointRotationCalibrationSdk(engine))
+            using (TeachingService teaching = new TeachingService(
+                sdk,
+                ct =>
+                {
+                    int seq = Interlocked.Increment(ref captureCount);
+                    return Task.FromResult(new CameraFrame(new Bitmap(64, 64), seq, DateTime.UtcNow));
+                },
+                () => positioningJob,
+                data =>
+                {
+                    Interlocked.Increment(ref saveCount);
+                    lastSaved = data;
+                    return Task.CompletedTask;
+                },
+                new TeachingData()))
+            {
+                teaching.TeachingChanged += (s, e) =>
+                {
+                    if (e != null) receivedContours = e.ContourSegments;
+                };
+
+                // 步骤 1：记录左吸嘴机械轴坐标 -> 严禁触发拍照，状态为半完成 (HasMachinePose=true, HasImagePose=false, IsValid=false)
+                TeachingPose step1 = await teaching.RecordMachinePoseAsync(
+                    TeachingSide.Left,
+                    new MachinePose(650.125, 210.450, 0.0),
+                    cancellationToken).ConfigureAwait(false);
+                Assert(captureCount == 0, "RecordMachinePoseAsync must not trigger camera capture while axis blocks FOV.");
+                Assert(step1.HasMachinePose && !step1.HasImagePose && !step1.IsValid,
+                    "After step 1, HasMachinePose must be true while HasImagePose and IsValid stay false.");
+                Assert(Math.Abs(step1.MachineX - 650.125) < 1e-6 && saveCount == 1,
+                    "Step 1 machine coordinates must be persisted.");
+
+                // 步骤 2A：移轴后触发模板匹配，若分数低于 MinScore -> 报 MATCH_FAILED 且保留步骤 1 轴坐标
+                engine.NextCollectionResult = new TemplateMatchCollectionResult
+                {
+                    Success = true,
+                    ErrorCode = CalibrationErrorCode.None,
+                    Matches = new List<TemplateMatchResult>
+                    {
+                        new TemplateMatchResult
+                        {
+                            Success = true,
+                            Row = 400.0,
+                            Column = 500.0,
+                            ModelPose = new ImagePose(400.0, 500.0, 0.5),
+                            AngleDegrees = 0.5,
+                            Score = 0.35
+                        }
+                    }
+                };
+                bool lowScoreRejected = false;
+                try
+                {
+                    await teaching.LocateImagePoseAsync(TeachingSide.Left, cancellationToken).ConfigureAwait(false);
+                }
+                catch (TeachingWorkflowException ex)
+                {
+                    lowScoreRejected = ex.ErrorCode == ProtocolErrorCodes.MatchFailed;
+                }
+                Assert(lowScoreRejected, "LocateImagePoseAsync must reject match score below MinScore.");
+                Assert(captureCount == 1, "LocateImagePoseAsync must trigger camera capture.");
+                Assert(teaching.GetSnapshot().Left.HasMachinePose && !teaching.GetSnapshot().Left.IsValid,
+                    "Step 1 machine pose must stay preserved after failed match.");
+
+                // 步骤 2B：移轴后模板匹配成功 -> 触发拍照并合并步骤 1 轴坐标生成完整有效示教，回传轮廓用于界面绘制
+                engine.NextCollectionResult = new TemplateMatchCollectionResult
+                {
+                    Success = true,
+                    ErrorCode = CalibrationErrorCode.None,
+                    Matches = new List<TemplateMatchResult>
+                    {
+                        new TemplateMatchResult
+                        {
+                            Success = true,
+                            Row = 412.5,
+                            Column = 528.25,
+                            ModelPose = new ImagePose(412.5, 528.25, 1.25),
+                            AngleDegrees = 1.25,
+                            Score = 0.93,
+                            ContourSegments = new List<List<ImagePoint>>
+                            {
+                                new List<ImagePoint> { new ImagePoint(400, 500), new ImagePoint(420, 540) }
+                            }
+                        }
+                    }
+                };
+                TeachingPose step2 = await teaching.LocateImagePoseAsync(TeachingSide.Left, cancellationToken).ConfigureAwait(false);
+                Assert(captureCount == 2, "Step 2B must trigger fresh camera capture.");
+                Assert(step2.IsValid && step2.HasMachinePose && step2.HasImagePose,
+                    "Step 2B must complete teaching with IsValid=true.");
+                Assert(Math.Abs(step2.MachineX - 650.125) < 1e-6 && Math.Abs(step2.ImageRow - 412.5) < 1e-6 &&
+                       Math.Abs(step2.ImageColumn - 528.25) < 1e-6 && Math.Abs(step2.MatchScore - 0.93) < 1e-6,
+                    "Step 2B must combine recorded machine pose with located image pose.");
+                Assert(receivedContours != null && receivedContours.Count == 1,
+                    "TeachingChanged must carry matched contour segments for viewport overlay.");
+
+                // 反向顺序（右吸嘴先模板匹配定位，再记录轴坐标）同样自动合并为有效示教
+                TeachingPose rightImgFirst = await teaching.LocateImagePoseAsync(TeachingSide.Right, cancellationToken).ConfigureAwait(false);
+                Assert(!rightImgFirst.IsValid && !rightImgFirst.HasMachinePose && rightImgFirst.HasImagePose,
+                    "Locating image first without recorded machine pose must stay IsValid=false.");
+                TeachingPose rightDone = await teaching.RecordMachinePoseAsync(
+                    TeachingSide.Right,
+                    new MachinePose(672.0, 210.45, 0.0),
+                    cancellationToken).ConfigureAwait(false);
+                Assert(rightDone.IsValid && rightDone.HasMachinePose && rightDone.HasImagePose &&
+                       Math.Abs(rightDone.ImageColumn - 528.25) < 1e-6,
+                    "Recording machine pose after image locate must merge into IsValid=true.");
+                Assert(lastSaved != null && lastSaved.HasBothNozzles, "Both nozzles should now be valid.");
             }
         }
 

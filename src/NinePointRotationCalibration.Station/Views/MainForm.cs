@@ -858,7 +858,8 @@ namespace NinePointRotationCalibration.Station.Views
             double? imageRow,
             double? imageColumn,
             double? imageAngle,
-            string status)
+            string status,
+            double? matchScore = null)
         {
             RunOnUiThread(delegate
             {
@@ -870,12 +871,22 @@ namespace NinePointRotationCalibration.Station.Views
                 row.Cells["ImageRow"].Value = FormatNumber(imageRow);
                 row.Cells["ImageColumn"].Value = FormatNumber(imageColumn);
                 row.Cells["ImageAngle"].Value = FormatNumber(imageAngle);
+                if (dgvCalibration.Columns.Contains("Score"))
+                {
+                    row.Cells["Score"].Value = matchScore.HasValue
+                        ? matchScore.Value.ToString("0.000", CultureInfo.InvariantCulture)
+                        : string.Empty;
+                }
                 row.Cells["Residual"].Value = string.Empty;
                 row.Cells["Status"].Value = status ?? string.Empty;
-                row.DefaultCellStyle.BackColor = Color.Empty;
-                row.DefaultCellStyle.ForeColor = string.Equals(status, "NG", StringComparison.OrdinalIgnoreCase)
-                    ? Color.FromArgb(190, 55, 55)
-                    : Color.FromArgb(45, 49, 54);
+                bool isNg = string.Equals(status, "NG", StringComparison.OrdinalIgnoreCase);
+                bool isOk = string.Equals(status, "OK", StringComparison.OrdinalIgnoreCase);
+                row.DefaultCellStyle.BackColor = isNg
+                    ? Color.FromArgb(254, 242, 242)
+                    : Color.Empty;
+                row.DefaultCellStyle.ForeColor = isNg
+                    ? Color.FromArgb(185, 28, 28)
+                    : isOk ? Color.FromArgb(21, 128, 61) : Color.FromArgb(45, 49, 54);
             });
         }
 
@@ -1047,21 +1058,55 @@ namespace NinePointRotationCalibration.Station.Views
             double machineX,
             double machineY,
             double machineR,
-            bool valid)
+            bool valid,
+            bool hasMachinePose = false,
+            bool hasImagePose = false,
+            double matchScore = 0.0)
         {
             RunOnUiThread(delegate
             {
+                bool effectiveMachine = hasMachinePose || valid;
+                bool effectiveImage = hasImagePose || valid;
                 bool left = string.Equals(side, "left", StringComparison.OrdinalIgnoreCase) || side == "左";
                 TextBox[] values = left ? leftTeachingValues : rightTeachingValues;
-                double[] data = { imageRow, imageColumn, imageAngle, machineX, machineY, machineR };
-                for (int index = 0; index < values.Length && index < data.Length; index++)
+                if (values.Length >= 6)
                 {
-                    values[index].Text = data[index].ToString("0.###", CultureInfo.InvariantCulture);
+                    values[0].Text = effectiveImage ? imageRow.ToString("0.###", CultureInfo.InvariantCulture) : string.Empty;
+                    values[1].Text = effectiveImage ? imageColumn.ToString("0.###", CultureInfo.InvariantCulture) : string.Empty;
+                    values[2].Text = effectiveImage ? imageAngle.ToString("0.###", CultureInfo.InvariantCulture) : string.Empty;
+                    if (effectiveMachine || !effectiveImage)
+                    {
+                        values[3].Text = machineX.ToString("0.###", CultureInfo.InvariantCulture);
+                        values[4].Text = machineY.ToString("0.###", CultureInfo.InvariantCulture);
+                        values[5].Text = machineR.ToString("0.###", CultureInfo.InvariantCulture);
+                    }
                 }
 
                 Label statusLabel = left ? lblLeftTeachingStatus : lblRightTeachingStatus;
-                statusLabel.Text = valid ? "● 已示教" : "○ 未示教";
-                statusLabel.ForeColor = valid ? Color.FromArgb(21, 128, 61) : Color.FromArgb(185, 28, 28);
+                if (valid)
+                {
+                    statusLabel.Text = matchScore > 0.0
+                        ? string.Format(CultureInfo.InvariantCulture, "● 已示教 · 匹配分 {0:0.000}", matchScore)
+                        : "● 已示教";
+                    statusLabel.ForeColor = Color.FromArgb(21, 128, 61);
+                }
+                else if (effectiveMachine)
+                {
+                    statusLabel.Text = "◐ 已记轴坐标 · 移走轴后点「模板匹配定位」";
+                    statusLabel.ForeColor = Color.FromArgb(180, 83, 9);
+                }
+                else if (effectiveImage)
+                {
+                    statusLabel.Text = matchScore > 0.0
+                        ? string.Format(CultureInfo.InvariantCulture, "◐ 已定位图像({0:0.000}) · 请点「记录轴坐标」", matchScore)
+                        : "◐ 已定位图像 · 请点「记录轴坐标」";
+                    statusLabel.ForeColor = Color.FromArgb(180, 83, 9);
+                }
+                else
+                {
+                    statusLabel.Text = "○ 未示教";
+                    statusLabel.ForeColor = Color.FromArgb(185, 28, 28);
+                }
 
                 if (left)
                 {
@@ -1365,7 +1410,7 @@ namespace NinePointRotationCalibration.Station.Views
             for (int point = 1; point <= 14; point++)
             {
                 string kind = point <= 9 ? "XY" : "R";
-                dgvCalibration.Rows.Add(point, kind, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty);
+                dgvCalibration.Rows.Add(point, kind, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty);
             }
 
             _pointButtonMap.Clear();
@@ -1733,10 +1778,20 @@ namespace NinePointRotationCalibration.Station.Views
             SetActionControlEnabled("calibration.auto", acquisitionCalibrationAvailable);
             SetActionControlEnabled("calibration.calculate", calibrationEnabled && !workflowBusy);
             SetActionControlEnabled("calibration.cancel", calibrationEnabled);
-            SetActionControlEnabled("teaching.left.capture", acquisitionCalibrationAvailable);
-            SetActionControlEnabled("teaching.right.capture", acquisitionCalibrationAvailable);
+            SetControlEnabled("nudCalibrationMinScore", calibrationEnabled && !workflowBusy);
+            SetActionControlEnabled("teaching.left.capture", calibrationEnabled && !workflowBusy);
+            SetActionControlEnabled("teaching.right.capture", calibrationEnabled && !workflowBusy);
+            SetActionControlEnabled("teaching.left.locate", acquisitionCalibrationAvailable);
+            SetActionControlEnabled("teaching.right.locate", acquisitionCalibrationAvailable);
             SetActionControlEnabled("teaching.left.clear", calibrationEnabled && !workflowBusy);
             SetActionControlEnabled("teaching.right.clear", calibrationEnabled && !workflowBusy);
+            string locateTip = !calibrationEnabled
+                ? "请先在「相机」页开启「启用标定」"
+                : !cameraReady
+                    ? "请先连接相机后再触发拍照与模板匹配定位"
+                    : "步骤 2：轴移走后点击，触发拍照并用定位模板匹配当前基准板图像坐标";
+            SetActionToolTip("teaching.left.locate", locateTip);
+            SetActionToolTip("teaching.right.locate", locateTip);
 
             // 标定模板相关按钮受运行时标定开关保护，需与后台守卫保持同步，避免点击后无响应；
             // 模板创建与测试可使用本地导入图像，因此不依赖相机开关。

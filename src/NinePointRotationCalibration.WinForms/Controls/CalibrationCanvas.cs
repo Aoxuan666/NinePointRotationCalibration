@@ -2446,6 +2446,17 @@ namespace NinePointRotationCalibration.WinForms.Controls
 
                         if (drawOutline)
                         {
+                            float arm = radius + 7.0f;
+                            using (Pen shadow = new Pen(Color.FromArgb(190, Color.Black), 2.6f))
+                            {
+                                graphics.DrawLine(shadow, center.X - arm, center.Y, center.X + arm, center.Y);
+                                graphics.DrawLine(shadow, center.X, center.Y - arm, center.X, center.Y + arm);
+                            }
+                            using (Pen crossPen = new Pen(point.Color, 1.5f))
+                            {
+                                graphics.DrawLine(crossPen, center.X - arm, center.Y, center.X + arm, center.Y);
+                                graphics.DrawLine(crossPen, center.X, center.Y - arm, center.X, center.Y + arm);
+                            }
                             using (Pen outline = new Pen(Color.FromArgb(230, Color.Black), 1.5f))
                             {
                                 graphics.DrawEllipse(outline, center.X - radius, center.Y - radius, radius * 2.0f, radius * 2.0f);

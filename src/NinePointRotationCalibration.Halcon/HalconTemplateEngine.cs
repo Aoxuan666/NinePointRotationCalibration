@@ -358,18 +358,29 @@ namespace NinePointRotationCalibration.Halcon
                         if (count == 0)
                         {
                             return Complete(TemplateMatchCollectionResult.NoMatch(
-                                "No template match met the configured score and search constraints."), stopwatch);
+                                string.Format(
+                                    CultureInfo.InvariantCulture,
+                                    "模板匹配失败：未找到得分达到最低匹配分数 ({0:0.###}) 的目标。",
+                                    parameters.MinScore)), stopwatch);
                         }
 
                         TemplateMatchCollectionResult result = new TemplateMatchCollectionResult
                         {
                             Success = true,
-                            ErrorCode = CalibrationErrorCode.None,
-                            Message = count == 1 ? "Template located." : count + " template matches located."
+                            ErrorCode = CalibrationErrorCode.None
                         };
 
+                        double bestRejectedScore = double.NaN;
                         for (int index = 0; index < count; index++)
                         {
+                            double score = scores[index].D;
+                            if (!IsFinite(score) || score < parameters.MinScore)
+                            {
+                                if (IsFinite(score) && (double.IsNaN(bestRejectedScore) || score > bestRejectedScore))
+                                    bestRejectedScore = score;
+                                continue;
+                            }
+
                             double modelRow = rows[index].D;
                             double modelColumn = columns[index].D;
                             double modelAngle = angles[index].D;
@@ -385,7 +396,7 @@ namespace NinePointRotationCalibration.Halcon
                                 Message = "Template located.",
                                 Anchor = anchor,
                                 ModelPose = new ImagePose(modelRow, modelColumn, AngleMath.RadiansToDegrees(modelAngle)),
-                                Score = scores[index].D,
+                                Score = score,
                                 ContourSegments = contours,
                                 Contour = HalconContourConverter.Flatten(contours),
                                 ElapsedMilliseconds = stopwatch.Elapsed.TotalMilliseconds
@@ -393,6 +404,24 @@ namespace NinePointRotationCalibration.Halcon
                             result.Matches.Add(match);
                         }
 
+                        if (result.Matches.Count == 0)
+                        {
+                            string lowScoreMsg = double.IsNaN(bestRejectedScore)
+                                ? string.Format(
+                                    CultureInfo.InvariantCulture,
+                                    "模板匹配失败：未找到得分达到最低匹配分数 ({0:0.###}) 的目标。",
+                                    parameters.MinScore)
+                                : string.Format(
+                                    CultureInfo.InvariantCulture,
+                                    "模板匹配分数 {0:0.###} 低于最低匹配分数 {1:0.###}。",
+                                    bestRejectedScore,
+                                    parameters.MinScore);
+                            return Complete(TemplateMatchCollectionResult.NoMatch(lowScoreMsg), stopwatch);
+                        }
+
+                        result.Message = result.Matches.Count == 1
+                            ? "Template located."
+                            : result.Matches.Count + " template matches located.";
                         return Complete(result, stopwatch);
                     }
                 }

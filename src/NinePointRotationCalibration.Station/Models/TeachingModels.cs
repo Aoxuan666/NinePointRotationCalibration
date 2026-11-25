@@ -14,6 +14,8 @@ namespace NinePointRotationCalibration.Station.Models
     {
         public TeachingSide Side { get; set; }
         public bool IsValid { get; set; }
+        public bool HasMachinePose { get; set; }
+        public bool HasImagePose { get; set; }
         public double ImageRow { get; set; }
         public double ImageColumn { get; set; }
         public double ImageAngleDegrees { get; set; }

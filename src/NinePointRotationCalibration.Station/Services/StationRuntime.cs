@@ -788,6 +788,70 @@ namespace NinePointRotationCalibration.Station.Services
                 cancellationToken);
         }
 
+        /// <summary>仅记录一侧示教的机械轴坐标（不拍照，供轴遮挡视野时先记录轴位）。</summary>
+        public Task<TeachingPose> RecordTeachingMachinePoseAsync(
+            TeachingSide side,
+            MachinePose machinePose,
+            CancellationToken cancellationToken)
+        {
+            EnsureCalibrationEnabled();
+            return RunExclusiveAsync(
+                side + " teaching record machine",
+                () => _teaching.RecordMachinePoseAsync(side, machinePose, cancellationToken),
+                cancellationToken);
+        }
+
+        /// <summary>移轴离开视野后触发一次拍照并使用定位模板匹配基准板图像坐标。</summary>
+        public Task<TeachingPose> LocateTeachingImageAsync(
+            TeachingSide side,
+            CancellationToken cancellationToken)
+        {
+            EnsureCameraEnabled();
+            EnsureCalibrationEnabled();
+            return RunExclusiveAsync(
+                side + " teaching locate image",
+                () => _teaching.LocateImagePoseAsync(side, cancellationToken),
+                cancellationToken);
+        }
+
+        /// <summary>同步更新指定吸嘴标定模板的最低匹配分数（低于此分数标定立即中断报 NG）。</summary>
+        public void UpdateCalibrationMinScore(TeachingSide nozzle, double minScore)
+        {
+            ThrowIfDisposed();
+            if (double.IsNaN(minScore) || double.IsInfinity(minScore)) return;
+            double clamped = Math.Max(0.0, Math.Min(1.0, minScore));
+            CalibrationJob jobToSave = null;
+            lock (_stateSync)
+            {
+                CalibrationJob target = nozzle == TeachingSide.Right ? _rightCalibrationJob : _leftCalibrationJob;
+                if (target != null && target.Template != null)
+                {
+                    if (target.Template.MatchParameters == null)
+                        target.Template.MatchParameters = new MatchParameters();
+                    if (Math.Abs(target.Template.MatchParameters.MinScore - clamped) > 1e-6)
+                    {
+                        target.Template.MatchParameters.MinScore = clamped;
+                        if (target.Template.HasUsableModel)
+                        {
+                            jobToSave = target.DeepClone();
+                        }
+                    }
+                }
+            }
+            _calibration.UpdateTemplateMinScore(nozzle, clamped);
+            if (jobToSave != null)
+            {
+                try
+                {
+                    SaveCalibrationJobAsync(nozzle, jobToSave).GetAwaiter().GetResult();
+                }
+                catch (Exception ex)
+                {
+                    LocalDebugLog.WriteException("WARN", "calibration.minScore", "Failed to persist calibration MinScore", ex);
+                }
+            }
+        }
+
         /// <summary>采集并定位一侧示教姿态。</summary>
         public Task<TeachingPose> CaptureTeachingAsync(
             TeachingSide side,

@@ -75,6 +75,225 @@ namespace NinePointRotationCalibration.Station.Services.Teaching
             lock (_sync) _data = Clone(data ?? new TeachingData());
         }
 
+        /// <summary>仅记录指定侧当前机械轴坐标（不触发拍照，避免轴在示教位遮挡相机）；若已先完成图像模板匹配则自动合并为有效示教。</summary>
+        public async Task<TeachingPose> RecordMachinePoseAsync(
+            TeachingSide side,
+            MachinePose machinePose,
+            CancellationToken cancellationToken)
+        {
+            if (_disposed) throw new ObjectDisposedException(nameof(TeachingService));
+            if (machinePose == null || !machinePose.IsFinite)
+                throw new ArgumentException("A finite machine pose is required.", nameof(machinePose));
+
+            await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                TeachingPose existing;
+                lock (_sync)
+                {
+                    existing = Clone(side == TeachingSide.Left ? _data.Left : _data.Right);
+                }
+
+                // 若先前处于“已定位图像、待记轴坐标”半完成态，则保留图像位姿并合成完整示教；
+                // 若原先已是完整示教或未示教，则开启新一轮示教周期并等待移轴后重新拍照模板匹配。
+                bool keepPendingImage = existing != null &&
+                    !existing.IsValid &&
+                    existing.HasImagePose &&
+                    IsFinite(existing.ImageRow) &&
+                    IsFinite(existing.ImageColumn) &&
+                    IsFinite(existing.ImageAngleDegrees);
+
+                TeachingPose pose = new TeachingPose
+                {
+                    Side = side,
+                    HasMachinePose = true,
+                    HasImagePose = keepPendingImage,
+                    IsValid = keepPendingImage,
+                    ImageRow = keepPendingImage ? existing.ImageRow : 0.0,
+                    ImageColumn = keepPendingImage ? existing.ImageColumn : 0.0,
+                    ImageAngleDegrees = keepPendingImage ? existing.ImageAngleDegrees : 0.0,
+                    MatchScore = keepPendingImage ? existing.MatchScore : 0.0,
+                    MachineX = machinePose.X,
+                    MachineY = machinePose.Y,
+                    MachineR = machinePose.ThetaDegrees,
+                    CapturedAtUtc = DateTime.UtcNow
+                };
+
+                TeachingData snapshot;
+                lock (_sync)
+                {
+                    snapshot = Clone(_data);
+                    if (side == TeachingSide.Left) snapshot.Left = Clone(pose);
+                    else snapshot.Right = Clone(pose);
+                }
+
+                if (_saveAsync != null)
+                {
+                    try
+                    {
+                        await _saveAsync(snapshot).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    {
+                        throw;
+                    }
+                    catch (Exception ex)
+                    {
+                        LocalDebugLog.WriteException("ERROR", "teaching", "Failed to save recorded machine pose for " + side, ex);
+                        throw new TeachingWorkflowException(
+                            ProtocolErrorCodes.TeachingSaveFailed,
+                            "Failed to save teaching data: " + ex.Message,
+                            ex);
+                    }
+                }
+
+                lock (_sync)
+                {
+                    _data = Clone(snapshot);
+                }
+                LocalDebugLog.Write(
+                    "INFO",
+                    "teaching",
+                    string.Format(
+                        CultureInfo.InvariantCulture,
+                        "Recorded teaching machine pose: side={0}, machine=({1:0.###},{2:0.###},{3:0.###}deg), hasImage={4}, valid={5}",
+                        side,
+                        pose.MachineX,
+                        pose.MachineY,
+                        pose.MachineR,
+                        pose.HasImagePose,
+                        pose.IsValid));
+                EventHandler<TeachingEventArgs> handler = TeachingChanged;
+                if (handler != null) handler(this, new TeachingEventArgs(pose));
+                return Clone(pose);
+            }
+            finally
+            {
+                _gate.Release();
+            }
+        }
+
+        /// <summary>在轴移出相机视野后触发一次拍照并用定位模板匹配当前基准板图像坐标，与已记录轴坐标合并保存。</summary>
+        public Task<TeachingPose> LocateImagePoseAsync(
+            TeachingSide side,
+            CancellationToken cancellationToken)
+        {
+            return LocateImagePoseAsync(side, 0, cancellationToken);
+        }
+
+        /// <summary>在轴移出相机视野后触发一次拍照并用定位模板匹配当前基准板图像坐标（支持可选采图超时限制）。</summary>
+        public async Task<TeachingPose> LocateImagePoseAsync(
+            TeachingSide side,
+            int captureTimeoutMilliseconds,
+            CancellationToken cancellationToken)
+        {
+            if (_disposed) throw new ObjectDisposedException(nameof(TeachingService));
+
+            await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                CalibrationJob job = _getPositioningJob();
+                if (job == null || job.Template == null || job.Template.ModelData == null || job.Template.ModelData.Length == 0)
+                {
+                    LocalDebugLog.Write("WARN", "teaching", "LocateImage aborted: positioning template is not configured. side=" + side);
+                    throw new TeachingWorkflowException(
+                        ProtocolErrorCodes.PositioningTemplateMissing,
+                        "定位模板尚未配置或模型不可用，请先在「模板」页创建或加载定位模板。");
+                }
+
+                LocalDebugLog.Write("INFO", "teaching", "LocateImage start (trigger capture + positioning match): side=" + side);
+
+                CameraFrame frame = await CaptureFrameWithOptionalTimeoutAsync(captureTimeoutMilliseconds, cancellationToken)
+                    .ConfigureAwait(false);
+                using (frame)
+                {
+                    LocalDebugLog.Write(
+                        "INFO",
+                        "teaching",
+                        "Captured teaching locate frame: side=" + side + ", seq=" + frame.Sequence + ", size=" +
+                        (frame.Image == null ? "null" : frame.Image.Width + "x" + frame.Image.Height));
+                    PublishFrame(frame.Image, "teaching." + side.ToString().ToLowerInvariant());
+
+                    TemplateMatchResult match = await LocateReferenceBoardWithValidationAsync(frame.Image, job, side, cancellationToken)
+                        .ConfigureAwait(false);
+
+                    TeachingPose existing;
+                    lock (_sync)
+                    {
+                        existing = Clone(side == TeachingSide.Left ? _data.Left : _data.Right);
+                    }
+
+                    bool hasMachine = existing != null &&
+                        (existing.HasMachinePose || existing.IsValid) &&
+                        IsFinite(existing.MachineX) &&
+                        IsFinite(existing.MachineY) &&
+                        IsFinite(existing.MachineR);
+
+                    TeachingPose pose = new TeachingPose
+                    {
+                        Side = side,
+                        HasMachinePose = hasMachine,
+                        HasImagePose = true,
+                        IsValid = hasMachine,
+                        ImageRow = match.Row,
+                        ImageColumn = match.Column,
+                        ImageAngleDegrees = match.AngleDegrees,
+                        MatchScore = IsFinite(match.Score) ? match.Score : 0.0,
+                        MachineX = hasMachine ? existing.MachineX : 0.0,
+                        MachineY = hasMachine ? existing.MachineY : 0.0,
+                        MachineR = hasMachine ? existing.MachineR : 0.0,
+                        CapturedAtUtc = DateTime.UtcNow
+                    };
+
+                    TeachingData snapshot;
+                    lock (_sync)
+                    {
+                        snapshot = Clone(_data);
+                        if (side == TeachingSide.Left) snapshot.Left = Clone(pose);
+                        else snapshot.Right = Clone(pose);
+                    }
+
+                    if (_saveAsync != null)
+                    {
+                        try
+                        {
+                            await _saveAsync(snapshot).ConfigureAwait(false);
+                        }
+                        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                        {
+                            throw;
+                        }
+                        catch (Exception ex)
+                        {
+                            LocalDebugLog.WriteException("ERROR", "teaching", "Failed to save located image pose for " + side, ex);
+                            throw new TeachingWorkflowException(
+                                ProtocolErrorCodes.TeachingSaveFailed,
+                                "Failed to save teaching data: " + ex.Message,
+                                ex);
+                        }
+                    }
+
+                    lock (_sync)
+                    {
+                        _data = Clone(snapshot);
+                    }
+                    LocalDebugLog.Write(
+                        "INFO",
+                        "teaching",
+                        "Teaching image located and saved: " + StationLogFormatter.FormatTeachingPose(pose) +
+                        ", matchScore=" + pose.MatchScore.ToString("0.###", CultureInfo.InvariantCulture) +
+                        ", hasMachine=" + pose.HasMachinePose + ", valid=" + pose.IsValid);
+                    EventHandler<TeachingEventArgs> handler = TeachingChanged;
+                    if (handler != null) handler(this, new TeachingEventArgs(pose, match.ContourSegments));
+                    return Clone(pose);
+                }
+            }
+            finally
+            {
+                _gate.Release();
+            }
+        }
+
         /// <summary>采集一幅图像并使用 HALCON 模板定位生成指定侧的示教姿态。</summary>
         public Task<TeachingPose> CaptureAsync(
             TeachingSide side,
@@ -118,21 +337,8 @@ namespace NinePointRotationCalibration.Station.Services.Teaching
                         machinePose.Y,
                         machinePose.ThetaDegrees));
 
-                CameraFrame frame;
-                if (captureTimeoutMilliseconds > 0)
-                {
-                    using (CancellationTokenSource captureCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
-                    {
-                        captureCts.CancelAfter(captureTimeoutMilliseconds);
-                        frame = await CaptureFrameWithMappedErrorsAsync(captureCts.Token, cancellationToken, captureTimeoutMilliseconds)
-                            .ConfigureAwait(false);
-                    }
-                }
-                else
-                {
-                    frame = await CaptureFrameWithMappedErrorsAsync(cancellationToken, cancellationToken, 0)
-                        .ConfigureAwait(false);
-                }
+                CameraFrame frame = await CaptureFrameWithOptionalTimeoutAsync(captureTimeoutMilliseconds, cancellationToken)
+                    .ConfigureAwait(false);
 
                 using (frame)
                 {
@@ -143,37 +349,16 @@ namespace NinePointRotationCalibration.Station.Services.Teaching
                         (frame.Image == null ? "null" : frame.Image.Width + "x" + frame.Image.Height));
                     PublishFrame(frame.Image, "teaching." + side.ToString().ToLowerInvariant());
 
-                    TemplateMatchResult match;
-                    try
-                    {
-                        match = await Task.Run(
-                            () => LocateReferenceBoard(frame.Image, job), cancellationToken).ConfigureAwait(false);
-                    }
-                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                    {
-                        throw;
-                    }
-                    catch (Exception ex)
-                    {
-                        LocalDebugLog.WriteException("WARN", "teaching", "Template locate threw an exception for " + side, ex);
-                        throw new TeachingWorkflowException(ProtocolErrorCodes.MatchFailed, "Template locate failed: " + ex.Message, ex);
-                    }
-
-                    if (match == null || !match.Success ||
-                        !IsFinite(match.Row) || !IsFinite(match.Column) || !IsFinite(match.AngleDegrees))
-                    {
-                        string errMsg = match == null || string.IsNullOrWhiteSpace(match.Message)
-                            ? "Positioning template match failed."
-                            : match.Message;
-                        LocalDebugLog.Write("WARN", "teaching", "Template locate failed for " + side + ": " + errMsg);
-                        throw new TeachingWorkflowException(ProtocolErrorCodes.MatchFailed, errMsg);
-                    }
+                    TemplateMatchResult match = await LocateReferenceBoardWithValidationAsync(frame.Image, job, side, cancellationToken)
+                        .ConfigureAwait(false);
 
                     // 记录示教基准时刻的视觉与机械位姿；MachineR 同时作为后续盲摆回正的固定角
                     TeachingPose pose = new TeachingPose
                     {
                         Side = side,
                         IsValid = true,
+                        HasMachinePose = true,
+                        HasImagePose = true,
                         ImageRow = match.Row,
                         ImageColumn = match.Column,
                         ImageAngleDegrees = match.AngleDegrees,
@@ -223,7 +408,7 @@ namespace NinePointRotationCalibration.Station.Services.Teaching
                         "Teaching saved: " + StationLogFormatter.FormatTeachingPose(pose) +
                         ", matchScore=" + pose.MatchScore.ToString("0.###", CultureInfo.InvariantCulture));
                     EventHandler<TeachingEventArgs> handler = TeachingChanged;
-                    if (handler != null) handler(this, new TeachingEventArgs(pose));
+                    if (handler != null) handler(this, new TeachingEventArgs(pose, match.ContourSegments));
                     return Clone(pose);
                 }
             }
@@ -231,6 +416,72 @@ namespace NinePointRotationCalibration.Station.Services.Teaching
             {
                 _gate.Release();
             }
+        }
+
+        private async Task<CameraFrame> CaptureFrameWithOptionalTimeoutAsync(
+            int captureTimeoutMilliseconds,
+            CancellationToken cancellationToken)
+        {
+            if (captureTimeoutMilliseconds > 0)
+            {
+                using (CancellationTokenSource captureCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+                {
+                    captureCts.CancelAfter(captureTimeoutMilliseconds);
+                    return await CaptureFrameWithMappedErrorsAsync(captureCts.Token, cancellationToken, captureTimeoutMilliseconds)
+                        .ConfigureAwait(false);
+                }
+            }
+            return await CaptureFrameWithMappedErrorsAsync(cancellationToken, cancellationToken, 0)
+                .ConfigureAwait(false);
+        }
+
+        private async Task<TemplateMatchResult> LocateReferenceBoardWithValidationAsync(
+            Bitmap image,
+            CalibrationJob job,
+            TeachingSide side,
+            CancellationToken cancellationToken)
+        {
+            TemplateMatchResult match;
+            try
+            {
+                match = await Task.Run(
+                    () => LocateReferenceBoard(image, job, true), cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                LocalDebugLog.WriteException("WARN", "teaching", "Template locate threw an exception for " + side, ex);
+                throw new TeachingWorkflowException(ProtocolErrorCodes.MatchFailed, "Template locate failed: " + ex.Message, ex);
+            }
+
+            if (match == null || !match.Success ||
+                !IsFinite(match.Row) || !IsFinite(match.Column) || !IsFinite(match.AngleDegrees))
+            {
+                string errMsg = match == null || string.IsNullOrWhiteSpace(match.Message)
+                    ? "Positioning template match failed."
+                    : match.Message;
+                LocalDebugLog.Write("WARN", "teaching", "Template locate failed for " + side + ": " + errMsg);
+                throw new TeachingWorkflowException(ProtocolErrorCodes.MatchFailed, errMsg);
+            }
+
+            double minScore = (job != null && job.Template != null && job.Template.MatchParameters != null && IsFinite(job.Template.MatchParameters.MinScore))
+                ? Math.Max(0.0, Math.Min(1.0, job.Template.MatchParameters.MinScore))
+                : 0.0;
+            if (!IsFinite(match.Score) || match.Score < minScore)
+            {
+                string lowScoreMsg = string.Format(
+                    CultureInfo.InvariantCulture,
+                    "示教定位模板匹配分数 {0:0.###} 低于最低匹配分数 {1:0.###}。",
+                    IsFinite(match.Score) ? match.Score : 0.0,
+                    minScore);
+                LocalDebugLog.Write("WARN", "teaching", "Template locate score below MinScore for " + side + ": " + lowScoreMsg);
+                throw new TeachingWorkflowException(ProtocolErrorCodes.MatchFailed, lowScoreMsg);
+            }
+
+            return match;
         }
 
         private async Task<CameraFrame> CaptureFrameWithMappedErrorsAsync(
@@ -279,9 +530,9 @@ namespace NinePointRotationCalibration.Station.Services.Teaching
         /// 在一拍多板治具中，左右吸嘴示教必须稳定锁定同一块基准板（按从上到下、从左到右排序的第 1 号板），
         /// 防止因默认 NumMatches=1 时帧间最高匹配分数跳变导致左、右吸嘴示教锁定在不同板位上。
         /// </summary>
-        private TemplateMatchResult LocateReferenceBoard(Bitmap image, CalibrationJob job)
+        private TemplateMatchResult LocateReferenceBoard(Bitmap image, CalibrationJob job, bool includeContour = true)
         {
-            if (job == null || job.Template == null) return _sdk.Locate(image, job, false);
+            if (job == null || job.Template == null) return _sdk.Locate(image, job, includeContour);
 
             CalibrationJob multiMatchJob = job.DeepClone();
             if (multiMatchJob.Template.MatchParameters != null)
@@ -289,7 +540,7 @@ namespace NinePointRotationCalibration.Station.Services.Teaching
                 multiMatchJob.Template.MatchParameters.NumMatches = 0;
             }
 
-            TemplateMatchCollectionResult collection = _sdk.LocateAll(image, multiMatchJob, false);
+            TemplateMatchCollectionResult collection = _sdk.LocateAll(image, multiMatchJob, includeContour);
             if (collection != null && collection.Success &&
                 collection.Matches != null && collection.Matches.Count > 0)
             {
@@ -324,6 +575,8 @@ namespace NinePointRotationCalibration.Station.Services.Teaching
                 {
                     Side = side,
                     IsValid = false,
+                    HasMachinePose = false,
+                    HasImagePose = false,
                     CapturedAtUtc = DateTime.UtcNow
                 };
 
@@ -376,6 +629,8 @@ namespace NinePointRotationCalibration.Station.Services.Teaching
             {
                 Side = source.Side,
                 IsValid = source.IsValid,
+                HasMachinePose = source.HasMachinePose || source.IsValid,
+                HasImagePose = source.HasImagePose || source.IsValid,
                 ImageRow = source.ImageRow,
                 ImageColumn = source.ImageColumn,
                 ImageAngleDegrees = source.ImageAngleDegrees,

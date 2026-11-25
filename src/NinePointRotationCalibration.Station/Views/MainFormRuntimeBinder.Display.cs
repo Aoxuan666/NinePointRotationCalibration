@@ -935,6 +935,12 @@ namespace NinePointRotationCalibration.Station.Views
                 ClearInspectionPreviewCache();
                 _view.Viewport.ClearOverlays();
                 DisplayImageCore(displayCopy, displayPreview, source, capturedAtUtc ?? DateTime.UtcNow);
+                if (!string.IsNullOrWhiteSpace(source) &&
+                    source.StartsWith("calibration.", StringComparison.OrdinalIgnoreCase) &&
+                    !_view.IsDetectionDualViewActive)
+                {
+                    RenderCalibrationViewportOverlays(_runtime.ActiveCalibrationNozzle);
+                }
                 if (effectCopy != null)
                 {
                     _view.EffectViewport.SetImageOwned(effectCopy, effectPreview);
@@ -1039,6 +1045,138 @@ namespace NinePointRotationCalibration.Station.Views
                 safe.FillDarkHoles ? 1 : 0,
                 safe.MorphologyRadius,
                 templateRevision + ":" + modelHash);
+        }
+
+        /// <summary>在标定主视口中绘制全部已定位标定点的十字线，并按点位顺序连成轨迹折线（平移 1..9 与旋转 10..14 分色显示）。</summary>
+        private void RenderCalibrationViewportOverlays(TeachingSide nozzle, int highlightPointNumber = 0)
+        {
+            if (_disposed || _view.IsDetectionDualViewActive) return;
+            IReadOnlyList<CalibrationPointRecord> records = _runtime.GetCalibrationRecordsSnapshot(nozzle);
+            if (records == null || records.Count == 0)
+            {
+                _view.Viewport.SetRoiOverlays(null);
+                _view.Viewport.SetContourOverlays(null);
+                _view.Viewport.SetPointOverlays(null);
+                return;
+            }
+
+            List<ViewportPointOverlay> points = new List<ViewportPointOverlay>();
+            List<ViewportContourOverlay> lines = new List<ViewportContourOverlay>();
+            List<PointF> translationTrack = new List<PointF>();
+            List<PointF> rotationTrack = new List<PointF>();
+
+            foreach (CalibrationPointRecord record in records.OrderBy(r => r.PointNumber))
+            {
+                if (record == null) continue;
+                bool finiteCoords = !double.IsNaN(record.ImageRow) && !double.IsInfinity(record.ImageRow) &&
+                                    !double.IsNaN(record.ImageColumn) && !double.IsInfinity(record.ImageColumn);
+                if (!finiteCoords) continue;
+
+                PointF imgPoint = new PointF((float)record.ImageColumn, (float)record.ImageRow);
+                if (record.Status == CalibrationPointStatus.Completed)
+                {
+                    bool isRotation = record.Kind == CalibrationSampleKind.Rotation || record.PointNumber >= 10;
+                    if (isRotation) rotationTrack.Add(imgPoint);
+                    else translationTrack.Add(imgPoint);
+
+                    bool isHighlighted = highlightPointNumber > 0 && record.PointNumber == highlightPointNumber;
+                    Color crossColor = isHighlighted
+                        ? Color.FromArgb(250, 204, 21)
+                        : (isRotation ? Color.FromArgb(249, 115, 22) : Color.FromArgb(34, 197, 94));
+                    string label = isHighlighted
+                        ? string.Format(CultureInfo.InvariantCulture, "P{0} ({1:0.00})", record.PointNumber, record.MatchScore)
+                        : "P" + record.PointNumber;
+                    points.Add(new ViewportPointOverlay
+                    {
+                        ImagePoint = imgPoint,
+                        Label = label,
+                        Color = crossColor,
+                        Radius = isHighlighted ? 6.0f : 5.0f,
+                        CrossSize = isHighlighted ? 16.0f : 13.0f,
+                        LineWidth = isHighlighted ? 2.2f : 1.8f,
+                        LabelOffsetY = isRotation ? 14.0f : 0.0f
+                    });
+                }
+                else if (record.Status == CalibrationPointStatus.Failed && record.MatchScore > 0.0)
+                {
+                    points.Add(new ViewportPointOverlay
+                    {
+                        ImagePoint = imgPoint,
+                        Label = string.Format(CultureInfo.InvariantCulture, "P{0} NG ({1:0.00})", record.PointNumber, record.MatchScore),
+                        Color = Color.FromArgb(239, 68, 68),
+                        Radius = 7.0f,
+                        CrossSize = 16.0f,
+                        LineWidth = 2.2f
+                    });
+                }
+            }
+
+            if (translationTrack.Count >= 2)
+            {
+                lines.Add(new ViewportContourOverlay
+                {
+                    Points = translationTrack,
+                    Color = Color.FromArgb(235, 34, 211, 238),
+                    LineWidth = 2.2f
+                });
+            }
+            if (rotationTrack.Count >= 2)
+            {
+                lines.Add(new ViewportContourOverlay
+                {
+                    Points = rotationTrack,
+                    Color = Color.FromArgb(235, 251, 146, 60),
+                    LineWidth = 2.2f
+                });
+            }
+
+            _view.Viewport.SetRoiOverlays(null);
+            _view.Viewport.SetContourOverlays(lines);
+            _view.Viewport.SetPointOverlays(points);
+        }
+
+        /// <summary>在主视口中绘制示教模板匹配定位结果十字线与匹配轮廓。</summary>
+        private void RenderTeachingViewportOverlays(TeachingPose pose, IList<List<ImagePoint>> contourSegments)
+        {
+            if (_disposed || _view.IsDetectionDualViewActive || pose == null || !pose.HasImagePose) return;
+            if (double.IsNaN(pose.ImageRow) || double.IsInfinity(pose.ImageRow) ||
+                double.IsNaN(pose.ImageColumn) || double.IsInfinity(pose.ImageColumn))
+            {
+                return;
+            }
+
+            List<ViewportContourOverlay> contours = new List<ViewportContourOverlay>();
+            if (contourSegments != null)
+            {
+                foreach (List<ImagePoint> segment in contourSegments)
+                {
+                    if (segment == null || segment.Count < 2) continue;
+                    contours.Add(new ViewportContourOverlay
+                    {
+                        Points = segment.Select(p => new PointF((float)p.Column, (float)p.Row)).ToList(),
+                        Color = Color.LimeGreen,
+                        LineWidth = 2.0f
+                    });
+                }
+            }
+
+            string sideLabel = pose.Side == TeachingSide.Left ? "左示教" : "右示教";
+            string label = pose.MatchScore > 0.0
+                ? string.Format(CultureInfo.InvariantCulture, "{0} ({1:0.000})", sideLabel, pose.MatchScore)
+                : sideLabel;
+            ViewportPointOverlay cross = new ViewportPointOverlay
+            {
+                ImagePoint = new PointF((float)pose.ImageColumn, (float)pose.ImageRow),
+                Label = label,
+                Color = Color.FromArgb(34, 197, 94),
+                Radius = 6.5f,
+                CrossSize = 18.0f,
+                LineWidth = 2.2f
+            };
+
+            _view.Viewport.SetRoiOverlays(null);
+            _view.Viewport.SetContourOverlays(contours);
+            _view.Viewport.SetPointOverlays(new[] { cross });
         }
 
         private void DisplayImageCore(Bitmap image, Bitmap preview, string source, DateTime capturedAtUtc)

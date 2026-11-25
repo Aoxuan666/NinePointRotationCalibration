@@ -679,6 +679,19 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 return;
             }
 
+            double minimumScore = (_state != null && _state.Template != null && _state.Template.Parameters != null)
+                ? _state.Template.Parameters.MinimumScore
+                : 0.0;
+            if (result.Success && (double.IsNaN(result.Score) || double.IsInfinity(result.Score) || result.Score < minimumScore))
+            {
+                result.Success = false;
+                result.Message = string.Format(
+                    CultureInfo.InvariantCulture,
+                    "NG：匹配分数 {0:0.###} 低于最低匹配分数 {1:0.###}",
+                    result.Score,
+                    minimumScore);
+            }
+
             _currentLocate = result;
             if (result.Success)
             {
@@ -1078,6 +1091,39 @@ namespace NinePointRotationCalibration.WinForms.Forms
         private void UpdateCanvasOverlay()
         {
             CanvasRuntimeOverlay overlay = new CanvasRuntimeOverlay();
+            // 按顺序连接有效平移点与旋转点，便于直观检查标定轨迹与十字线定位
+            List<ImageCoordinate> translationTrack = _translationSamples
+                .Where(s => s != null && s.Enabled && s.TemplateRevision == _state.Template.Revision)
+                .OrderBy(s => s.Sequence)
+                .Select(s => new ImageCoordinate(s.ImageRow, s.ImageColumn))
+                .ToList();
+            if (translationTrack.Count >= 2)
+            {
+                overlay.Polylines.Add(new CanvasPolylineOverlay
+                {
+                    Points = translationTrack,
+                    Color = Color.FromArgb(220, 34, 211, 238),
+                    Closed = false,
+                    WidthPixels = 2.0f
+                });
+            }
+
+            List<ImageCoordinate> rotationTrack = _rotationSamples
+                .Where(s => s != null && s.Enabled && s.TemplateRevision == _state.Template.Revision)
+                .OrderBy(s => s.Sequence)
+                .Select(s => new ImageCoordinate(s.ImageRow, s.ImageColumn))
+                .ToList();
+            if (rotationTrack.Count >= 2)
+            {
+                overlay.Polylines.Add(new CanvasPolylineOverlay
+                {
+                    Points = rotationTrack,
+                    Color = Color.FromArgb(220, 251, 146, 60),
+                    Closed = false,
+                    WidthPixels = 2.0f
+                });
+            }
+
             // 汇总所有样本点（灰=禁用或版本过期，绿=内点，红=剔除），叠加当前定位轮廓及标定旋转中心
             foreach (CalibrationSampleRow sample in _translationSamples.Concat(_rotationSamples))
             {

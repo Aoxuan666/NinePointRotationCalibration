@@ -17,6 +17,9 @@ namespace NinePointRotationCalibration.Station.Controls
         {
             Color = Color.LimeGreen;
             Radius = 5.0f;
+            LineWidth = 1.5f;
+            CrossSize = 0.0f;
+            LabelOffsetY = 0.0f;
             Label = string.Empty;
         }
 
@@ -24,6 +27,9 @@ namespace NinePointRotationCalibration.Station.Controls
         public string Label { get; set; }
         public Color Color { get; set; }
         public float Radius { get; set; }
+        public float LineWidth { get; set; }
+        public float CrossSize { get; set; }
+        public float LabelOffsetY { get; set; }
     }
 
     /// <summary>视口中的可旋转矩形 ROI 叠加层配置。</summary>
@@ -1224,14 +1230,27 @@ namespace NinePointRotationCalibration.Station.Controls
                     ViewportPointOverlay point = points[i];
                     PointF center = Transform(point.ImagePoint, scale, origin);
                     float radius = Math.Max(3.0f, point.Radius);
-                    Pen pen = GetOrAddPen(penCache, point.Color, 1.5f);
+                    float arm = point.CrossSize > 0.0f ? point.CrossSize : radius + 4.0f;
+                    float lineWidth = point.LineWidth > 0.0f ? point.LineWidth : 1.5f;
+                    if (lineWidth >= 1.8f)
+                    {
+                        Pen shadowPen = GetOrAddPen(penCache, Color.FromArgb(180, 10, 14, 22), lineWidth + 1.4f);
+                        graphics.DrawLine(shadowPen, center.X - arm, center.Y, center.X + arm, center.Y);
+                        graphics.DrawLine(shadowPen, center.X, center.Y - arm, center.X, center.Y + arm);
+                    }
+                    Pen pen = GetOrAddPen(penCache, point.Color, lineWidth);
                     SolidBrush brush = GetOrAddBrush(brushCache, point.Color);
                     graphics.DrawEllipse(pen, center.X - radius, center.Y - radius, radius * 2.0f, radius * 2.0f);
-                    graphics.DrawLine(pen, center.X - radius - 4.0f, center.Y, center.X + radius + 4.0f, center.Y);
-                    graphics.DrawLine(pen, center.X, center.Y - radius - 4.0f, center.X, center.Y + radius + 4.0f);
+                    graphics.DrawLine(pen, center.X - arm, center.Y, center.X + arm, center.Y);
+                    graphics.DrawLine(pen, center.X, center.Y - arm, center.X, center.Y + arm);
                     if (!string.IsNullOrWhiteSpace(point.Label))
                     {
-                        graphics.DrawString(point.Label, Font, brush, center.X + radius + 5.0f, center.Y + 3.0f);
+                        float labelX = center.X + radius + 5.0f;
+                        float labelY = center.Y - 8.0f + point.LabelOffsetY;
+                        SizeF labelSize = graphics.MeasureString(point.Label, Font);
+                        SolidBrush bgBrush = GetOrAddBrush(brushCache, Color.FromArgb(185, 15, 23, 42));
+                        graphics.FillRectangle(bgBrush, labelX - 2.0f, labelY - 1.0f, labelSize.Width + 4.0f, labelSize.Height + 1.0f);
+                        graphics.DrawString(point.Label, Font, brush, labelX, labelY);
                     }
                 }
             }
@@ -1319,10 +1338,12 @@ namespace NinePointRotationCalibration.Station.Controls
             float maxY = ClientSize.Height + 8.0f;
             bool anyVisible = false;
 
-            // 复用缓冲列表并按步长抽稀剔除屏幕距离过近(小于 0.8px)的冗余点，限制单轮廓最多绘制约 5000 点
+            // 复用缓冲列表并按步长抽稀剔除屏幕距离过近(小于 0.8px)的冗余点，限制单轮廓最多绘制约 5000 点；
+            // 短折线（如 9+5 标定点位连线）保留全部顶点不做距离剔除，防止缩放时漏绘连线。
             _scratchContourPoints.Clear();
             PointF previous = PointF.Empty;
             bool hasPrevious = false;
+            bool decimate = contour.Points.Count > 64;
             int stride = Math.Max(1, (int)Math.Ceiling(contour.Points.Count / 5000.0));
             for (int index = 0; index < contour.Points.Count; index += stride)
             {
@@ -1331,7 +1352,7 @@ namespace NinePointRotationCalibration.Station.Controls
                 {
                     anyVisible = true;
                 }
-                if (hasPrevious)
+                if (decimate && hasPrevious)
                 {
                     float dx = next.X - previous.X;
                     float dy = next.Y - previous.Y;
@@ -1369,7 +1390,10 @@ namespace NinePointRotationCalibration.Station.Controls
                 ImagePoint = source.ImagePoint,
                 Label = source.Label,
                 Color = source.Color,
-                Radius = source.Radius
+                Radius = source.Radius,
+                LineWidth = source.LineWidth,
+                CrossSize = source.CrossSize,
+                LabelOffsetY = source.LabelOffsetY
             };
         }
 
