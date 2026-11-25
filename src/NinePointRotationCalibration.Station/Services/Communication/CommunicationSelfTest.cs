@@ -35,6 +35,7 @@ namespace NinePointRotationCalibration.Station.Services.Communication
             await VerifyConnectionScopedReconnectAsync(codec, cancellationToken).ConfigureAwait(false);
             await VerifySmoothClientReplacementAsync(codec, cancellationToken).ConfigureAwait(false);
             await VerifyHeartbeatInactivityTimeoutAsync(codec, cancellationToken).ConfigureAwait(false);
+            VerifyTemplateReferenceImagePersistence();
             VerifyWideFovCalibrationSolver();
             VerifyDualRTargetMapping();
             VerifyInspectionSemantics();
@@ -1893,6 +1894,81 @@ namespace NinePointRotationCalibration.Station.Services.Communication
                 {
                     try { Directory.Delete(tempDir, true); } catch { }
                 }
+            }
+        }
+
+        private static void VerifyTemplateReferenceImagePersistence()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), "nprcal-refimg-selftest-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                // 1. 灰度底图无损编码 -> .nprcal 持久化 -> 重新加载后像素完全一致且 DeepClone 共享不可变引用
+                using (Bitmap graySource = new Bitmap(64, 48, System.Drawing.Imaging.PixelFormat.Format32bppPArgb))
+                {
+                    for (int y = 0; y < graySource.Height; y++)
+                    {
+                        for (int x = 0; x < graySource.Width; x++)
+                        {
+                            int v = (x * 3 + y * 5) & 255;
+                            graySource.SetPixel(x, y, Color.FromArgb(255, v, v, v));
+                        }
+                    }
+
+                    byte[] pngBytes = JobPackageSerializer.EncodeReferenceImagePng(graySource);
+                    Assert(pngBytes != null && pngBytes.Length > 32, "Encoded grayscale template reference PNG must be non-empty.");
+
+                    CalibrationJob job = CreateJobWithDummyTemplateAndSample("Pos-RefImg", "P1");
+                    job.Template.ModelHash = TemplateDefinition.ComputeModelHash(job.Template.ModelData);
+                    job.Template.ReferenceImageWidth = graySource.Width;
+                    job.Template.ReferenceImageHeight = graySource.Height;
+                    job.Template.SetReferenceImageData(pngBytes);
+                    Assert(job.Template.HasReferenceImage, "Template must report HasReferenceImage=true after SetReferenceImageData.");
+
+                    TemplateDefinition clonedTemplate = job.Template.DeepClone();
+                    Assert(ReferenceEquals(job.Template.ReferenceImageData, clonedTemplate.ReferenceImageData), "DeepClone must share immutable ReferenceImageData reference.");
+
+                    string jobPath = Path.Combine(tempDir, "positioning-with-ref.nprcal");
+                    JobPackageSerializer.Save(jobPath, job);
+
+                    CalibrationJob reloaded = JobPackageSerializer.Load(jobPath);
+                    Assert(reloaded != null && reloaded.Template != null && reloaded.Template.HasReferenceImage, "Reloaded .nprcal must preserve persisted template reference image.");
+                    Assert(reloaded.Template.ReferenceImageData.Length == pngBytes.Length, "Reloaded PNG byte length must match saved reference image.");
+
+                    using (Bitmap decoded = JobPackageSerializer.TryDecodeReferenceImage(reloaded.Template.ReferenceImageData))
+                    {
+                        Assert(decoded != null && decoded.Width == 64 && decoded.Height == 48, "Decoded template reference image dimensions must match original.");
+                        Color p0 = decoded.GetPixel(17, 23);
+                        int expectedV = (17 * 3 + 23 * 5) & 255;
+                        Assert(p0.R == expectedV && p0.G == expectedV && p0.B == expectedV, "Grayscale template reference image must decode losslessly.");
+                    }
+                }
+
+                // 2. 彩色底图无损编码与还原
+                using (Bitmap colorSource = new Bitmap(32, 24, System.Drawing.Imaging.PixelFormat.Format32bppArgb))
+                {
+                    colorSource.SetPixel(5, 7, Color.FromArgb(255, 210, 80, 45));
+                    byte[] colorPng = JobPackageSerializer.EncodeReferenceImagePng(colorSource);
+                    using (Bitmap decodedColor = JobPackageSerializer.TryDecodeReferenceImage(colorPng))
+                    {
+                        Assert(decodedColor != null && decodedColor.Width == 32 && decodedColor.Height == 24, "Decoded color reference image size mismatch.");
+                        Color px = decodedColor.GetPixel(5, 7);
+                        Assert(px.R == 210 && px.G == 80 && px.B == 45, "Color template reference image must decode losslessly.");
+                    }
+                }
+
+                // 3. 兼容旧版无 reference-image.png 的 .nprcal 包
+                CalibrationJob legacyJob = CreateJobWithDummyTemplateAndSample("Legacy-NoRef", "P1");
+                legacyJob.Template.ModelHash = TemplateDefinition.ComputeModelHash(legacyJob.Template.ModelData);
+                legacyJob.Template.SetReferenceImageData(null);
+                string legacyPath = Path.Combine(tempDir, "legacy-no-ref.nprcal");
+                JobPackageSerializer.Save(legacyPath, legacyJob);
+                CalibrationJob reloadedLegacy = JobPackageSerializer.Load(legacyPath);
+                Assert(reloadedLegacy != null && reloadedLegacy.Template != null && !reloadedLegacy.Template.HasReferenceImage, "Legacy .nprcal without reference image must load with HasReferenceImage=false.");
+            }
+            finally
+            {
+                try { Directory.Delete(tempDir, true); } catch { }
             }
         }
 

@@ -892,6 +892,24 @@ namespace NinePointRotationCalibration.Station.Services
                 cancellationToken);
         }
 
+        /// <summary>检查定位模板或当前吸嘴标定模板是否已持久化原始参考底图。</summary>
+        public bool HasPersistedTemplateReferenceImage(bool positioning)
+        {
+            return HasPersistedTemplateReferenceImage(positioning, ActiveCalibrationNozzle);
+        }
+
+        /// <summary>检查定位模板或指定吸嘴标定模板是否已持久化原始参考底图。</summary>
+        public bool HasPersistedTemplateReferenceImage(bool positioning, TeachingSide nozzle)
+        {
+            lock (_stateSync)
+            {
+                CalibrationJob job = positioning
+                    ? _positioningJob
+                    : (nozzle == TeachingSide.Right ? _rightCalibrationJob : _leftCalibrationJob);
+                return job != null && job.Template != null && job.Template.HasReferenceImage;
+            }
+        }
+
         /// <summary>在独占工作流下打开标定模板编辑器；更新当前吸嘴模板并清空其旧采样（另一吸嘴无模板时自动同步）。</summary>
         public TemplateSetupResult EditCalibrationTemplate(Bitmap referenceImage, IWin32Window owner)
         {

@@ -295,6 +295,9 @@ namespace NinePointRotationCalibration
         public ImagePose ModelReference { get; set; }
         public int ReferenceImageWidth { get; set; }
         public int ReferenceImageHeight { get; set; }
+        /// <summary>做模板时使用的原始参考底图 PNG 字节流（随 .nprcal 包持久化，运行时按不可变引用共享以避免频繁深拷贝）。</summary>
+        [field: OptionalField]
+        public byte[] ReferenceImageData { get; set; }
         public byte[] ModelData { get; set; }
         public string ModelHash { get; set; }
         public string HalconVersion { get; set; }
@@ -323,6 +326,20 @@ namespace NinePointRotationCalibration
             get { return !IsModelDirty && ModelData != null && ModelData.Length > 0; }
         }
 
+        /// <summary>指示模板是否已持久化做模板时的原始参考底图。</summary>
+        public bool HasReferenceImage
+        {
+            get { return ReferenceImageData != null && ReferenceImageData.Length > 0; }
+        }
+
+        /// <summary>写入模板原始参考底图字节流（复制外部数组以维持不可变共享语义）。</summary>
+        public void SetReferenceImageData(byte[] imageData)
+        {
+            ReferenceImageData = imageData == null || imageData.Length == 0
+                ? null
+                : (byte[])imageData.Clone();
+        }
+
         /// <summary>计算二进制模型数据的小写 SHA-256 十六进制摘要。</summary>
         public static string ComputeModelHash(byte[] data)
         {
@@ -346,6 +363,8 @@ namespace NinePointRotationCalibration
             clone.MatchParameters = MatchParameters == null ? null : MatchParameters.DeepClone();
             clone.ModelReference = ModelReference == null ? null : ModelReference.DeepClone();
             clone.ModelData = ModelData == null ? null : (byte[])ModelData.Clone();
+            // ReferenceImageData 遵循不可变共享语义，仅复制引用以避免高频生产检测 DeepClone 时重复复制数 MB 底图
+            clone.ReferenceImageData = ReferenceImageData;
             clone.MaskRegions = new List<TemplateMaskShape>();
             if (MaskRegions != null)
             {

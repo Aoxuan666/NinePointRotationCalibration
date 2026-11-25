@@ -877,6 +877,17 @@ namespace NinePointRotationCalibration.Station.Views
             }
         }
 
+        /// <summary>在不中断实时预览、不修改主视口锁定状态的前提下获取当前画面的克隆副本。</summary>
+        private Bitmap TrySnapshotCurrentImageWithoutLocking()
+        {
+            lock (_displaySync)
+            {
+                if (_lockedDisplayImage != null) return (Bitmap)_lockedDisplayImage.Clone();
+            }
+
+            return _view.Viewport == null ? null : _view.Viewport.Snapshot();
+        }
+
         private Bitmap SnapshotAndLockCurrentImage()
         {
             // 已处于锁定帧模式时直接克隆返回，避免重复截屏并保持当前基准帧不变

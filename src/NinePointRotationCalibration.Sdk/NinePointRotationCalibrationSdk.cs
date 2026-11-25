@@ -489,8 +489,6 @@ namespace NinePointRotationCalibration
             bool enableDetectionRoi = false)
         {
             ThrowIfDisposed();
-            if (referenceImage == null)
-                return TemplateSetupResult.Failure(CalibrationErrorCode.ParameterInvalid, "Reference image is null.");
             if (Thread.CurrentThread.GetApartmentState() != ApartmentState.STA)
             {
                 return TemplateSetupResult.Failure(
@@ -501,26 +499,54 @@ namespace NinePointRotationCalibration
             TemplateDefinition baseline = currentTemplate == null
                 ? new TemplateDefinition()
                 : currentTemplate.DeepClone();
-            CalibrationJob workflowJob = new CalibrationJob { Template = baseline.DeepClone() };
+            Bitmap persistedImage = JobPackageSerializer.TryDecodeReferenceImage(baseline.ReferenceImageData);
             try
             {
+                Bitmap editorPrimaryImage = persistedImage ?? referenceImage;
+                if (editorPrimaryImage == null)
+                    return TemplateSetupResult.Failure(CalibrationErrorCode.ParameterInvalid, "Reference image is null.");
+
+                bool openedFromPersistedImage = persistedImage != null;
+                Bitmap alternateCurrentImage = openedFromPersistedImage ? referenceImage : null;
+                CalibrationJob workflowJob = new CalibrationJob { Template = baseline.DeepClone() };
                 TemplateEditorState initial = CoreUiMapper.FromCoreTemplate(baseline);
                 using (SdkCalibrationWorkflow workflow = new SdkCalibrationWorkflow(_templateEngine, workflowJob))
                 using (TemplateEditorForm form = new TemplateEditorForm(
-                    referenceImage,
+                    editorPrimaryImage,
                     initial,
                     workflow.TemplateEditorService,
-                    enableDetectionRoi))
+                    enableDetectionRoi,
+                    alternateCurrentImage,
+                    openedFromPersistedImage))
                 {
                     DialogResult dialogResult = owner == null ? form.ShowDialog() : form.ShowDialog(owner);
                     if (dialogResult != DialogResult.OK || form.ResultState == null)
                         return TemplateSetupResult.Cancelled(baseline);
 
+                    Size activeSize = form.ReferenceImageSize;
+                    if (activeSize.Width <= 0 || activeSize.Height <= 0)
+                    {
+                        activeSize = editorPrimaryImage.Size;
+                    }
+
                     TemplateDefinition updated = CoreUiMapper.ToCoreTemplate(
                         form.ResultState,
                         baseline,
-                        referenceImage.Width,
-                        referenceImage.Height);
+                        activeSize.Width,
+                        activeSize.Height);
+                    if (openedFromPersistedImage && !form.ReferenceImageChanged && baseline.HasReferenceImage)
+                    {
+                        updated.ReferenceImageData = baseline.ReferenceImageData;
+                    }
+                    else
+                    {
+                        using (Bitmap activeReferenceImage = form.CloneResultReferenceImage())
+                        {
+                            byte[] pngBytes = JobPackageSerializer.EncodeReferenceImagePng(activeReferenceImage ?? editorPrimaryImage);
+                            updated.SetReferenceImageData(pngBytes);
+                        }
+                    }
+
                     return new TemplateSetupResult
                     {
                         Accepted = true,
@@ -533,6 +559,10 @@ namespace NinePointRotationCalibration
             catch (Exception exception)
             {
                 return TemplateSetupResult.Failure(CalibrationErrorCode.InternalError, "Failed to open template setup: " + exception.Message);
+            }
+            finally
+            {
+                if (persistedImage != null) persistedImage.Dispose();
             }
         }
 

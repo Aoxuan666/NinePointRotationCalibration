@@ -276,15 +276,18 @@ namespace NinePointRotationCalibration.Station.Views
 
         private Task EditTemplateAsync(bool positioning)
         {
-            Bitmap image = SnapshotAndLockCurrentImage();
-            if (image == null)
+            bool hasSavedReferenceImage = _runtime.HasPersistedTemplateReferenceImage(positioning);
+            Bitmap image = hasSavedReferenceImage
+                ? TrySnapshotCurrentImageWithoutLocking()
+                : SnapshotAndLockCurrentImage();
+            if (image == null && !hasSavedReferenceImage)
             {
                 ImportLocalImage();
                 image = SnapshotAndLockCurrentImage();
             }
             using (image)
             {
-                if (image == null)
+                if (image == null && !hasSavedReferenceImage)
                 {
                     const string message = "请先导入一张图像后再创建或编辑模板。";
                     _view.AppendLog(message, true);
@@ -423,11 +426,12 @@ namespace NinePointRotationCalibration.Station.Views
                 : Color.FromArgb(180, 83, 9);
             label.Text = string.Format(
                 CultureInfo.InvariantCulture,
-                "{0} · {1} · {2} · Rev {3}",
+                "{0} · {1} · {2} · Rev {3}{4}",
                 stateText,
                 modeText,
                 thresholdText,
-                template.Revision);
+                template.Revision,
+                template.HasReferenceImage ? " · 含底图" : string.Empty);
         }
 
         private async Task TestTemplateAsync(bool positioning, CancellationToken cancellationToken)

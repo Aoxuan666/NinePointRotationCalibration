@@ -1,18 +1,22 @@
 using System;
+using System.Drawing;
+using System.Drawing.Imaging;
 using System.IO;
 using System.IO.Compression;
+using System.Runtime.InteropServices;
 using System.Runtime.Serialization.Json;
 using System.Text;
 
 namespace NinePointRotationCalibration
 {
     /// <summary>
-    /// 将可读的 Job 元数据（job.json）与 HALCON 二进制模型（model.bin）打包保存到同一 ZIP 文件，并在加载时校验完整性。
+    /// 将可读的 Job 元数据（job.json）、HALCON 二进制模型（model.bin）与模板原始参考底图（reference-image.png）打包保存到同一 ZIP 文件，并在加载时校验完整性。
     /// </summary>
     public static class JobPackageSerializer
     {
         private const string JobEntryName = "job.json";
         private const string ModelEntryName = "model.bin";
+        private const string ReferenceImageEntryName = "reference-image.png";
 
         /// <summary>将 Job 元数据与 HALCON 模型二进制打包保存为标定文件；失败时抛出异常。</summary>
         public static void Save(string path, CalibrationJob job)
@@ -29,6 +33,9 @@ namespace NinePointRotationCalibration
             byte[] modelData = metadata.Template == null || metadata.Template.ModelData == null
                 ? null
                 : (byte[])metadata.Template.ModelData.Clone();
+            byte[] referenceImageData = metadata.Template == null || metadata.Template.ReferenceImageData == null
+                ? null
+                : metadata.Template.ReferenceImageData;
             if (metadata.Template != null)
             {
                 bool hasModelData = modelData != null && modelData.Length > 0;
@@ -48,8 +55,9 @@ namespace NinePointRotationCalibration
                         metadata.Template.ModelHash = actualHash;
                 }
 
-                // 模型二进制单独写入 model.bin，避免在 job.json 中重复存储。
+                // 模型二进制与模板参考底图分别写入 model.bin / reference-image.png，避免在 job.json 中重复存储或 Base64 膨胀。
                 metadata.Template.ModelData = null;
+                metadata.Template.ReferenceImageData = null;
             }
 
             string tempPath = Path.Combine(directory, Path.GetFileName(fullPath) + "." + Guid.NewGuid().ToString("N") + ".tmp");
@@ -77,6 +85,13 @@ namespace NinePointRotationCalibration
                             ZipArchiveEntry modelEntry = archive.CreateEntry(ModelEntryName, CompressionLevel.NoCompression);
                             using (Stream entryStream = modelEntry.Open())
                                 entryStream.Write(modelData, 0, modelData.Length);
+                        }
+
+                        if (referenceImageData != null && referenceImageData.Length > 0)
+                        {
+                            ZipArchiveEntry imageEntry = archive.CreateEntry(ReferenceImageEntryName, CompressionLevel.NoCompression);
+                            using (Stream entryStream = imageEntry.Open())
+                                entryStream.Write(referenceImageData, 0, referenceImageData.Length);
                         }
                     }
                     stream.Flush(true);
@@ -175,6 +190,24 @@ namespace NinePointRotationCalibration
                     if (metadataWasDirty) job.Template.IsModelDirty = true;
                 }
 
+                ZipArchiveEntry referenceImageEntry = archive.GetEntry(ReferenceImageEntryName);
+                if (referenceImageEntry != null)
+                {
+                    byte[] referenceImageData;
+                    using (Stream entryStream = referenceImageEntry.Open())
+                    using (MemoryStream buffer = new MemoryStream())
+                    {
+                        entryStream.CopyTo(buffer);
+                        referenceImageData = buffer.ToArray();
+                    }
+
+                    if (referenceImageData.Length > 0)
+                    {
+                        if (job.Template == null) job.Template = new TemplateDefinition();
+                        job.Template.ReferenceImageData = referenceImageData;
+                    }
+                }
+
                 NormalizeLoadedJob(job);
                 return job;
             }
@@ -231,6 +264,170 @@ namespace NinePointRotationCalibration
                     Message = "Job 加载失败：" + ex.Message,
                     Path = path
                 };
+            }
+        }
+
+        /// <summary>将模板参考底图无损编码为紧凑 PNG 字节流（灰度图自动压缩为 8bpp 灰度 PNG，彩图压缩为 24bpp RGB PNG）。</summary>
+        public static byte[] EncodeReferenceImagePng(Bitmap source)
+        {
+            if (source == null) return null;
+            using (MemoryStream stream = new MemoryStream())
+            {
+                Bitmap compact = TryConvertToCompactLosslessBitmap(source);
+                if (compact != null)
+                {
+                    using (compact)
+                    {
+                        compact.Save(stream, ImageFormat.Png);
+                    }
+                }
+                else
+                {
+                    source.Save(stream, ImageFormat.Png);
+                }
+                return stream.ToArray();
+            }
+        }
+
+        /// <summary>将持久化的模板参考底图 PNG 字节流解码为独立的托管 Bitmap；无效时返回 null。</summary>
+        public static Bitmap TryDecodeReferenceImage(byte[] imageData)
+        {
+            if (imageData == null || imageData.Length == 0) return null;
+            try
+            {
+                using (MemoryStream stream = new MemoryStream(imageData, false))
+                using (Image decoded = Image.FromStream(stream, false, false))
+                {
+                    return new Bitmap(decoded);
+                }
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static Bitmap TryConvertToCompactLosslessBitmap(Bitmap source)
+        {
+            if (source == null || source.Width <= 0 || source.Height <= 0) return null;
+            if (source.PixelFormat == PixelFormat.Format8bppIndexed) return null;
+            if (source.PixelFormat != PixelFormat.Format24bppRgb &&
+                source.PixelFormat != PixelFormat.Format32bppRgb &&
+                source.PixelFormat != PixelFormat.Format32bppArgb &&
+                source.PixelFormat != PixelFormat.Format32bppPArgb)
+            {
+                return null;
+            }
+
+            try
+            {
+                int width = source.Width;
+                int height = source.Height;
+                Rectangle rect = new Rectangle(0, 0, width, height);
+                BitmapData srcData = source.LockBits(rect, ImageLockMode.ReadOnly, PixelFormat.Format24bppRgb);
+                byte[] srcBytes;
+                int srcStride;
+                try
+                {
+                    srcStride = srcData.Stride;
+                    if (srcStride <= 0) return null;
+                    srcBytes = new byte[srcStride * height];
+                    Marshal.Copy(srcData.Scan0, srcBytes, 0, srcBytes.Length);
+                }
+                finally
+                {
+                    source.UnlockBits(srcData);
+                }
+
+                bool isGrayscale = true;
+                for (int y = 0; y < height && isGrayscale; y++)
+                {
+                    int rowStart = y * srcStride;
+                    int rowEnd = rowStart + (width * 3);
+                    for (int p = rowStart; p < rowEnd; p += 3)
+                    {
+                        byte b = srcBytes[p];
+                        if (b != srcBytes[p + 1] || b != srcBytes[p + 2])
+                        {
+                            isGrayscale = false;
+                            break;
+                        }
+                    }
+                }
+
+                if (isGrayscale)
+                {
+                    Bitmap gray = new Bitmap(width, height, PixelFormat.Format8bppIndexed);
+                    try
+                    {
+                        ColorPalette palette = gray.Palette;
+                        for (int i = 0; i < 256; i++)
+                        {
+                            palette.Entries[i] = Color.FromArgb(255, i, i, i);
+                        }
+                        gray.Palette = palette;
+
+                        BitmapData dstData = gray.LockBits(rect, ImageLockMode.WriteOnly, PixelFormat.Format8bppIndexed);
+                        try
+                        {
+                            int dstStride = dstData.Stride;
+                            byte[] dstBytes = new byte[dstStride * height];
+                            for (int y = 0; y < height; y++)
+                            {
+                                int srcRow = y * srcStride;
+                                int dstRow = y * dstStride;
+                                for (int x = 0; x < width; x++)
+                                {
+                                    dstBytes[dstRow + x] = srcBytes[srcRow + (x * 3)];
+                                }
+                            }
+                            Marshal.Copy(dstBytes, 0, dstData.Scan0, dstBytes.Length);
+                        }
+                        finally
+                        {
+                            gray.UnlockBits(dstData);
+                        }
+                        return gray;
+                    }
+                    catch
+                    {
+                        gray.Dispose();
+                        throw;
+                    }
+                }
+
+                if (source.PixelFormat == PixelFormat.Format24bppRgb) return null;
+
+                Bitmap rgb24 = new Bitmap(width, height, PixelFormat.Format24bppRgb);
+                try
+                {
+                    BitmapData dstData = rgb24.LockBits(rect, ImageLockMode.WriteOnly, PixelFormat.Format24bppRgb);
+                    try
+                    {
+                        int dstStride = dstData.Stride;
+                        byte[] dstBytes = new byte[dstStride * height];
+                        int rowBytes = width * 3;
+                        for (int y = 0; y < height; y++)
+                        {
+                            Buffer.BlockCopy(srcBytes, y * srcStride, dstBytes, y * dstStride, rowBytes);
+                        }
+                        Marshal.Copy(dstBytes, 0, dstData.Scan0, dstBytes.Length);
+                    }
+                    finally
+                    {
+                        rgb24.UnlockBits(dstData);
+                    }
+                    return rgb24;
+                }
+                catch
+                {
+                    rgb24.Dispose();
+                    throw;
+                }
+            }
+            catch
+            {
+                return null;
             }
         }
 

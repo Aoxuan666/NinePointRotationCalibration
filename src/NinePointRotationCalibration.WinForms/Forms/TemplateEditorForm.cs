@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -66,6 +67,10 @@ namespace NinePointRotationCalibration.WinForms.Forms
         private readonly Stack<TemplateEditorState> _redoStack = new Stack<TemplateEditorState>();
         private readonly ToolStripButton _undoButton;
         private readonly ToolStripButton _redoButton;
+        private readonly ToolStripButton _useCurrentImageButton;
+        private readonly ToolStripButton _importImageButton;
+        private readonly ToolStripButton _restoreSavedImageButton;
+        private readonly ToolStripLabel _imageSourceLabel;
         private readonly Button _addTemplateRoiButton;
         private readonly Button _addSearchRoiButton;
         private readonly Button _addDetectionRoiButton;
@@ -128,8 +133,13 @@ namespace NinePointRotationCalibration.WinForms.Forms
         private readonly ToolStripStatusLabel _statusLabel;
         private readonly ToolStripProgressBar _progressBar;
         private readonly bool _enableDetectionRoi;
+        private readonly bool _openedFromPersistedImage;
 
         private Bitmap _referenceImage;
+        private Bitmap _initialPersistedImage;
+        private Bitmap _alternateCurrentImage;
+        private bool _referenceImageChanged;
+        private string _currentImageSourceText;
         private PreviewImageHolder _previewImageHolder;
         private TemplateEditorState _state;
         private TemplateEditorState _originalState;
@@ -152,7 +162,9 @@ namespace NinePointRotationCalibration.WinForms.Forms
             Bitmap referenceImage,
             TemplateEditorState initialState = null,
             ITemplateEditorService service = null,
-            bool enableDetectionRoi = false)
+            bool enableDetectionRoi = false,
+            Bitmap alternateCurrentImage = null,
+            bool openedFromPersistedImage = false)
         {
             if (referenceImage == null)
             {
@@ -161,7 +173,11 @@ namespace NinePointRotationCalibration.WinForms.Forms
 
             Service = service;
             _enableDetectionRoi = enableDetectionRoi;
+            _openedFromPersistedImage = openedFromPersistedImage;
             _referenceImage = CloneToFastPArgb(referenceImage);
+            _initialPersistedImage = openedFromPersistedImage ? CloneToFastPArgb(_referenceImage) : null;
+            _alternateCurrentImage = alternateCurrentImage == null ? null : CloneToFastPArgb(alternateCurrentImage);
+            _currentImageSourceText = openedFromPersistedImage ? "已保存模板原图" : "当前画面";
             // PreviewImageHolder 复用已转换的 _referenceImage，打开窗口时消除一次冗余 20MP 同步位图复制
             _previewImageHolder = new PreviewImageHolder(_referenceImage, false);
             _state = initialState == null ? new TemplateEditorState() : initialState.DeepClone();
@@ -195,6 +211,15 @@ namespace NinePointRotationCalibration.WinForms.Forms
 
             _undoButton = CreateToolButton("撤销", "撤销上一步模板编辑", UndoEdit);
             _redoButton = CreateToolButton("重做", "重做刚才撤销的模板编辑", RedoEdit);
+            _useCurrentImageButton = CreateToolButton("使用当前图", "切换为主界面当前画面作为新的模板底图", UseCurrentImageClick);
+            _importImageButton = CreateToolButton("导入底图", "从本地选择一张图片替换当前模板底图", ImportReferenceImageClick);
+            _restoreSavedImageButton = CreateToolButton("恢复原模板图", "切回本次打开时加载的已保存模板底图", RestoreSavedReferenceImageClick);
+            _imageSourceLabel = new ToolStripLabel
+            {
+                ForeColor = Color.FromArgb(134, 239, 172),
+                Margin = new Padding(8, 0, 4, 0),
+                AutoSize = true
+            };
             _addTemplateRoiButton = CreatePanelToggleButton("添加模板ROI", (sender, args) => HandleRoiButtonClick(CanvasRoiTarget.Template));
             _addSearchRoiButton = CreatePanelToggleButton("添加搜索ROI", (sender, args) => HandleRoiButtonClick(CanvasRoiTarget.Search));
             _addDetectionRoiButton = CreatePanelToggleButton("添加检测ROI", (sender, args) => HandleRoiButtonClick(CanvasRoiTarget.Detection));
@@ -308,6 +333,7 @@ namespace NinePointRotationCalibration.WinForms.Forms
             UiRenderOptimizer.EnableDoubleBufferingRecursive(this);
             WireEvents();
             LoadStateToControls(true);
+            UpdateReferenceImageUi();
             SelectTool(CanvasEditTool.Select);
             SetStatus(Service == null
                 ? "尚未注入模板服务；可编辑已有模板，提取/建模/测试暂不可用。"
@@ -326,6 +352,24 @@ namespace NinePointRotationCalibration.WinForms.Forms
         public ITemplateEditorService Service { get; set; }
 
         public TemplateEditorState ResultState { get; private set; }
+
+        /// <summary>指示用户在本次编辑期间是否主动更换了模板底图。</summary>
+        public bool ReferenceImageChanged
+        {
+            get { return _referenceImageChanged; }
+        }
+
+        /// <summary>返回当前正在编辑的模板底图尺寸。</summary>
+        public Size ReferenceImageSize
+        {
+            get { return _referenceImage == null ? Size.Empty : _referenceImage.Size; }
+        }
+
+        /// <summary>克隆当前模板底图供调用方持久化保存。</summary>
+        public Bitmap CloneResultReferenceImage()
+        {
+            return _referenceImage == null ? null : new Bitmap(_referenceImage);
+        }
 
         public TemplateEditorState CurrentState
         {
@@ -408,6 +452,16 @@ namespace NinePointRotationCalibration.WinForms.Forms
                     _previewImageHolder.Dispose();
                     _previewImageHolder = null;
                 }
+                if (_initialPersistedImage != null)
+                {
+                    _initialPersistedImage.Dispose();
+                    _initialPersistedImage = null;
+                }
+                if (_alternateCurrentImage != null)
+                {
+                    _alternateCurrentImage.Dispose();
+                    _alternateCurrentImage = null;
+                }
                 _referenceImage = null;
             }
 
@@ -448,6 +502,13 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 ConstrainToWorkingArea();
             }
 
+            if (_openedFromPersistedImage && _referenceImage != null)
+            {
+                AppendOperationLog(true, string.Format(
+                    "已自动加载上次保存的模板底图（{0}x{1}），可直接调参或微调 ROI；如需换新图请点顶部「使用当前图」或「导入底图」。",
+                    _referenceImage.Width,
+                    _referenceImage.Height));
+            }
             if (_state.TemplateRoi != null && Service != null && !HasAnyOverlayFeatures(_state))
             {
                 RequestAutoFeaturePreview(true);
@@ -491,6 +552,11 @@ namespace NinePointRotationCalibration.WinForms.Forms
             tools.Items.Add(new ToolStripSeparator());
             tools.Items.Add(_undoButton);
             tools.Items.Add(_redoButton);
+            tools.Items.Add(new ToolStripSeparator());
+            tools.Items.Add(_useCurrentImageButton);
+            tools.Items.Add(_importImageButton);
+            tools.Items.Add(_restoreSavedImageButton);
+            tools.Items.Add(_imageSourceLabel);
 
             SplitContainer mainSplit = new SplitContainer
             {
@@ -2203,6 +2269,89 @@ namespace NinePointRotationCalibration.WinForms.Forms
             _canvas.Enabled = !busy;
             UpdateActionButtonsEnabled();
             UpdateRoiToolbarButtons();
+            UpdateReferenceImageUi();
+        }
+
+        private void UpdateReferenceImageUi()
+        {
+            if (_useCurrentImageButton != null)
+            {
+                _useCurrentImageButton.Visible = _alternateCurrentImage != null;
+                _useCurrentImageButton.Enabled = !_busy && _alternateCurrentImage != null;
+            }
+            if (_importImageButton != null)
+            {
+                _importImageButton.Enabled = !_busy;
+            }
+            if (_restoreSavedImageButton != null)
+            {
+                _restoreSavedImageButton.Visible = _initialPersistedImage != null;
+                _restoreSavedImageButton.Enabled = !_busy && _initialPersistedImage != null && _referenceImageChanged;
+            }
+            if (_imageSourceLabel != null)
+            {
+                string sizeText = _referenceImage == null
+                    ? string.Empty
+                    : string.Format(" ({0}x{1})", _referenceImage.Width, _referenceImage.Height);
+                _imageSourceLabel.Text = "底图：" + (_currentImageSourceText ?? "当前画面") + sizeText;
+                _imageSourceLabel.ForeColor = !_referenceImageChanged && _openedFromPersistedImage
+                    ? Color.FromArgb(134, 239, 172)
+                    : Color.FromArgb(125, 211, 252);
+            }
+        }
+
+        private void UseCurrentImageClick(object sender, EventArgs eventArgs)
+        {
+            if (_busy || _alternateCurrentImage == null) return;
+            ApplyReplacedReferenceImage(_alternateCurrentImage, "当前主画面", true);
+        }
+
+        private void ImportReferenceImageClick(object sender, EventArgs eventArgs)
+        {
+            if (_busy) return;
+            using (OpenFileDialog dialog = new OpenFileDialog())
+            {
+                dialog.Title = "选择新的模板参考底图";
+                dialog.Filter = "图像文件|*.bmp;*.png;*.jpg;*.jpeg;*.tif;*.tiff|所有文件|*.*";
+                if (dialog.ShowDialog(this) != DialogResult.OK) return;
+                try
+                {
+                    using (Image loaded = Image.FromFile(dialog.FileName))
+                    using (Bitmap copy = new Bitmap(loaded))
+                    {
+                        ApplyReplacedReferenceImage(copy, "本地导入：" + Path.GetFileName(dialog.FileName), true);
+                    }
+                }
+                catch (Exception exception)
+                {
+                    MessageBox.Show(this, "加载模板底图失败：" + exception.Message, "导入底图", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+            }
+        }
+
+        private void RestoreSavedReferenceImageClick(object sender, EventArgs eventArgs)
+        {
+            if (_busy || _initialPersistedImage == null || !_referenceImageChanged) return;
+            ApplyReplacedReferenceImage(_initialPersistedImage, "已保存模板原图", false);
+        }
+
+        private void ApplyReplacedReferenceImage(Bitmap newImage, string sourceDescription, bool markChanged)
+        {
+            if (_busy || newImage == null) return;
+            SetReferenceImage(newImage, true);
+            _canvas.ClearRuntimeOverlay();
+            _referenceImageChanged = markChanged;
+            _currentImageSourceText = sourceDescription;
+            if (markChanged)
+            {
+                MarkChanged(true);
+            }
+            UpdateReferenceImageUi();
+            string logMessage = markChanged
+                ? string.Format("已切换模板底图为「{0}」（{1}x{2}），请核对 ROI 位置并重新创建模型。", sourceDescription, _referenceImage.Width, _referenceImage.Height)
+                : string.Format("已切回上次保存的模板底图（{0}x{1}）。", _referenceImage.Width, _referenceImage.Height);
+            AppendOperationLog(true, logMessage);
+            SetStatus(logMessage, false);
         }
 
         private void CancelCurrentOperation()
