@@ -253,6 +253,7 @@ namespace NinePointRotationCalibration
             if (job.Template.MatchParameters == null) job.Template.MatchParameters = new MatchParameters();
             if (job.Template.ModelReference == null) job.Template.ModelReference = new ImagePose();
             if (job.SolverOptions == null) job.SolverOptions = new CalibrationSolverOptions();
+            else job.SolverOptions.MigrateLegacyDefaultPixelThresholds();
             if (job.Samples == null) job.Samples = new System.Collections.Generic.List<CalibrationSample>();
             if (string.IsNullOrWhiteSpace(job.JobId)) job.JobId = Guid.NewGuid().ToString("N");
             if (job.SchemaVersion <= 0) job.SchemaVersion = CalibrationJob.CurrentSchemaVersion;

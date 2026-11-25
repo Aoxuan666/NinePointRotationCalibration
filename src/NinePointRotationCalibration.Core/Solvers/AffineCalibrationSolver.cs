@@ -267,6 +267,11 @@ namespace NinePointRotationCalibration
             int bestCount = -1;
             double bestSupport = double.NegativeInfinity;
             double bestError = double.PositiveInfinity;
+            int orderIndex = Math.Max(0, Math.Min(observations.Count - 1, options.MinimumTranslationInliers - 1));
+            bool hasLmedsCandidate = false;
+            AffineMatrix2D bestLmedsMatrix = default(AffineMatrix2D);
+            double bestLmedsOrderResidual = double.PositiveInfinity;
+            double[] bestLmedsResiduals = null;
             long combinations = ((long)observations.Count * (observations.Count - 1) * (observations.Count - 2)) / 6;
             int limit = Math.Max(1, options.RansacIterations);
 
@@ -280,8 +285,9 @@ namespace NinePointRotationCalibration
                     {
                         for (int k = j + 1; k < observations.Count && tested < limit; k++)
                         {
-                            EvaluateCandidate(observations, options, geometryBackend, i, j, k,
-                                ref bestMatrix, ref bestInliers, ref bestCount, ref bestSupport, ref bestError);
+                            EvaluateCandidate(observations, options, geometryBackend, i, j, k, orderIndex,
+                                ref bestMatrix, ref bestInliers, ref bestCount, ref bestSupport, ref bestError,
+                                ref hasLmedsCandidate, ref bestLmedsMatrix, ref bestLmedsOrderResidual, ref bestLmedsResiduals);
                             tested++;
                         }
                     }
@@ -304,12 +310,55 @@ namespace NinePointRotationCalibration
                     int j = a + b + c - i - k;
                     string key = i + ":" + j + ":" + k;
                     if (!tested.Add(key)) continue;
-                    EvaluateCandidate(observations, options, geometryBackend, i, j, k,
-                        ref bestMatrix, ref bestInliers, ref bestCount, ref bestSupport, ref bestError);
+                    EvaluateCandidate(observations, options, geometryBackend, i, j, k, orderIndex,
+                        ref bestMatrix, ref bestInliers, ref bestCount, ref bestSupport, ref bestError,
+                        ref hasLmedsCandidate, ref bestLmedsMatrix, ref bestLmedsOrderResidual, ref bestLmedsResiduals);
                 }
             }
 
-            return bestInliers != null && bestCount >= options.MinimumTranslationInliers;
+            if (bestInliers != null && bestCount >= options.MinimumTranslationInliers)
+            {
+                return true;
+            }
+
+            // 若样本几何并不退化，仅因高分辨率宽视场镜头畸变/轻微倾斜导致严格三点外推残差超过固定 RANSAC 阈值，
+            // 回退至 LMedS（最小第 k 阶残差）鲁棒初值，既能剔除粗大外点又避免误报 DegenerateGeometry。
+            if (hasLmedsCandidate && bestLmedsResiduals != null)
+            {
+                double floorThreshold = Math.Max(options.RansacInlierThresholdPixels, bestLmedsOrderResidual * 1.25);
+                double adaptiveThreshold = SolverMath.MadThreshold(bestLmedsResiduals, options.MadMultiplier, floorThreshold);
+                bool[] fallbackInliers = new bool[observations.Count];
+                int fallbackCount = 0;
+                for (int i = 0; i < observations.Count; i++)
+                {
+                    if (bestLmedsResiduals[i] <= adaptiveThreshold)
+                    {
+                        fallbackInliers[i] = true;
+                        fallbackCount++;
+                    }
+                }
+
+                if (fallbackCount >= options.MinimumTranslationInliers)
+                {
+                    bestMatrix = bestLmedsMatrix;
+                    bestInliers = fallbackInliers;
+                    return true;
+                }
+            }
+
+            // 兜底尝试全样本最小二乘（仅在全部三点候选均未命中时检验是否真的共线/奇异）。
+            bool[] allInliers = AllTrue(observations.Count);
+            AffineMatrix2D globalMatrix;
+            if (FitAffine(observations, allInliers, geometryBackend, out globalMatrix)
+                && Numeric.IsFinite(globalMatrix.ConditionNumber)
+                && globalMatrix.ConditionNumber <= options.MaxConditionNumber)
+            {
+                bestMatrix = globalMatrix;
+                bestInliers = allInliers;
+                return true;
+            }
+
+            return false;
         }
 
         private static void EvaluateCandidate(
@@ -319,11 +368,16 @@ namespace NinePointRotationCalibration
             int first,
             int second,
             int third,
+            int orderIndex,
             ref AffineMatrix2D bestMatrix,
             ref bool[] bestInliers,
             ref int bestCount,
             ref double bestSupport,
-            ref double bestError)
+            ref double bestError,
+            ref bool hasLmedsCandidate,
+            ref AffineMatrix2D bestLmedsMatrix,
+            ref double bestLmedsOrderResidual,
+            ref double[] bestLmedsResiduals)
         {
             bool[] seed = new bool[observations.Count];
             seed[first] = true;
@@ -331,14 +385,19 @@ namespace NinePointRotationCalibration
             seed[third] = true;
             AffineMatrix2D candidate;
             if (!FitAffine(observations, seed, geometryBackend, out candidate)) return;
+            if (!Numeric.IsFinite(candidate.ConditionNumber) || candidate.ConditionNumber > options.MaxConditionNumber) return;
 
             bool[] inliers = new bool[observations.Count];
+            double[] residuals = new double[observations.Count];
+            double[] sortedResiduals = new double[observations.Count];
             int count = 0;
             double support = 0.0;
             double error = 0.0;
             for (int i = 0; i < observations.Count; i++)
             {
-            double residual = Residual(observations[i], candidate, geometryBackend);
+                double residual = Residual(observations[i], candidate, geometryBackend);
+                residuals[i] = residual;
+                sortedResiduals[i] = residual;
                 if (residual <= options.RansacInlierThresholdPixels)
                 {
                     inliers[i] = true;
@@ -346,6 +405,16 @@ namespace NinePointRotationCalibration
                     support += observations[i].Weight;
                     error += observations[i].Weight * residual * residual;
                 }
+            }
+
+            Array.Sort(sortedResiduals);
+            double orderResidual = sortedResiduals[orderIndex];
+            if (Numeric.IsFinite(orderResidual) && orderResidual < bestLmedsOrderResidual)
+            {
+                hasLmedsCandidate = true;
+                bestLmedsOrderResidual = orderResidual;
+                bestLmedsMatrix = candidate;
+                bestLmedsResiduals = residuals;
             }
 
             // 优选内点数最多、权重支持度最高、加权误差最小的候选模型。

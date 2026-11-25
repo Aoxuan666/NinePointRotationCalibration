@@ -907,8 +907,8 @@ namespace NinePointRotationCalibration.Station.Views
                     lblCalibrationRmsSummary.ForeColor = Color.FromArgb(30, 41, 59);
                     lblCalibrationRmsSummary.Text =
                         "RMS 评估：待计算（采点后点击「计算并保存」）\r\n" +
-                        "合理标准：≤0.20 px 优(90-100) | ≤0.50 良(75-89) | ≤1.00 合格(60-74)\r\n" +
-                        "旋转参考：旋中 RMS ≤ 1.00 px（≤0.30 优） | 角度 RMS ≤ 0.50°（≤0.05° 优）";
+                        "合理标准：≤1 px 优(90-100) | ≤3 良(75-89) | ≤8 合格(60-74)\r\n" +
+                        "旋转参考：旋中 RMS ≤ 8 px（≤1 优） | 角度 RMS ≤ 0.50°（≤0.05° 优）";
                     return;
                 }
 
@@ -975,6 +975,14 @@ namespace NinePointRotationCalibration.Station.Views
                     byPoint[pointNumber] = diagnostic;
                 }
 
+                CalibrationRmsAssessment assessment = result.EvaluateRms();
+                double xyLimit = assessment != null && IsFinite(assessment.TranslationLimitPixels) && assessment.TranslationLimitPixels > 0.0
+                    ? assessment.TranslationLimitPixels
+                    : CalibrationRmsEvaluator.DefaultAcceptablePixelRms;
+                double centerLimit = assessment != null && IsFinite(assessment.RotationCenterLimitPixels) && assessment.RotationCenterLimitPixels > 0.0
+                    ? assessment.RotationCenterLimitPixels
+                    : CalibrationRmsEvaluator.DefaultAcceptableCenterRms;
+
                 foreach (DataGridViewRow row in dgvCalibration.Rows)
                 {
                     int pointNumber;
@@ -986,21 +994,22 @@ namespace NinePointRotationCalibration.Station.Views
                         continue;
 
                     bool isRotation = pointNumber >= 10;
+                    bool hasComputedResidual = isRotation
+                        ? (result.Rotation != null && result.Rotation.InlierCount > 0)
+                        : (result.InlierCount > 0);
                     double residual = diagnostic.ResidualPixels;
-                    row.Cells["Residual"].Value = IsFinite(residual)
+                    row.Cells["Residual"].Value = hasComputedResidual && IsFinite(residual)
                         ? residual.ToString("0.###", CultureInfo.InvariantCulture)
                         : "--";
                     if (!diagnostic.IsInlier)
                     {
-                        row.Cells["Status"].Value = "外点";
+                        row.Cells["Status"].Value = hasComputedResidual ? "外点" : "失败";
                         row.DefaultCellStyle.ForeColor = Color.FromArgb(185, 28, 28);
                         row.DefaultCellStyle.BackColor = Color.FromArgb(254, 242, 242);
                     }
                     else
                     {
-                        bool high = isRotation
-                            ? residual > CalibrationRmsEvaluator.DefaultAcceptableCenterRms
-                            : residual > CalibrationRmsEvaluator.DefaultAcceptablePixelRms;
+                        bool high = isRotation ? residual > centerLimit : residual > xyLimit;
                         row.Cells["Status"].Value = "OK";
                         row.DefaultCellStyle.ForeColor = high
                             ? Color.FromArgb(180, 83, 9)

@@ -239,6 +239,7 @@ namespace NinePointRotationCalibration.Station.Views
                 if (result == null)
                 {
                     _view.AppendLog(nozzleText + " 标定计算未返回结果。", true);
+                    _view.SetOperationStatus(nozzleText + " 标定失败", false, true);
                     return;
                 }
 

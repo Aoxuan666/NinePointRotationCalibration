@@ -191,7 +191,10 @@ namespace NinePointRotationCalibration.Station.Services.Calibration
             if (job == null) throw new ArgumentNullException(nameof(job));
             lock (_sync)
             {
-                _committedJobs[nozzle] = job.DeepClone();
+                CalibrationJob clone = job.DeepClone();
+                if (clone.SolverOptions == null) clone.SolverOptions = new CalibrationSolverOptions();
+                else clone.SolverOptions.MigrateLegacyDefaultPixelThresholds();
+                _committedJobs[nozzle] = clone;
                 RebuildRecordsFromJobLocked(nozzle, _committedJobs[nozzle]);
             }
         }

@@ -9,18 +9,18 @@ namespace NinePointRotationCalibration
     public static class CalibrationRmsEvaluator
     {
         /// <summary>默认平动 XY RMS 优秀上限（像素）。</summary>
-        public const double DefaultExcellentPixelRms = 0.20;
+        public const double DefaultExcellentPixelRms = 1.00;
         /// <summary>默认平动 XY RMS 良好上限（像素）。</summary>
-        public const double DefaultGoodPixelRms = 0.50;
+        public const double DefaultGoodPixelRms = 3.00;
         /// <summary>默认平动 XY RMS 合格上限（像素）。</summary>
-        public const double DefaultAcceptablePixelRms = 1.00;
+        public const double DefaultAcceptablePixelRms = 8.00;
 
         /// <summary>默认旋转中心 RMS 优秀上限（像素）。</summary>
-        public const double DefaultExcellentCenterRms = 0.30;
+        public const double DefaultExcellentCenterRms = 1.00;
         /// <summary>默认旋转中心 RMS 良好上限（像素）。</summary>
-        public const double DefaultGoodCenterRms = 0.60;
+        public const double DefaultGoodCenterRms = 3.00;
         /// <summary>默认旋转中心 RMS 合格上限（像素）。</summary>
-        public const double DefaultAcceptableCenterRms = 1.00;
+        public const double DefaultAcceptableCenterRms = 8.00;
 
         /// <summary>默认旋转角度 RMS 优秀上限（度）。</summary>
         public const double DefaultExcellentAngleRms = 0.05;

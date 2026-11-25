@@ -53,11 +53,11 @@ namespace NinePointRotationCalibration
             MinimumMatchScore = 0.5;
             EnableRansac = true;
             RansacIterations = 512;
-            RansacInlierThresholdPixels = 1.5;
+            RansacInlierThresholdPixels = 4.0;
             MadMultiplier = 3.5;
             UseMatchScoreWeights = true;
-            MaxRmsResidualPixels = 1.0;
-            MaxResidualPixels = 3.0;
+            MaxRmsResidualPixels = 8.0;
+            MaxResidualPixels = 16.0;
             MaxConditionNumber = 100000.0;
             RequireRotationCalibration = true;
             MinimumRotationSamples = 3;
@@ -65,8 +65,8 @@ namespace NinePointRotationCalibration
             MinimumRotationSpanDegrees = 20.0;
             AngleOutlierThresholdDegrees = 2.0;
             MaxAngleRmsDegrees = 0.5;
-            CenterOutlierThresholdPixels = 2.0;
-            MaxRotationCenterRmsPixels = 1.0;
+            CenterOutlierThresholdPixels = 4.0;
+            MaxRotationCenterRmsPixels = 8.0;
             RandomSeed = 19790531;
         }
 
@@ -97,6 +97,26 @@ namespace NinePointRotationCalibration
         public double MaxRotationCenterRmsPixels { get; set; }
         /// <summary>RANSAC 随机抽样固定种子，保证结果可复现。</summary>
         public int RandomSeed { get; set; }
+
+        /// <summary>将旧版本默认极严像素阈值（1.5/1.0/3.0/2.0/1.0）迁移为适配高分辨率宽视场相机的默认值。</summary>
+        public bool MigrateLegacyDefaultPixelThresholds()
+        {
+            if (Math.Abs(RansacInlierThresholdPixels - 1.5) < 1e-6
+                && Math.Abs(MaxRmsResidualPixels - 1.0) < 1e-6
+                && Math.Abs(MaxResidualPixels - 3.0) < 1e-6
+                && Math.Abs(CenterOutlierThresholdPixels - 2.0) < 1e-6
+                && Math.Abs(MaxRotationCenterRmsPixels - 1.0) < 1e-6)
+            {
+                RansacInlierThresholdPixels = 4.0;
+                MaxRmsResidualPixels = 8.0;
+                MaxResidualPixels = 16.0;
+                CenterOutlierThresholdPixels = 4.0;
+                MaxRotationCenterRmsPixels = 8.0;
+                return true;
+            }
+
+            return false;
+        }
 
         /// <summary>创建求解选项的深拷贝。</summary>
         public CalibrationSolverOptions DeepClone() { return (CalibrationSolverOptions)MemberwiseClone(); }

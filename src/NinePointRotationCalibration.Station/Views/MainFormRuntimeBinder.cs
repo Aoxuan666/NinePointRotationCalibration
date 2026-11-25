@@ -422,7 +422,7 @@ namespace NinePointRotationCalibration.Station.Views
                             TeachingSide nozzle = GetSelectedCalibrationNozzle();
                             ApplyCalibrationStepOptions();
                             await _runtime.RunAutomaticCalibrationAsync(nozzle, token).ConfigureAwait(true);
-                        }).ConfigureAwait(true);
+                        }, false).ConfigureAwait(true);
                         return;
                     case "calibration.cancel":
                         await _runtime.CancelCalibrationAsync("视觉界面操作员停止标定").ConfigureAwait(true);
@@ -433,7 +433,8 @@ namespace NinePointRotationCalibration.Station.Views
                         await RunOperationAsync(
                             "计算标定结果 (" + ProtocolNozzle.GetAxisR(GetSelectedCalibrationNozzle()) + ")",
                             e.Source,
-                            token => _runtime.CalculateCalibrationAsync(GetSelectedCalibrationNozzle(), token)).ConfigureAwait(true);
+                            token => _runtime.CalculateCalibrationAsync(GetSelectedCalibrationNozzle(), token),
+                            false).ConfigureAwait(true);
                         return;
                     case "camera.enumerate":
                         await RunOperationAsync("枚举相机", e.Source, EnumerateCamerasAsync).ConfigureAwait(true);
@@ -637,7 +638,8 @@ namespace NinePointRotationCalibration.Station.Views
         private async Task RunOperationAsync(
             string description,
             Control source,
-            Func<CancellationToken, Task> operation)
+            Func<CancellationToken, Task> operation,
+            bool announceCompletion = true)
         {
             if (_disposed || operation == null) return;
 
@@ -657,7 +659,7 @@ namespace NinePointRotationCalibration.Station.Views
                 LocalDebugLog.Write("INFO", "ui.op", "Start UI operation: " + description);
                 await operation(token).ConfigureAwait(true);
                 LocalDebugLog.Write("INFO", "ui.op", "Completed UI operation: " + description);
-                if (!_disposed)
+                if (!_disposed && announceCompletion)
                 {
                     _view.SetOperationStatus(description + "完成", false, false);
                     _view.AppendLog(description + "完成。", false);

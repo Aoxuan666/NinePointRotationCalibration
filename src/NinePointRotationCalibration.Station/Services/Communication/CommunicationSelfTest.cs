@@ -35,6 +35,7 @@ namespace NinePointRotationCalibration.Station.Services.Communication
             await VerifyConnectionScopedReconnectAsync(codec, cancellationToken).ConfigureAwait(false);
             await VerifySmoothClientReplacementAsync(codec, cancellationToken).ConfigureAwait(false);
             await VerifyHeartbeatInactivityTimeoutAsync(codec, cancellationToken).ConfigureAwait(false);
+            VerifyWideFovCalibrationSolver();
             VerifyDualRTargetMapping();
             VerifyInspectionSemantics();
             await VerifyCalibrationSessionsAndPreservationAsync(cancellationToken).ConfigureAwait(false);
@@ -1010,6 +1011,177 @@ namespace NinePointRotationCalibration.Station.Services.Communication
                         "Manual low-score NG must send calibration.completed(MATCH_FAILED).");
                 }
             }
+        }
+
+        private static void VerifyWideFovCalibrationSolver()
+        {
+            // 1. 验证旧版极严默认像素阈值自动迁移（不影响用户自定义阈值）
+            CalibrationSolverOptions legacyOptions = new CalibrationSolverOptions
+            {
+                RansacInlierThresholdPixels = 1.5,
+                MaxRmsResidualPixels = 1.0,
+                MaxResidualPixels = 3.0,
+                CenterOutlierThresholdPixels = 2.0,
+                MaxRotationCenterRmsPixels = 1.0
+            };
+            Assert(legacyOptions.MigrateLegacyDefaultPixelThresholds(),
+                "Exact legacy factory defaults must migrate automatically.");
+            Assert(Math.Abs(legacyOptions.RansacInlierThresholdPixels - 4.0) < 1e-6 &&
+                   Math.Abs(legacyOptions.MaxRmsResidualPixels - 8.0) < 1e-6 &&
+                   Math.Abs(legacyOptions.MaxResidualPixels - 16.0) < 1e-6 &&
+                   Math.Abs(legacyOptions.CenterOutlierThresholdPixels - 4.0) < 1e-6 &&
+                   Math.Abs(legacyOptions.MaxRotationCenterRmsPixels - 8.0) < 1e-6,
+                "Migrated solver defaults must match 4.0 / 8.0 / 16.0 / 4.0 / 8.0.");
+
+            CalibrationSolverOptions customOptions = new CalibrationSolverOptions
+            {
+                RansacInlierThresholdPixels = 1.5,
+                MaxRmsResidualPixels = 0.8,
+                MaxResidualPixels = 2.5,
+                CenterOutlierThresholdPixels = 2.0,
+                MaxRotationCenterRmsPixels = 1.0
+            };
+            Assert(!customOptions.MigrateLegacyDefaultPixelThresholds(),
+                "Custom solver thresholds must not be overwritten by legacy migration.");
+
+            HalconCalibrationGeometryBackend backend = new HalconCalibrationGeometryBackend();
+
+            // 2. 复现 2000 万像素（5472x3648, 16 px/mm, 镜像 X, 步长 80/60/15）实机宽视场 9+5 标定（含实测 P7-P9 与 P10-P14 数据）
+            CalibrationJob wideFovJob = BuildWideFov20MpJob(0.0, 3.14e-5, -1, 0.0, 0.0);
+            CalibrationResult wideFovResult = CalibrationSolver.Solve(wideFovJob, backend);
+            Assert(wideFovResult.Success && wideFovResult.TranslationSuccess,
+                "20MP wide-FOV 9+5 calibration must succeed, got: " + wideFovResult.ErrorCode + " " + wideFovResult.Message);
+            Assert(wideFovResult.IsMirrored, "Mirrored X stage mapping must be detected as mirrored.");
+            Assert(wideFovResult.RmsResidualPixels < 5.0, "Wide-FOV XY RMS should be within 5 px.");
+            Assert(wideFovResult.Rotation != null && wideFovResult.Rotation.Success,
+                "20MP wide-FOV rotation calibration must succeed.");
+            Assert(wideFovResult.Rotation.AngleRmsDegrees < 0.2,
+                "Observed P10-P14 angle RMS should be < 0.2 deg.");
+            Assert(wideFovResult.Rotation.CenterRmsResidualPixels < 1.0,
+                "Observed P10-P14 center RMS should be sub-pixel after rejecting distorted outer arc points.");
+            Assert(wideFovResult.RmsAssessment != null && wideFovResult.RmsAssessment.IsReasonable,
+                "20MP wide-FOV RMS assessment must be reasonable.");
+
+            // 3. 验证重度宽视场桶形畸变（k1=-0.05）即使使用严格 1.5px RANSAC 阈值也能通过 LMedS 回退正常求解而非误报 DegenerateGeometry
+            CalibrationJob heavyDistortionJob = BuildWideFov20MpJob(-0.05, 3.14e-5, -1, 0.0, 0.0);
+            heavyDistortionJob.SolverOptions.RansacInlierThresholdPixels = 1.5;
+            CalibrationResult heavyResult = CalibrationSolver.Solve(heavyDistortionJob, backend);
+            Assert(heavyResult.Success && heavyResult.TranslationSuccess,
+                "LMedS fallback must prevent false DegenerateGeometry on heavy barrel distortion, got: " + heavyResult.ErrorCode + " " + heavyResult.Message);
+            Assert(heavyResult.InlierCount >= 6, "Heavy distortion LMedS fallback must retain >= 6 inliers.");
+
+            // 4. 验证宽视场畸变叠加单点 150px 粗大外点时，LMedS + MAD 仍能精准剔除该外点
+            CalibrationJob outlierJob = BuildWideFov20MpJob(-0.04, 3.14e-5, 2, 120.0, -90.0);
+            CalibrationResult outlierResult = CalibrationSolver.Solve(outlierJob, backend);
+            Assert(outlierResult.Success && outlierResult.TranslationSuccess,
+                "Wide-FOV calibration with 1 gross outlier must still succeed, got: " + outlierResult.ErrorCode + " " + outlierResult.Message);
+            Assert(outlierResult.InlierCount == 8 && outlierResult.RejectedCount == 1,
+                "Exactly the single gross outlier must be rejected (expected 8/9 inliers, got " + outlierResult.InlierCount + "/9).");
+            Assert(outlierResult.Diagnostics[2] != null && !outlierResult.Diagnostics[2].IsInlier,
+                "P3 gross outlier must be marked as non-inlier.");
+
+            // 5. 验证真正共线的 9 个样本仍正确报 DegenerateGeometry
+            CalibrationJob collinearJob = new CalibrationJob { Name = "CollinearCheck" };
+            collinearJob.SolverOptions.RequireRotationCalibration = false;
+            for (int i = 0; i < 9; i++)
+            {
+                double offset = (i - 4) * 20.0;
+                collinearJob.AddSample(new CalibrationSample
+                {
+                    Kind = CalibrationSampleKind.Translation,
+                    Tag = "P" + (i + 1),
+                    MachinePose = new MachinePose(780.0 + offset, 139.4 + offset, 24.0),
+                    ImagePose = new ImagePose(1692.8 + (offset * 16.0), 2683.0 - (offset * 16.0), 0.0),
+                    MatchScore = 0.96
+                });
+            }
+            CalibrationResult collinearResult = CalibrationSolver.Solve(collinearJob, backend);
+            Assert(!collinearResult.Success && collinearResult.ErrorCode == CalibrationErrorCode.DegenerateGeometry,
+                "Truly collinear translation points must still fail with DegenerateGeometry.");
+        }
+
+        private static CalibrationJob BuildWideFov20MpJob(
+            double radialK1,
+            double perspectiveTilt,
+            int outlierIndex,
+            double outlierDeltaCol,
+            double outlierDeltaRow)
+        {
+            CalibrationJob job = new CalibrationJob { Name = "WideFov20MpRegression" };
+            double[,] mach =
+            {
+                { 700.0,  79.4 }, { 780.0,  79.4 }, { 860.0,  79.4 },
+                { 860.0, 139.4 }, { 780.0, 139.4 }, { 700.0, 139.4 },
+                { 700.0, 199.4 }, { 780.0, 199.4 }, { 860.0, 199.4 }
+            };
+            const double cx0 = 2736.0;
+            const double cy0 = 1824.0;
+            for (int i = 0; i < 9; i++)
+            {
+                double x = mach[i, 0];
+                double y = mach[i, 1];
+                double col;
+                double row;
+                if (Math.Abs(radialK1) < 1e-12 && i >= 6)
+                {
+                    // 使用 20MP 实机日志/截图实测 P7、P8、P9 像素坐标
+                    double[] realCols = { 3971.711, 2695.648, 1413.155 };
+                    double[] realRows = { 2634.566, 2651.763, 2668.717 };
+                    col = realCols[i - 6];
+                    row = realRows[i - 6];
+                }
+                else
+                {
+                    double dx = x - 780.0;
+                    double dy = y - 139.4;
+                    double denom = 1.0 - (perspectiveTilt * dx);
+                    col = 2683.003 + (((-15.991 * dx) + (0.2108 * dy)) / denom);
+                    row = 1692.805 + (((0.2134 * dx) + (15.983 * dy)) / denom);
+                    if (Math.Abs(radialK1) > 1e-12)
+                    {
+                        double rx = col - cx0;
+                        double ry = row - cy0;
+                        double r2 = ((rx * rx) + (ry * ry)) / (cx0 * cx0);
+                        col = cx0 + (rx * (1.0 + (radialK1 * r2)));
+                        row = cy0 + (ry * (1.0 + (radialK1 * r2)));
+                    }
+                }
+                if (i == outlierIndex)
+                {
+                    col += outlierDeltaCol;
+                    row += outlierDeltaRow;
+                }
+                job.AddSample(new CalibrationSample
+                {
+                    Kind = CalibrationSampleKind.Translation,
+                    Tag = "P" + (i + 1),
+                    MachinePose = new MachinePose(x, y, 24.0),
+                    ImagePose = new ImagePose(row, col, 0.2),
+                    MatchScore = 0.97
+                });
+            }
+
+            // 实机 20MP 截图实测 P10..P14 五点旋转样本
+            double[,] rotSamples =
+            {
+                { -6.0,  641.820, 2880.807, -29.529, 0.943 },
+                {  9.0, 1151.197, 2718.539, -14.750, 0.976 },
+                { 24.0, 1692.805, 2683.003,   0.207, 0.984 },
+                { 39.0, 2224.832, 2787.770,  15.339, 0.964 },
+                { 54.0, 2709.545, 3020.191,  30.472, 0.976 }
+            };
+            for (int i = 0; i < 5; i++)
+            {
+                job.AddSample(new CalibrationSample
+                {
+                    Kind = CalibrationSampleKind.Rotation,
+                    Tag = "R" + (i + 1),
+                    MachinePose = new MachinePose(780.0, 139.4, rotSamples[i, 0]),
+                    ImagePose = new ImagePose(rotSamples[i, 1], rotSamples[i, 2], rotSamples[i, 3]),
+                    MatchScore = rotSamples[i, 4]
+                });
+            }
+            return job;
         }
 
         private static async Task VerifyTwoStepTeachingAsync(CancellationToken cancellationToken)
