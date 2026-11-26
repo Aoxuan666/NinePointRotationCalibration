@@ -96,6 +96,7 @@ namespace NinePointRotationCalibration.Station.Services.Calibration
 
         public event EventHandler<CalibrationPointEventArgs> PointChanged;
         public event EventHandler<CalibrationResultEventArgs> CalculationCompleted;
+        public event EventHandler<CalibrationSessionEventArgs> SessionChanged;
         public event EventHandler<FrameEventArgs> FrameCaptured;
         public event EventHandler<LogEventArgs> Log;
 
@@ -130,6 +131,17 @@ namespace NinePointRotationCalibration.Station.Services.Calibration
             get
             {
                 lock (_sync) return _activeSession == null ? string.Empty : _activeSession.SessionId;
+            }
+        }
+
+        /// <summary>返回指定吸嘴当前活动中的标定会话 ID；若无活动会话或属于另一侧吸嘴，返回空字符串。</summary>
+        public string GetActiveSessionId(TeachingSide nozzle)
+        {
+            lock (_sync)
+            {
+                return _activeSession != null && _activeSession.Nozzle == nozzle
+                    ? _activeSession.SessionId
+                    : string.Empty;
             }
         }
 
@@ -814,6 +826,8 @@ namespace NinePointRotationCalibration.Station.Services.Calibration
                 }
             }
 
+            OnSessionChanged(nozzle, sessionId, isManual, true);
+
             if (!isManual)
             {
                 foreach (CalibrationPointRecord record in GetRecordsSnapshot(nozzle))
@@ -1142,12 +1156,15 @@ namespace NinePointRotationCalibration.Station.Services.Calibration
                     await _saveJobAsync(session.Nozzle, workingJob.DeepClone()).ConfigureAwait(false);
                 }
 
+                bool endedActive;
                 lock (_sync)
                 {
                     _committedJobs[session.Nozzle] = workingJob.DeepClone();
-                    if (ReferenceEquals(_activeSession, session)) _activeSession = null;
+                    endedActive = ReferenceEquals(_activeSession, session);
+                    if (endedActive) _activeSession = null;
                 }
 
+                if (endedActive) OnSessionChanged(session.Nozzle, session.SessionId, session.IsManual, false);
                 OnCalculationCompleted(session.Nozzle, result, session.SessionId, ProtocolErrorCodes.None);
                 await SendCompletedOnceAsync(
                     session,
@@ -1165,10 +1182,13 @@ namespace NinePointRotationCalibration.Station.Services.Calibration
             string failMessage = result == null
                 ? "Calibration solve returned null."
                 : ("[" + result.ErrorCode + "] " + (result.Message ?? "Calibration solve failed."));
+            bool endedFailedActive;
             lock (_sync)
             {
-                if (ReferenceEquals(_activeSession, session)) _activeSession = null;
+                endedFailedActive = ReferenceEquals(_activeSession, session);
+                if (endedFailedActive) _activeSession = null;
             }
+            if (endedFailedActive) OnSessionChanged(session.Nozzle, session.SessionId, session.IsManual, false);
             OnLog("WARN", ProtocolNozzle.GetDisplayName(session.Nozzle) + " 标定求解失败，已保留原有标定结果：" + failMessage);
             OnCalculationCompleted(session.Nozzle, result, session.SessionId, ProtocolErrorCodes.CalibrationSolveFailed);
             await SendCompletedOnceAsync(
@@ -1192,10 +1212,13 @@ namespace NinePointRotationCalibration.Station.Services.Calibration
             CalibrationResult result)
         {
             if (session == null) return;
+            bool endedActive;
             lock (_sync)
             {
-                if (ReferenceEquals(_activeSession, session)) _activeSession = null;
+                endedActive = ReferenceEquals(_activeSession, session);
+                if (endedActive) _activeSession = null;
             }
+            if (endedActive) OnSessionChanged(session.Nozzle, session.SessionId, session.IsManual, false);
 
             if (!success)
             {
@@ -1216,10 +1239,13 @@ namespace NinePointRotationCalibration.Station.Services.Calibration
         private void ClearSessionWithoutSend(CalibrationSession session, string reason)
         {
             if (session == null) return;
+            bool endedActive;
             lock (_sync)
             {
-                if (ReferenceEquals(_activeSession, session)) _activeSession = null;
+                endedActive = ReferenceEquals(_activeSession, session);
+                if (endedActive) _activeSession = null;
             }
+            if (endedActive) OnSessionChanged(session.Nozzle, session.SessionId, session.IsManual, false);
             session.TryMarkCompletedSent();
             OnLog("WARN", "标定会话已中止 [" + session.SessionId + "] (" + ProtocolErrorCodes.Disconnected + ")，已保留旧标定：" + reason);
             session.Dispose();
@@ -1712,6 +1738,12 @@ namespace NinePointRotationCalibration.Station.Services.Calibration
         {
             EventHandler<CalibrationResultEventArgs> handler = CalculationCompleted;
             if (handler != null) handler(this, new CalibrationResultEventArgs(nozzle, result, sessionId, protocolErrorCode));
+        }
+
+        private void OnSessionChanged(TeachingSide nozzle, string sessionId, bool isManual, bool isActive)
+        {
+            EventHandler<CalibrationSessionEventArgs> handler = SessionChanged;
+            if (handler != null) handler(this, new CalibrationSessionEventArgs(nozzle, sessionId, isManual, isActive));
         }
 
         private void OnLog(string level, string message)

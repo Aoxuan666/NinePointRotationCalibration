@@ -35,8 +35,10 @@ namespace NinePointRotationCalibration.Station.Views
         private readonly CancellationTokenSource _lifetime;
         private readonly object _displaySync = new object();
         private readonly object _binaryPreviewSync = new object();
+        private readonly object _calibrationOverlaySync = new object();
         private readonly BoardBlobAnalyzer _binaryAnalyzer = new BoardBlobAnalyzer();
         private readonly Dictionary<string, Control> _controlCache = new Dictionary<string, Control>(StringComparer.OrdinalIgnoreCase);
+        private bool _showingCalibrationOverlays;
         private Bitmap _lockedDisplayImage;
         private LockedFrameGrayCache _lockedGray;
         private CancellationTokenSource _binaryPreviewCancellation;
@@ -97,6 +99,7 @@ namespace NinePointRotationCalibration.Station.Views
             _runtime.FrameReady += Runtime_FrameReady;
             _runtime.CalibrationPointChanged += Runtime_CalibrationPointChanged;
             _runtime.CalibrationCompleted += Runtime_CalibrationCompleted;
+            _runtime.CalibrationSessionChanged += Runtime_CalibrationSessionChanged;
             _runtime.TeachingChanged += Runtime_TeachingChanged;
             _runtime.InspectionCompleted += Runtime_InspectionCompleted;
         }
@@ -293,6 +296,7 @@ namespace NinePointRotationCalibration.Station.Views
                 if (enteringDetection)
                 {
                     _view.SetDetectionDualViewActive(true);
+                    lock (_calibrationOverlaySync) _showingCalibrationOverlays = false;
                     _view.Viewport.ClearOverlays();
                     RenderDetectionDualViewOnTabEnter();
                     return;
@@ -303,12 +307,16 @@ namespace NinePointRotationCalibration.Station.Views
                     "tabCalibration",
                     StringComparison.Ordinal);
 
-                // 在非检测页之间切换时无需重复折叠视口，切入标定页时按需同步标定点十字线与连线
+                // 在非检测页之间切换时无需重复折叠视口；仅当存在活动标定会话时切入标定页才显示轨迹，否则清除残留标定轨迹
                 if (!_view.IsDetectionDualViewActive)
                 {
                     if (enteringCalibration && _view.Viewport.HasImage)
                     {
                         RenderCalibrationViewportOverlays(_runtime.ActiveCalibrationNozzle);
+                    }
+                    else
+                    {
+                        ClearCalibrationViewportOverlaysIfShowing();
                     }
                     return;
                 }
@@ -316,7 +324,9 @@ namespace NinePointRotationCalibration.Station.Views
                 // 切离检测页时折叠检测效果图窗口，取消在途重绘，并恢复单窗口锁定帧叠加层
                 CancelBinaryPreview();
                 _view.SetDetectionDualViewActive(false);
-                if (enteringCalibration && _view.Viewport.HasImage)
+                if (enteringCalibration &&
+                    _view.Viewport.HasImage &&
+                    !string.IsNullOrWhiteSpace(_runtime.GetActiveCalibrationSessionId(_runtime.ActiveCalibrationNozzle)))
                 {
                     RenderCalibrationViewportOverlays(_runtime.ActiveCalibrationNozzle);
                 }
@@ -430,6 +440,7 @@ namespace NinePointRotationCalibration.Station.Views
                         return;
                     case "calibration.cancel":
                         await _runtime.CancelCalibrationAsync("视觉界面操作员停止标定").ConfigureAwait(true);
+                        ClearCalibrationViewportOverlaysIfShowing();
                         _view.SetOperationStatus("已停止标定（保留旧标定）", false, false);
                         _view.AppendLog("已请求停止标定并通知上位机退出标定模式（保留原有标定结果）。", false);
                         return;
@@ -967,6 +978,7 @@ namespace NinePointRotationCalibration.Station.Views
             _runtime.FrameReady -= Runtime_FrameReady;
             _runtime.CalibrationPointChanged -= Runtime_CalibrationPointChanged;
             _runtime.CalibrationCompleted -= Runtime_CalibrationCompleted;
+            _runtime.CalibrationSessionChanged -= Runtime_CalibrationSessionChanged;
             _runtime.TeachingChanged -= Runtime_TeachingChanged;
             _runtime.InspectionCompleted -= Runtime_InspectionCompleted;
 

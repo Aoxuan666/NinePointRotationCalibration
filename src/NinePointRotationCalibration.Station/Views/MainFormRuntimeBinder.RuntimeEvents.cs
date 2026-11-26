@@ -230,10 +230,35 @@ namespace NinePointRotationCalibration.Station.Views
                 hasScore ? (double?)record.MatchScore : null);
         }
 
+        private void Runtime_CalibrationSessionChanged(object sender, CalibrationSessionEventArgs e)
+        {
+            if (e == null) return;
+            try
+            {
+                if (!e.IsActive)
+                {
+                    // 标定结束后（成功、失败、取消或断线）立即隐藏屏幕上残留的标定轨迹
+                    ClearCalibrationViewportOverlaysIfShowing();
+                    return;
+                }
+
+                if (e.Nozzle == _runtime.ActiveCalibrationNozzle && !_view.IsDetectionDualViewActive)
+                {
+                    // 新标定会话启动时立即刷新视口叠加层，清掉上一次可能残留的轨迹
+                    RenderCalibrationViewportOverlays(e.Nozzle);
+                }
+            }
+            catch (Exception exception)
+            {
+                LocalDebugLog.WriteException("WARN", "ui.calibration", "Runtime_CalibrationSessionChanged failed", exception);
+            }
+        }
+
         private void Runtime_CalibrationCompleted(object sender, CalibrationResultEventArgs e)
         {
             try
             {
+                ClearCalibrationViewportOverlaysIfShowing();
                 CalibrationResult result = e == null ? null : e.Result;
                 string nozzleText = e == null ? "标定" : ProtocolNozzle.GetDisplayName(e.Nozzle);
                 if (result == null)
@@ -432,6 +457,7 @@ namespace NinePointRotationCalibration.Station.Views
                     if (!_view.IsDetectionDualViewActive)
                     {
                         InvalidateEffectRenderCache();
+                        lock (_calibrationOverlaySync) _showingCalibrationOverlays = false;
                         _view.Viewport.SetPointOverlays(null);
                         _view.Viewport.SetRoiOverlays(null);
                         _view.Viewport.SetContourOverlays(contours);
@@ -442,6 +468,7 @@ namespace NinePointRotationCalibration.Station.Views
                             matchedContours.Count + contours.Count);
                         effectContours.AddRange(matchedContours);
                         effectContours.AddRange(contours);
+                        lock (_calibrationOverlaySync) _showingCalibrationOverlays = false;
                         _view.Viewport.ClearOverlays();
                         _view.EffectViewport.SetPointOverlays(null);
                         _view.EffectViewport.SetContourOverlays(effectContours);

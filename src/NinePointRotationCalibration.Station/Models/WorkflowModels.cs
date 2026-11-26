@@ -97,6 +97,25 @@ namespace NinePointRotationCalibration.Station.Models
         public CalibrationResult Result { get; private set; }
     }
 
+    /// <summary>标定会话启动或结束时的状态变更事件参数。</summary>
+    public sealed class CalibrationSessionEventArgs : EventArgs
+    {
+        public CalibrationSessionEventArgs(TeachingSide nozzle, string sessionId, bool isManual, bool isActive)
+        {
+            Nozzle = nozzle;
+            AxisR = ProtocolNozzle.GetAxisR(nozzle);
+            SessionId = sessionId ?? string.Empty;
+            IsManual = isManual;
+            IsActive = isActive;
+        }
+
+        public TeachingSide Nozzle { get; private set; }
+        public string AxisR { get; private set; }
+        public string SessionId { get; private set; }
+        public bool IsManual { get; private set; }
+        public bool IsActive { get; private set; }
+    }
+
     /// <summary>图像帧推送事件参数（可选持有位图所有权并在 Dispose 时释放）。</summary>
     public sealed class FrameEventArgs : EventArgs, IDisposable
     {

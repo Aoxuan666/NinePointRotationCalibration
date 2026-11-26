@@ -180,6 +180,7 @@ namespace NinePointRotationCalibration.Station.Services
         public event EventHandler<FrameEventArgs> FrameReady;
         public event EventHandler<CalibrationPointEventArgs> CalibrationPointChanged;
         public event EventHandler<CalibrationResultEventArgs> CalibrationCompleted;
+        public event EventHandler<CalibrationSessionEventArgs> CalibrationSessionChanged;
         public event EventHandler<TeachingEventArgs> TeachingChanged;
         public event EventHandler<InspectionEventArgs> InspectionCompleted;
 
@@ -237,6 +238,16 @@ namespace NinePointRotationCalibration.Station.Services
         {
             get { return _calibration.ActiveNozzle; }
             set { _calibration.ActiveNozzle = value; }
+        }
+
+        public bool HasActiveCalibrationSession
+        {
+            get { return _calibration.HasActiveSession; }
+        }
+
+        public string GetActiveCalibrationSessionId(TeachingSide nozzle)
+        {
+            return _calibration.GetActiveSessionId(nozzle);
         }
 
         public bool IsLeftCalibrationValid
@@ -1790,6 +1801,7 @@ namespace NinePointRotationCalibration.Station.Services
             _calibration.FrameCaptured += ForwardFrame;
             _calibration.PointChanged += OnCalibrationPointChanged;
             _calibration.CalculationCompleted += OnCalibrationCalculationCompleted;
+            _calibration.SessionChanged += OnCalibrationSessionChanged;
             _teaching.FrameCaptured += ForwardFrame;
             _teaching.TeachingChanged += OnTeachingChanged;
         }
@@ -3702,6 +3714,12 @@ namespace NinePointRotationCalibration.Station.Services
         private void OnCalibrationPointChanged(object sender, CalibrationPointEventArgs e)
         {
             EventHandler<CalibrationPointEventArgs> handler = CalibrationPointChanged;
+            if (handler != null) handler(this, e);
+        }
+
+        private void OnCalibrationSessionChanged(object sender, CalibrationSessionEventArgs e)
+        {
+            EventHandler<CalibrationSessionEventArgs> handler = CalibrationSessionChanged;
             if (handler != null) handler(this, e);
         }
 

@@ -142,6 +142,10 @@ namespace NinePointRotationCalibration.Station.Views
                 contours = current ? CloneContourList(_lastInspectionContours) : new List<ViewportContourOverlay>();
             }
 
+            lock (_calibrationOverlaySync)
+            {
+                _showingCalibrationOverlays = false;
+            }
             _view.Viewport.SetPointOverlays(null);
             _view.Viewport.SetRoiOverlays(null);
             _view.Viewport.SetContourOverlays(contours);
@@ -944,6 +948,7 @@ namespace NinePointRotationCalibration.Station.Views
                 generation = _displayGeneration;
                 _inspectionFrameGeneration = inspectionFrame ? _displayGeneration : -1;
                 ClearInspectionPreviewCache();
+                lock (_calibrationOverlaySync) _showingCalibrationOverlays = false;
                 _view.Viewport.ClearOverlays();
                 DisplayImageCore(displayCopy, displayPreview, source, capturedAtUtc ?? DateTime.UtcNow);
                 if (!string.IsNullOrWhiteSpace(source) &&
@@ -987,6 +992,7 @@ namespace NinePointRotationCalibration.Station.Views
                 ClearInspectionPreviewCache();
                 if (!_disposed)
                 {
+                    lock (_calibrationOverlaySync) _showingCalibrationOverlays = false;
                     _view.Viewport.ClearOverlays();
                     _view.EffectViewport.ClearOverlays();
                     _view.EffectViewport.ClearImage();
@@ -1058,92 +1064,133 @@ namespace NinePointRotationCalibration.Station.Views
                 templateRevision + ":" + modelHash);
         }
 
-        /// <summary>在标定主视口中绘制全部已定位标定点的十字线，并按点位顺序连成轨迹折线（平移 1..9 与旋转 10..14 分色显示）。</summary>
+        /// <summary>
+        /// 仅在当前吸嘴存在活动标定会话时，于主视口绘制本次会话已定位标定点的十字线与轨迹折线（平移 1..9 与旋转 10..14 分色显示）；
+        /// 标定未启动或已结束后自动隐藏轨迹，并过滤非本次会话的旧标定点，避免手动标定或标定结束后残留上一次标定轨迹。
+        /// </summary>
         private void RenderCalibrationViewportOverlays(TeachingSide nozzle, int highlightPointNumber = 0)
         {
-            if (_disposed || _view.IsDetectionDualViewActive) return;
-            IReadOnlyList<CalibrationPointRecord> records = _runtime.GetCalibrationRecordsSnapshot(nozzle);
-            if (records == null || records.Count == 0)
+            lock (_calibrationOverlaySync)
             {
-                _view.Viewport.SetRoiOverlays(null);
-                _view.Viewport.SetContourOverlays(null);
-                _view.Viewport.SetPointOverlays(null);
-                return;
-            }
+                if (_disposed || _view.IsDetectionDualViewActive) return;
 
-            List<ViewportPointOverlay> points = new List<ViewportPointOverlay>();
-            List<ViewportContourOverlay> lines = new List<ViewportContourOverlay>();
-            List<PointF> translationTrack = new List<PointF>();
-            List<PointF> rotationTrack = new List<PointF>();
-
-            foreach (CalibrationPointRecord record in records.OrderBy(r => r.PointNumber))
-            {
-                if (record == null) continue;
-                bool finiteCoords = !double.IsNaN(record.ImageRow) && !double.IsInfinity(record.ImageRow) &&
-                                    !double.IsNaN(record.ImageColumn) && !double.IsInfinity(record.ImageColumn);
-                if (!finiteCoords) continue;
-
-                PointF imgPoint = new PointF((float)record.ImageColumn, (float)record.ImageRow);
-                if (record.Status == CalibrationPointStatus.Completed)
+                string activeSessionId = _runtime.GetActiveCalibrationSessionId(nozzle);
+                if (string.IsNullOrWhiteSpace(activeSessionId))
                 {
-                    bool isRotation = record.Kind == CalibrationSampleKind.Rotation || record.PointNumber >= 10;
-                    if (isRotation) rotationTrack.Add(imgPoint);
-                    else translationTrack.Add(imgPoint);
-
-                    bool isHighlighted = highlightPointNumber > 0 && record.PointNumber == highlightPointNumber;
-                    Color crossColor = isHighlighted
-                        ? Color.FromArgb(250, 204, 21)
-                        : (isRotation ? Color.FromArgb(249, 115, 22) : Color.FromArgb(34, 197, 94));
-                    string label = isHighlighted
-                        ? string.Format(CultureInfo.InvariantCulture, "P{0} ({1:0.00})", record.PointNumber, record.MatchScore)
-                        : "P" + record.PointNumber;
-                    points.Add(new ViewportPointOverlay
+                    if (_showingCalibrationOverlays)
                     {
-                        ImagePoint = imgPoint,
-                        Label = label,
-                        Color = crossColor,
-                        Radius = isHighlighted ? 6.0f : 5.0f,
-                        CrossSize = isHighlighted ? 16.0f : 13.0f,
-                        LineWidth = isHighlighted ? 2.2f : 1.8f,
-                        LabelOffsetY = isRotation ? 14.0f : 0.0f
-                    });
+                        _showingCalibrationOverlays = false;
+                        _view.Viewport.SetRoiOverlays(null);
+                        _view.Viewport.SetContourOverlays(null);
+                        _view.Viewport.SetPointOverlays(null);
+                    }
+                    return;
                 }
-                else if (record.Status == CalibrationPointStatus.Failed && record.MatchScore > 0.0)
+
+                IReadOnlyList<CalibrationPointRecord> records = _runtime.GetCalibrationRecordsSnapshot(nozzle);
+                if (records == null || records.Count == 0)
                 {
-                    points.Add(new ViewportPointOverlay
+                    _showingCalibrationOverlays = false;
+                    _view.Viewport.SetRoiOverlays(null);
+                    _view.Viewport.SetContourOverlays(null);
+                    _view.Viewport.SetPointOverlays(null);
+                    return;
+                }
+
+                List<ViewportPointOverlay> points = new List<ViewportPointOverlay>();
+                List<ViewportContourOverlay> lines = new List<ViewportContourOverlay>();
+                List<PointF> translationTrack = new List<PointF>();
+                List<PointF> rotationTrack = new List<PointF>();
+
+                foreach (CalibrationPointRecord record in records.OrderBy(r => r.PointNumber))
+                {
+                    if (record == null) continue;
+                    // 仅绘制当前活动标定会话中已采集的点位，彻底屏蔽手动标定时沿用自上一次标定的历史轨迹
+                    if (!string.Equals(record.SessionId, activeSessionId, StringComparison.OrdinalIgnoreCase))
                     {
-                        ImagePoint = imgPoint,
-                        Label = string.Format(CultureInfo.InvariantCulture, "P{0} NG ({1:0.00})", record.PointNumber, record.MatchScore),
-                        Color = Color.FromArgb(239, 68, 68),
-                        Radius = 7.0f,
-                        CrossSize = 16.0f,
+                        continue;
+                    }
+                    bool finiteCoords = !double.IsNaN(record.ImageRow) && !double.IsInfinity(record.ImageRow) &&
+                                        !double.IsNaN(record.ImageColumn) && !double.IsInfinity(record.ImageColumn);
+                    if (!finiteCoords) continue;
+
+                    PointF imgPoint = new PointF((float)record.ImageColumn, (float)record.ImageRow);
+                    if (record.Status == CalibrationPointStatus.Completed)
+                    {
+                        bool isRotation = record.Kind == CalibrationSampleKind.Rotation || record.PointNumber >= 10;
+                        if (isRotation) rotationTrack.Add(imgPoint);
+                        else translationTrack.Add(imgPoint);
+
+                        bool isHighlighted = highlightPointNumber > 0 && record.PointNumber == highlightPointNumber;
+                        Color crossColor = isHighlighted
+                            ? Color.FromArgb(250, 204, 21)
+                            : (isRotation ? Color.FromArgb(249, 115, 22) : Color.FromArgb(34, 197, 94));
+                        string label = isHighlighted
+                            ? string.Format(CultureInfo.InvariantCulture, "P{0} ({1:0.00})", record.PointNumber, record.MatchScore)
+                            : "P" + record.PointNumber;
+                        points.Add(new ViewportPointOverlay
+                        {
+                            ImagePoint = imgPoint,
+                            Label = label,
+                            Color = crossColor,
+                            Radius = isHighlighted ? 6.0f : 5.0f,
+                            CrossSize = isHighlighted ? 16.0f : 13.0f,
+                            LineWidth = isHighlighted ? 2.2f : 1.8f,
+                            LabelOffsetY = isRotation ? 14.0f : 0.0f
+                        });
+                    }
+                    else if (record.Status == CalibrationPointStatus.Failed && record.MatchScore > 0.0)
+                    {
+                        points.Add(new ViewportPointOverlay
+                        {
+                            ImagePoint = imgPoint,
+                            Label = string.Format(CultureInfo.InvariantCulture, "P{0} NG ({1:0.00})", record.PointNumber, record.MatchScore),
+                            Color = Color.FromArgb(239, 68, 68),
+                            Radius = 7.0f,
+                            CrossSize = 16.0f,
+                            LineWidth = 2.2f
+                        });
+                    }
+                }
+
+                if (translationTrack.Count >= 2)
+                {
+                    lines.Add(new ViewportContourOverlay
+                    {
+                        Points = translationTrack,
+                        Color = Color.FromArgb(235, 34, 211, 238),
                         LineWidth = 2.2f
                     });
                 }
-            }
-
-            if (translationTrack.Count >= 2)
-            {
-                lines.Add(new ViewportContourOverlay
+                if (rotationTrack.Count >= 2)
                 {
-                    Points = translationTrack,
-                    Color = Color.FromArgb(235, 34, 211, 238),
-                    LineWidth = 2.2f
-                });
-            }
-            if (rotationTrack.Count >= 2)
-            {
-                lines.Add(new ViewportContourOverlay
-                {
-                    Points = rotationTrack,
-                    Color = Color.FromArgb(235, 251, 146, 60),
-                    LineWidth = 2.2f
-                });
-            }
+                    lines.Add(new ViewportContourOverlay
+                    {
+                        Points = rotationTrack,
+                        Color = Color.FromArgb(235, 251, 146, 60),
+                        LineWidth = 2.2f
+                    });
+                }
 
-            _view.Viewport.SetRoiOverlays(null);
-            _view.Viewport.SetContourOverlays(lines);
-            _view.Viewport.SetPointOverlays(points);
+                _view.Viewport.SetRoiOverlays(null);
+                _view.Viewport.SetContourOverlays(lines);
+                _view.Viewport.SetPointOverlays(points);
+                _showingCalibrationOverlays = points.Count > 0 || lines.Count > 0;
+            }
+        }
+
+        /// <summary>若主视口当前正显示标定轨迹叠加层，则立即清除（不影响示教或检测叠加层）。</summary>
+        private void ClearCalibrationViewportOverlaysIfShowing()
+        {
+            lock (_calibrationOverlaySync)
+            {
+                if (!_showingCalibrationOverlays) return;
+                _showingCalibrationOverlays = false;
+                if (_disposed || _view.IsDetectionDualViewActive) return;
+                _view.Viewport.SetRoiOverlays(null);
+                _view.Viewport.SetContourOverlays(null);
+                _view.Viewport.SetPointOverlays(null);
+            }
         }
 
         /// <summary>在主视口中绘制示教模板匹配定位结果十字线与匹配轮廓。</summary>
@@ -1185,6 +1232,7 @@ namespace NinePointRotationCalibration.Station.Views
                 LineWidth = 2.2f
             };
 
+            lock (_calibrationOverlaySync) _showingCalibrationOverlays = false;
             _view.Viewport.SetRoiOverlays(null);
             _view.Viewport.SetContourOverlays(contours);
             _view.Viewport.SetPointOverlays(new[] { cross });
