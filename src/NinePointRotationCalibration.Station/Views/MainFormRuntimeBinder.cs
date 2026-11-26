@@ -89,6 +89,8 @@ namespace NinePointRotationCalibration.Station.Views
             _view.UiActionRequested += View_UiActionRequested;
             _view.FeatureAvailabilityChanged += View_FeatureAvailabilityChanged;
             _view.WorkTabs.SelectedIndexChanged += WorkTabs_SelectedIndexChanged;
+            _view.Viewport.ImageSaved += Viewport_ImageSaved;
+            _view.EffectViewport.ImageSaved += Viewport_ImageSaved;
 
             _runtime.Log += Runtime_Log;
             _runtime.StateChanged += Runtime_StateChanged;
@@ -139,6 +141,8 @@ namespace NinePointRotationCalibration.Station.Views
             SetText("txtTeachingFile", options.TeachingPath);
             SetText("txtDetectionProfile", options.DetectionProfilePath);
             SetText("txtImageArchive", options.ImageArchiveDirectory);
+            _view.Viewport.DefaultSaveDirectory = options.ImageArchiveDirectory;
+            _view.EffectViewport.DefaultSaveDirectory = options.ImageArchiveDirectory;
 
             if (!string.IsNullOrWhiteSpace(options.CameraSerialNumber))
             {
@@ -925,6 +929,23 @@ namespace NinePointRotationCalibration.Station.Views
             }
         }
 
+        private void Viewport_ImageSaved(object sender, ImageSavedEventArgs e)
+        {
+            if (e == null || string.IsNullOrWhiteSpace(e.FilePath)) return;
+            string sourceTag = ReferenceEquals(sender, _view.EffectViewport) ? "effect" : "source";
+            LocalDebugLog.Write(
+                "INFO",
+                "ui.image",
+                string.Format(
+                    CultureInfo.InvariantCulture,
+                    "Saved single image ({0}, overlays={1}) to '{2}' ({3}x{4}).",
+                    sourceTag,
+                    e.IncludedOverlays,
+                    e.FilePath,
+                    e.ImageSize.Width,
+                    e.ImageSize.Height));
+        }
+
         /// <summary>解除界面与运行时事件订阅，取消在途任务并释放锁定帧。</summary>
         public void Dispose()
         {
@@ -938,6 +959,8 @@ namespace NinePointRotationCalibration.Station.Views
             _view.UiActionRequested -= View_UiActionRequested;
             _view.FeatureAvailabilityChanged -= View_FeatureAvailabilityChanged;
             _view.WorkTabs.SelectedIndexChanged -= WorkTabs_SelectedIndexChanged;
+            _view.Viewport.ImageSaved -= Viewport_ImageSaved;
+            _view.EffectViewport.ImageSaved -= Viewport_ImageSaved;
 
             _runtime.Log -= Runtime_Log;
             _runtime.StateChanged -= Runtime_StateChanged;

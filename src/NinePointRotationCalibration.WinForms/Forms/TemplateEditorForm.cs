@@ -1541,7 +1541,8 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 : new List<CanvasRoiTarget>();
             int hitMaskIndex = _canvas.HitTestMaskIndex(e.Location);
             bool hasMaskHit = hitMaskIndex >= 0 && _state.MaskStrokes != null && hitMaskIndex < _state.MaskStrokes.Count;
-            if (hitRois.Count == 0 && !hasMaskHit)
+            bool canSaveImage = _canvas.HasImage;
+            if (hitRois.Count == 0 && !hasMaskHit && !canSaveImage)
             {
                 return;
             }
@@ -1619,6 +1620,25 @@ namespace NinePointRotationCalibration.WinForms.Forms
                 clearAll.Click += (s, args) => ClearMask(this, EventArgs.Empty);
                 menu.Items.Add(deleteOne);
                 menu.Items.Add(clearAll);
+            }
+
+            if (canSaveImage)
+            {
+                if (menu.Items.Count > 0)
+                {
+                    menu.Items.Add(new ToolStripSeparator());
+                }
+
+                ToolStripMenuItem saveImageItem = new ToolStripMenuItem("保存当前图片...");
+                saveImageItem.Click += (s, args) =>
+                {
+                    string savedPath;
+                    if (_canvas.SaveImageWithDialog(this, "template", out savedPath))
+                    {
+                        SetStatus("已保存图片：" + savedPath, false);
+                    }
+                };
+                menu.Items.Add(saveImageItem);
             }
 
             menu.Closed += (s, args) => menu.Dispose();

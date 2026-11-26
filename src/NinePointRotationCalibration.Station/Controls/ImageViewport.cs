@@ -4,6 +4,8 @@ using System.ComponentModel;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
+using System.Globalization;
+using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Windows.Forms;
@@ -79,12 +81,29 @@ namespace NinePointRotationCalibration.Station.Controls
         public bool IsInsideImage { get; private set; }
     }
 
+    /// <summary>视口保存单张图片完成后的事件参数。</summary>
+    public sealed class ImageSavedEventArgs : EventArgs
+    {
+        public ImageSavedEventArgs(string filePath, Size imageSize, bool includedOverlays)
+        {
+            FilePath = filePath;
+            ImageSize = imageSize;
+            IncludedOverlays = includedOverlays;
+        }
+
+        public string FilePath { get; private set; }
+        public Size ImageSize { get; private set; }
+        public bool IncludedOverlays { get; private set; }
+    }
+
     /// <summary>支持双缓冲、帧合并显示和图像叠加层的图像视口控件。</summary>
     [DesignerCategory("Code")]
     public sealed class ImageViewport : Control
     {
         private const float MinimumZoom = 0.05f;
         private const float MaximumZoom = 32.0f;
+
+        private static string _lastSaveDirectory;
 
         private readonly object _frameSync = new object();
         private readonly object _overlaySync = new object();
@@ -110,9 +129,19 @@ namespace NinePointRotationCalibration.Station.Controls
         private float _zoom = 1.0f;
         private PointF _pan = PointF.Empty;
         private bool _isPanning;
+        private bool _rightMouseDown;
         private Point _lastMousePoint;
         private bool _showCenterCrosshair;
         private Color _centerCrosshairColor = Color.FromArgb(230, 0, 230, 0);
+        private bool _enableContextMenu = true;
+        private string _saveFilePrefix = "image";
+        private string _defaultSaveDirectory;
+        private ContextMenuStrip _viewportContextMenu;
+        private ToolStripMenuItem _menuSaveImage;
+        private ToolStripMenuItem _menuSaveAnnotatedImage;
+        private ToolStripSeparator _menuSaveSeparator;
+        private ToolStripMenuItem _menuFitImage;
+        private ToolStripMenuItem _menuActualPixels;
 
         public ImageViewport()
         {
@@ -133,6 +162,7 @@ namespace NinePointRotationCalibration.Station.Controls
         public event EventHandler ViewChanged;
         public event EventHandler ImageAvailabilityChanged;
         public event EventHandler<ImagePositionEventArgs> ImagePositionChanged;
+        public event EventHandler<ImageSavedEventArgs> ImageSaved;
 
         [Browsable(false)]
         public bool HasImage
@@ -190,6 +220,32 @@ namespace NinePointRotationCalibration.Station.Controls
                 _centerCrosshairColor = value;
                 if (_showCenterCrosshair) InvalidateSafe();
             }
+        }
+
+        /// <summary>是否启用右键快捷菜单（支持保存当前单张图片与视口缩放重置）。</summary>
+        [DefaultValue(true)]
+        public bool EnableContextMenu
+        {
+            get { return _enableContextMenu; }
+            set { _enableContextMenu = value; }
+        }
+
+        /// <summary>右键保存单张图片时的默认文件名前缀。</summary>
+        [Browsable(false)]
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+        public string SaveFilePrefix
+        {
+            get { return _saveFilePrefix; }
+            set { _saveFilePrefix = string.IsNullOrWhiteSpace(value) ? "image" : value.Trim(); }
+        }
+
+        /// <summary>首次保存单张图片时的默认目录（用户手动选择目录后优先记忆上次目录）。</summary>
+        [Browsable(false)]
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+        public string DefaultSaveDirectory
+        {
+            get { return _defaultSaveDirectory; }
+            set { _defaultSaveDirectory = value; }
         }
 
         [Browsable(false)]
@@ -393,7 +449,140 @@ namespace NinePointRotationCalibration.Station.Controls
                 return (Bitmap)Invoke(new Func<Bitmap>(Snapshot));
             }
 
-            return _displayedImage == null ? null : new Bitmap(_displayedImage);
+            return _displayedImage == null || _disposed ? null : CloneToPArgbFast(_displayedImage);
+        }
+
+        /// <summary>获取当前显示图像并绘制中心十字线与 ROI/轮廓/点位叠加层的全分辨率副本（无图时返回 null）。</summary>
+        public Bitmap SnapshotWithOverlays()
+        {
+            if (InvokeRequired)
+            {
+                return (Bitmap)Invoke(new Func<Bitmap>(SnapshotWithOverlays));
+            }
+
+            if (_displayedImage == null || _disposed) return null;
+
+            Bitmap canvas = CloneToPArgbFast(_displayedImage);
+            try
+            {
+                using (Graphics graphics = Graphics.FromImage(canvas))
+                {
+                    graphics.CompositingMode = CompositingMode.SourceOver;
+                    float overlayScale = Math.Max(1.0f, Math.Min(canvas.Width, canvas.Height) / 1000.0f);
+                    if (_showCenterCrosshair)
+                    {
+                        DrawCenterCrosshairOnBounds(
+                            graphics,
+                            canvas.Width * 0.5f,
+                            canvas.Height * 0.5f,
+                            canvas.Width,
+                            canvas.Height,
+                            overlayScale);
+                    }
+                    DrawOverlaysToBitmap(graphics, canvas.Width, canvas.Height, overlayScale);
+                }
+                return canvas;
+            }
+            catch
+            {
+                canvas.Dispose();
+                throw;
+            }
+        }
+
+        /// <summary>弹出保存文件对话框，将当前视口显示的单张图片保存到本地磁盘。</summary>
+        public bool SaveCurrentImageInteractive(bool includeOverlays = false)
+        {
+            if (_disposed) return false;
+            if (InvokeRequired)
+            {
+                return (bool)Invoke(new Func<bool>(() => SaveCurrentImageInteractive(includeOverlays)));
+            }
+
+            // 在弹出保存对话框前立刻冻结并克隆当前帧，防止实时采集流刷新覆盖或释放池化位图
+            Bitmap snapshot = includeOverlays ? SnapshotWithOverlays() : Snapshot();
+            if (snapshot == null) return false;
+
+            using (snapshot)
+            using (SaveFileDialog dialog = new SaveFileDialog())
+            {
+                string prefix = SanitizeFileNamePrefix(_saveFilePrefix);
+                string suffix = includeOverlays ? "_overlay" : string.Empty;
+                string timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss_fff", CultureInfo.InvariantCulture);
+
+                dialog.Title = includeOverlays ? "保存带标注图片" : "保存当前图片";
+                dialog.Filter = "PNG 图像 (*.png)|*.png|BMP 位图 (*.bmp)|*.bmp|JPEG 图像 (*.jpg;*.jpeg)|*.jpg;*.jpeg|TIFF 图像 (*.tif;*.tiff)|*.tif;*.tiff";
+                dialog.FilterIndex = 1;
+                dialog.DefaultExt = "png";
+                dialog.AddExtension = true;
+                dialog.OverwritePrompt = true;
+                dialog.RestoreDirectory = true;
+                dialog.FileName = prefix + suffix + "_" + timestamp + ".png";
+
+                string initialDirectory = ResolveInitialSaveDirectory();
+                if (!string.IsNullOrWhiteSpace(initialDirectory))
+                {
+                    dialog.InitialDirectory = initialDirectory;
+                }
+
+                IWin32Window owner = FindForm();
+                if (dialog.ShowDialog(owner) != DialogResult.OK || string.IsNullOrWhiteSpace(dialog.FileName))
+                {
+                    return false;
+                }
+
+                Cursor previousCursor = Cursor.Current;
+                try
+                {
+                    Cursor.Current = Cursors.WaitCursor;
+                    SaveBitmapToFile(snapshot, dialog.FileName);
+                    string savedDirectory = Path.GetDirectoryName(dialog.FileName);
+                    if (!string.IsNullOrWhiteSpace(savedDirectory))
+                    {
+                        _lastSaveDirectory = savedDirectory;
+                    }
+                    RaiseImageSaved(new ImageSavedEventArgs(dialog.FileName, snapshot.Size, includeOverlays));
+                    return true;
+                }
+                catch (Exception exception)
+                {
+                    MessageBox.Show(
+                        owner,
+                        "保存图片失败：" + exception.Message,
+                        "保存图片",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Error);
+                    return false;
+                }
+                finally
+                {
+                    Cursor.Current = previousCursor;
+                }
+            }
+        }
+
+        /// <summary>按文件扩展名将位图以 24bpp 兼容格式保存到本地文件（PNG/BMP/JPEG/TIFF）。</summary>
+        public static void SaveBitmapToFile(Bitmap source, string filePath)
+        {
+            if (source == null) throw new ArgumentNullException(nameof(source));
+            if (string.IsNullOrWhiteSpace(filePath)) throw new ArgumentException("保存路径不能为空。", nameof(filePath));
+
+            string directory = Path.GetDirectoryName(filePath);
+            if (!string.IsNullOrWhiteSpace(directory) && !Directory.Exists(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            if (source.PixelFormat == PixelFormat.Format24bppRgb)
+            {
+                SaveBitmapEncoded(source, filePath);
+                return;
+            }
+
+            using (Bitmap rgb24 = ConvertTo24bppRgbFast(source))
+            {
+                SaveBitmapEncoded(rgb24, filePath);
+            }
         }
 
         /// <summary>清空当前显示图像与待渲染帧缓存，并重置缩放平移状态。</summary>
@@ -672,6 +861,11 @@ namespace NinePointRotationCalibration.Station.Controls
         {
             base.OnMouseDown(e);
             Focus();
+            if (e.Button == MouseButtons.Right)
+            {
+                _rightMouseDown = true;
+                return;
+            }
             if (_displayedImage != null && (e.Button == MouseButtons.Middle || e.Button == MouseButtons.Left))
             {
                 _isPanning = true;
@@ -706,6 +900,17 @@ namespace NinePointRotationCalibration.Station.Controls
         protected override void OnMouseUp(MouseEventArgs e)
         {
             base.OnMouseUp(e);
+            if (e.Button == MouseButtons.Right)
+            {
+                bool shouldOpenMenu = _rightMouseDown && !_disposed && _enableContextMenu && !_isPanning &&
+                                      ContextMenuStrip == null && ClientRectangle.Contains(e.Location);
+                _rightMouseDown = false;
+                if (shouldOpenMenu)
+                {
+                    ShowViewportContextMenu(e.Location);
+                }
+                return;
+            }
             if (_isPanning && (e.Button == MouseButtons.Middle || e.Button == MouseButtons.Left))
             {
                 _isPanning = false;
@@ -763,6 +968,16 @@ namespace NinePointRotationCalibration.Station.Controls
             if (disposing && !_disposed)
             {
                 _disposed = true;
+                if (_viewportContextMenu != null)
+                {
+                    _viewportContextMenu.Dispose();
+                    _viewportContextMenu = null;
+                    _menuSaveImage = null;
+                    _menuSaveAnnotatedImage = null;
+                    _menuSaveSeparator = null;
+                    _menuFitImage = null;
+                    _menuActualPixels = null;
+                }
                 Bitmap pending;
                 Bitmap pendingPreview;
                 Bitmap reusable;
@@ -1534,6 +1749,365 @@ namespace NinePointRotationCalibration.Station.Controls
             _lastImageAvailability = available;
             EventHandler handler = ImageAvailabilityChanged;
             if (handler != null) handler(this, EventArgs.Empty);
+        }
+
+        private void RaiseImageSaved(ImageSavedEventArgs eventArgs)
+        {
+            EventHandler<ImageSavedEventArgs> handler = ImageSaved;
+            if (handler != null) handler(this, eventArgs);
+        }
+
+        private void EnsureContextMenu()
+        {
+            if (_viewportContextMenu != null) return;
+
+            _menuSaveImage = new ToolStripMenuItem("保存当前图片...");
+            _menuSaveImage.Click += delegate { SaveCurrentImageInteractive(false); };
+
+            _menuSaveAnnotatedImage = new ToolStripMenuItem("保存带标注图片...");
+            _menuSaveAnnotatedImage.Click += delegate { SaveCurrentImageInteractive(true); };
+
+            _menuSaveSeparator = new ToolStripSeparator();
+
+            _menuFitImage = new ToolStripMenuItem("适应窗口");
+            _menuFitImage.Click += delegate
+            {
+                if (_displayedImage != null) FitImage();
+            };
+
+            _menuActualPixels = new ToolStripMenuItem("1:1 原始像素");
+            _menuActualPixels.Click += delegate
+            {
+                if (_displayedImage != null) ShowActualPixels();
+            };
+
+            _viewportContextMenu = new ContextMenuStrip();
+            _viewportContextMenu.Items.Add(_menuSaveImage);
+            _viewportContextMenu.Items.Add(_menuSaveAnnotatedImage);
+            _viewportContextMenu.Items.Add(_menuSaveSeparator);
+            _viewportContextMenu.Items.Add(_menuFitImage);
+            _viewportContextMenu.Items.Add(_menuActualPixels);
+        }
+
+        private void ShowViewportContextMenu(Point clientLocation)
+        {
+            EnsureContextMenu();
+            bool hasImage = _displayedImage != null && !_disposed;
+            bool hasAnnotations = hasImage && HasAnnotations();
+
+            _menuSaveImage.Enabled = hasImage;
+            _menuSaveAnnotatedImage.Visible = hasAnnotations;
+            _menuSaveAnnotatedImage.Enabled = hasAnnotations;
+            _menuFitImage.Enabled = hasImage;
+            _menuActualPixels.Enabled = hasImage;
+
+            _viewportContextMenu.Show(this, clientLocation);
+        }
+
+        private bool HasAnnotations()
+        {
+            if (_showCenterCrosshair) return true;
+            lock (_overlaySync)
+            {
+                return _points.Count > 0 || _rois.Count > 0 || _contours.Count > 0;
+            }
+        }
+
+        private string ResolveInitialSaveDirectory()
+        {
+            if (!string.IsNullOrWhiteSpace(_lastSaveDirectory) && Directory.Exists(_lastSaveDirectory))
+            {
+                return _lastSaveDirectory;
+            }
+            if (!string.IsNullOrWhiteSpace(_defaultSaveDirectory) && Directory.Exists(_defaultSaveDirectory))
+            {
+                return _defaultSaveDirectory;
+            }
+            return null;
+        }
+
+        private static string SanitizeFileNamePrefix(string prefix)
+        {
+            string value = string.IsNullOrWhiteSpace(prefix) ? "image" : prefix.Trim();
+            char[] invalidChars = Path.GetInvalidFileNameChars();
+            for (int i = 0; i < invalidChars.Length; i++)
+            {
+                value = value.Replace(invalidChars[i], '_');
+            }
+            return string.IsNullOrWhiteSpace(value) ? "image" : value;
+        }
+
+        private static unsafe Bitmap ConvertTo24bppRgbFast(Bitmap source)
+        {
+            int width = Math.Max(1, source.Width);
+            int height = Math.Max(1, source.Height);
+            Bitmap target = new Bitmap(width, height, PixelFormat.Format24bppRgb);
+            target.SetResolution(
+                source.HorizontalResolution > 0.0f ? source.HorizontalResolution : 96.0f,
+                source.VerticalResolution > 0.0f ? source.VerticalResolution : 96.0f);
+
+            PixelFormat srcFormat = source.PixelFormat;
+            if (srcFormat == PixelFormat.Format32bppPArgb ||
+                srcFormat == PixelFormat.Format32bppArgb ||
+                srcFormat == PixelFormat.Format32bppRgb)
+            {
+                Rectangle bounds = new Rectangle(0, 0, width, height);
+                BitmapData srcData = source.LockBits(bounds, ImageLockMode.ReadOnly, srcFormat);
+                try
+                {
+                    BitmapData dstData = target.LockBits(bounds, ImageLockMode.WriteOnly, PixelFormat.Format24bppRgb);
+                    try
+                    {
+                        byte* srcBase = (byte*)srcData.Scan0;
+                        byte* dstBase = (byte*)dstData.Scan0;
+                        int srcStride = srcData.Stride;
+                        int dstStride = dstData.Stride;
+                        for (int y = 0; y < height; y++)
+                        {
+                            byte* s = srcBase + (long)y * srcStride;
+                            byte* d = dstBase + (long)y * dstStride;
+                            for (int x = 0; x < width; x++)
+                            {
+                                int si = x * 4;
+                                int di = x * 3;
+                                d[di] = s[si];
+                                d[di + 1] = s[si + 1];
+                                d[di + 2] = s[si + 2];
+                            }
+                        }
+                    }
+                    finally
+                    {
+                        target.UnlockBits(dstData);
+                    }
+                }
+                finally
+                {
+                    source.UnlockBits(srcData);
+                }
+                return target;
+            }
+
+            try
+            {
+                using (Graphics graphics = Graphics.FromImage(target))
+                {
+                    graphics.CompositingMode = CompositingMode.SourceCopy;
+                    graphics.DrawImageUnscaled(source, 0, 0);
+                }
+                return target;
+            }
+            catch
+            {
+                target.Dispose();
+                throw;
+            }
+        }
+
+        private static void SaveBitmapEncoded(Bitmap bitmap, string filePath)
+        {
+            string ext = (Path.GetExtension(filePath) ?? string.Empty).ToLowerInvariant();
+            if (ext == ".bmp")
+            {
+                bitmap.Save(filePath, ImageFormat.Bmp);
+                return;
+            }
+            if (ext == ".tif" || ext == ".tiff")
+            {
+                bitmap.Save(filePath, ImageFormat.Tiff);
+                return;
+            }
+            if (ext == ".jpg" || ext == ".jpeg")
+            {
+                ImageCodecInfo jpegCodec = FindImageCodec(ImageFormat.Jpeg);
+                if (jpegCodec != null)
+                {
+                    using (EncoderParameters encoderParams = new EncoderParameters(1))
+                    {
+                        encoderParams.Param[0] = new EncoderParameter(Encoder.Quality, 95L);
+                        bitmap.Save(filePath, jpegCodec, encoderParams);
+                    }
+                    return;
+                }
+                bitmap.Save(filePath, ImageFormat.Jpeg);
+                return;
+            }
+
+            bitmap.Save(filePath, ImageFormat.Png);
+        }
+
+        private static ImageCodecInfo FindImageCodec(ImageFormat format)
+        {
+            ImageCodecInfo[] codecs = ImageCodecInfo.GetImageEncoders();
+            for (int i = 0; i < codecs.Length; i++)
+            {
+                if (codecs[i].FormatID == format.Guid) return codecs[i];
+            }
+            return null;
+        }
+
+        private void DrawCenterCrosshairOnBounds(
+            Graphics graphics,
+            float centerX,
+            float centerY,
+            int boundsWidth,
+            int boundsHeight,
+            float lineWidth)
+        {
+            if (boundsWidth <= 0 || boundsHeight <= 0) return;
+
+            SmoothingMode previousSmoothing = graphics.SmoothingMode;
+            PixelOffsetMode previousPixelOffset = graphics.PixelOffsetMode;
+            graphics.SmoothingMode = SmoothingMode.None;
+            graphics.PixelOffsetMode = PixelOffsetMode.Default;
+            try
+            {
+                float x = (float)Math.Round(centerX);
+                float y = (float)Math.Round(centerY);
+                using (Pen pen = new Pen(_centerCrosshairColor, Math.Max(1.0f, lineWidth)))
+                {
+                    if (y >= -1.0f && y <= boundsHeight + 1.0f)
+                    {
+                        graphics.DrawLine(pen, 0.0f, y, boundsWidth, y);
+                    }
+                    if (x >= -1.0f && x <= boundsWidth + 1.0f)
+                    {
+                        graphics.DrawLine(pen, x, 0.0f, x, boundsHeight);
+                    }
+                }
+            }
+            finally
+            {
+                graphics.SmoothingMode = previousSmoothing;
+                graphics.PixelOffsetMode = previousPixelOffset;
+            }
+        }
+
+        private void DrawOverlaysToBitmap(Graphics graphics, int boundsWidth, int boundsHeight, float overlayScale)
+        {
+            List<ViewportPointOverlay> points;
+            List<ViewportRoiOverlay> rois;
+            List<ViewportContourOverlay> contours;
+            lock (_overlaySync)
+            {
+                points = new List<ViewportPointOverlay>(_points);
+                rois = new List<ViewportRoiOverlay>(_rois);
+                contours = new List<ViewportContourOverlay>(_contours);
+            }
+
+            if (rois.Count == 0 && contours.Count == 0 && points.Count == 0) return;
+
+            graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            Font baseFont = Font ?? SystemFonts.DefaultFont;
+            Font labelFont = new Font(baseFont.FontFamily, Math.Max(6.0f, baseFont.Size * overlayScale), baseFont.Style, baseFont.Unit);
+            Dictionary<long, Pen> penCache = new Dictionary<long, Pen>();
+            Dictionary<int, SolidBrush> brushCache = new Dictionary<int, SolidBrush>();
+            PointF[] roiCorners = new PointF[4];
+            List<PointF> contourPoints = new List<PointF>(256);
+            try
+            {
+                for (int i = 0; i < rois.Count; i++)
+                {
+                    ViewportRoiOverlay roi = rois[i];
+                    RectangleF bounds = roi.ImageBounds;
+                    PointF center = new PointF(bounds.Left + bounds.Width / 2.0f, bounds.Top + bounds.Height / 2.0f);
+                    roiCorners[0] = new PointF(bounds.Left, bounds.Top);
+                    roiCorners[1] = new PointF(bounds.Right, bounds.Top);
+                    roiCorners[2] = new PointF(bounds.Right, bounds.Bottom);
+                    roiCorners[3] = new PointF(bounds.Left, bounds.Bottom);
+
+                    double radians = roi.AngleDegrees * Math.PI / 180.0;
+                    double cosine = Math.Cos(radians);
+                    double sine = Math.Sin(radians);
+                    for (int index = 0; index < 4; index++)
+                    {
+                        float dx = roiCorners[index].X - center.X;
+                        float dy = roiCorners[index].Y - center.Y;
+                        roiCorners[index] = new PointF(
+                            center.X + (float)(dx * cosine - dy * sine),
+                            center.Y + (float)(dx * sine + dy * cosine));
+                    }
+
+                    Pen pen = GetOrAddPen(penCache, roi.Color, roi.LineWidth * overlayScale);
+                    graphics.DrawPolygon(pen, roiCorners);
+                    if (!string.IsNullOrWhiteSpace(roi.Label))
+                    {
+                        SolidBrush brush = GetOrAddBrush(brushCache, roi.Color);
+                        graphics.DrawString(roi.Label, labelFont, brush, roiCorners[0].X + (4.0f * overlayScale), roiCorners[0].Y + (4.0f * overlayScale));
+                    }
+                }
+
+                for (int i = 0; i < contours.Count; i++)
+                {
+                    ViewportContourOverlay contour = contours[i];
+                    if (contour == null || contour.Points == null || contour.Points.Count == 0) continue;
+
+                    contourPoints.Clear();
+                    bool anyVisible = false;
+                    int stride = Math.Max(1, (int)Math.Ceiling(contour.Points.Count / 10000.0));
+                    for (int index = 0; index < contour.Points.Count; index += stride)
+                    {
+                        PointF pt = contour.Points[index];
+                        if (!anyVisible && pt.X >= -8.0f && pt.X <= boundsWidth + 8.0f && pt.Y >= -8.0f && pt.Y <= boundsHeight + 8.0f)
+                        {
+                            anyVisible = true;
+                        }
+                        contourPoints.Add(pt);
+                    }
+                    if (!anyVisible) continue;
+
+                    SolidBrush brush = GetOrAddBrush(brushCache, contour.Color);
+                    if (contourPoints.Count == 1)
+                    {
+                        float dotRadius = 1.5f * overlayScale;
+                        graphics.FillEllipse(brush, contourPoints[0].X - dotRadius, contourPoints[0].Y - dotRadius, dotRadius * 2.0f, dotRadius * 2.0f);
+                        continue;
+                    }
+                    if (contourPoints.Count < 2) continue;
+
+                    Pen pen = GetOrAddPen(penCache, contour.Color, contour.LineWidth * overlayScale);
+                    graphics.DrawLines(pen, contourPoints.ToArray());
+                    if (!string.IsNullOrWhiteSpace(contour.Label))
+                    {
+                        graphics.DrawString(contour.Label, labelFont, brush, contourPoints[0].X + (4.0f * overlayScale), contourPoints[0].Y + (4.0f * overlayScale));
+                    }
+                }
+
+                for (int i = 0; i < points.Count; i++)
+                {
+                    ViewportPointOverlay point = points[i];
+                    PointF center = point.ImagePoint;
+                    float radius = Math.Max(3.0f, point.Radius) * overlayScale;
+                    float arm = (point.CrossSize > 0.0f ? point.CrossSize : Math.Max(3.0f, point.Radius) + 4.0f) * overlayScale;
+                    float lineWidth = (point.LineWidth > 0.0f ? point.LineWidth : 1.5f) * overlayScale;
+                    if (point.LineWidth >= 1.8f)
+                    {
+                        Pen shadowPen = GetOrAddPen(penCache, Color.FromArgb(180, 10, 14, 22), lineWidth + (1.4f * overlayScale));
+                        graphics.DrawLine(shadowPen, center.X - arm, center.Y, center.X + arm, center.Y);
+                        graphics.DrawLine(shadowPen, center.X, center.Y - arm, center.X, center.Y + arm);
+                    }
+                    Pen pen = GetOrAddPen(penCache, point.Color, lineWidth);
+                    SolidBrush brush = GetOrAddBrush(brushCache, point.Color);
+                    graphics.DrawEllipse(pen, center.X - radius, center.Y - radius, radius * 2.0f, radius * 2.0f);
+                    graphics.DrawLine(pen, center.X - arm, center.Y, center.X + arm, center.Y);
+                    graphics.DrawLine(pen, center.X, center.Y - arm, center.X, center.Y + arm);
+                    if (!string.IsNullOrWhiteSpace(point.Label))
+                    {
+                        float labelX = center.X + radius + (5.0f * overlayScale);
+                        float labelY = center.Y - (8.0f * overlayScale) + (point.LabelOffsetY * overlayScale);
+                        SizeF labelSize = graphics.MeasureString(point.Label, labelFont);
+                        SolidBrush bgBrush = GetOrAddBrush(brushCache, Color.FromArgb(185, 15, 23, 42));
+                        graphics.FillRectangle(bgBrush, labelX - (2.0f * overlayScale), labelY - (1.0f * overlayScale), labelSize.Width + (4.0f * overlayScale), labelSize.Height + (1.0f * overlayScale));
+                        graphics.DrawString(point.Label, labelFont, brush, labelX, labelY);
+                    }
+                }
+            }
+            finally
+            {
+                labelFont.Dispose();
+                foreach (Pen pen in penCache.Values) pen.Dispose();
+                foreach (SolidBrush brush in brushCache.Values) brush.Dispose();
+            }
         }
     }
 }

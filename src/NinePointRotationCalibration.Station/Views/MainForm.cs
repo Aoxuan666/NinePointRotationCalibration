@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.ComponentModel;
 using System.Drawing;
 using System.Globalization;
+using System.IO;
 using System.Linq;
 using System.Windows.Forms;
 using NinePointRotationCalibration.Station.Controls;
@@ -1538,9 +1539,13 @@ namespace NinePointRotationCalibration.Station.Views
                 imageSplit.SizeChanged += delegate { BalanceImageSplit(); };
             }
             tabWork.DrawItem += TabWork_DrawItem;
+            imageViewport.SaveFilePrefix = "image";
+            effectViewport.SaveFilePrefix = "effect";
             imageViewport.ImagePositionChanged += ImageViewport_ImagePositionChanged;
             imageViewport.ImageAvailabilityChanged += ImageViewport_ImageAvailabilityChanged;
+            imageViewport.ImageSaved += ImageViewport_ImageSaved;
             effectViewport.ImagePositionChanged += ImageViewport_ImagePositionChanged;
+            effectViewport.ImageSaved += ImageViewport_ImageSaved;
             dgvDetectionResults.SelectionChanged += delegate { RaiseUiAction("detection.rowSelected", dgvDetectionResults); };
             chkCameraEnabled.CheckedChanged += FeatureToggle_CheckedChanged;
             chkCalibrationEnabled.CheckedChanged += FeatureToggle_CheckedChanged;
@@ -1753,6 +1758,23 @@ namespace NinePointRotationCalibration.Station.Views
                     _cameraConnected,
                     _workflowBusy);
             });
+        }
+
+        private void ImageViewport_ImageSaved(object sender, ImageSavedEventArgs e)
+        {
+            if (e == null || string.IsNullOrWhiteSpace(e.FilePath)) return;
+            string sourceLabel = ReferenceEquals(sender, effectViewport) ? "检测效果图" : "图像";
+            if (e.IncludedOverlays) sourceLabel += "（含标注）";
+            AppendLog(
+                string.Format(
+                    CultureInfo.InvariantCulture,
+                    "已保存{0}：{1} ({2}×{3})",
+                    sourceLabel,
+                    e.FilePath,
+                    e.ImageSize.Width,
+                    e.ImageSize.Height),
+                false);
+            SetOperationStatus("图片已保存：" + Path.GetFileName(e.FilePath), false, false);
         }
 
         private void SetStatusLabel(Label label, bool connected, string prefix, string detail)

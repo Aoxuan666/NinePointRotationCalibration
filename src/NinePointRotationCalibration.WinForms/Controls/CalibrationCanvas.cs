@@ -4,6 +4,8 @@ using System.ComponentModel;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
+using System.Globalization;
+using System.IO;
 using System.Linq;
 using System.Windows.Forms;
 using NinePointRotationCalibration.WinForms.Geometry;
@@ -103,6 +105,7 @@ namespace NinePointRotationCalibration.WinForms.Controls
         private bool _lastRightClickConsumed;
         private readonly Dictionary<CanvasRoiTarget, RectangleF> _renderedRoiLabelRects = new Dictionary<CanvasRoiTarget, RectangleF>();
         private RectangleF _renderedAnchorLabelRect;
+        private static string _lastSaveDirectory;
 
         public CalibrationCanvas()
         {
@@ -430,6 +433,156 @@ namespace NinePointRotationCalibration.WinForms.Controls
         public Bitmap CopyImage()
         {
             return _image == null ? null : new Bitmap(_image);
+        }
+
+        /// <summary>
+        /// 弹出保存文件对话框，将当前画布图像保存为单张图片文件（PNG/BMP/JPEG/TIFF）。
+        /// </summary>
+        public bool SaveImageWithDialog(IWin32Window owner, string filePrefix, out string savedFilePath)
+        {
+            savedFilePath = null;
+            Bitmap snapshot = CopyImage();
+            if (snapshot == null)
+            {
+                return false;
+            }
+
+            using (snapshot)
+            using (SaveFileDialog dialog = new SaveFileDialog())
+            {
+                string safePrefix = SanitizeFileNamePrefix(filePrefix);
+                string timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss_fff", CultureInfo.InvariantCulture);
+                dialog.Title = "保存当前图片";
+                dialog.Filter = "PNG 图像 (*.png)|*.png|BMP 位图 (*.bmp)|*.bmp|JPEG 图像 (*.jpg;*.jpeg)|*.jpg;*.jpeg|TIFF 图像 (*.tif;*.tiff)|*.tif;*.tiff";
+                dialog.FilterIndex = 1;
+                dialog.DefaultExt = "png";
+                dialog.AddExtension = true;
+                dialog.OverwritePrompt = true;
+                dialog.RestoreDirectory = true;
+                dialog.FileName = safePrefix + "_" + timestamp + ".png";
+                if (!string.IsNullOrWhiteSpace(_lastSaveDirectory) && Directory.Exists(_lastSaveDirectory))
+                {
+                    dialog.InitialDirectory = _lastSaveDirectory;
+                }
+
+                IWin32Window dialogOwner = owner ?? FindForm();
+                if (dialog.ShowDialog(dialogOwner) != DialogResult.OK || string.IsNullOrWhiteSpace(dialog.FileName))
+                {
+                    return false;
+                }
+
+                Cursor previousCursor = Cursor.Current;
+                try
+                {
+                    Cursor.Current = Cursors.WaitCursor;
+                    SaveBitmapToFile(snapshot, dialog.FileName);
+                    string savedDirectory = Path.GetDirectoryName(dialog.FileName);
+                    if (!string.IsNullOrWhiteSpace(savedDirectory))
+                    {
+                        _lastSaveDirectory = savedDirectory;
+                    }
+                    savedFilePath = dialog.FileName;
+                    return true;
+                }
+                catch (Exception exception)
+                {
+                    MessageBox.Show(
+                        dialogOwner,
+                        "保存图片失败：" + exception.Message,
+                        "保存图片",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Error);
+                    return false;
+                }
+                finally
+                {
+                    Cursor.Current = previousCursor;
+                }
+            }
+        }
+
+        private static void SaveBitmapToFile(Bitmap source, string filePath)
+        {
+            string directory = Path.GetDirectoryName(filePath);
+            if (!string.IsNullOrWhiteSpace(directory) && !Directory.Exists(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            if (source.PixelFormat == PixelFormat.Format24bppRgb)
+            {
+                SaveBitmapEncoded(source, filePath);
+                return;
+            }
+
+            using (Bitmap rgb24 = new Bitmap(Math.Max(1, source.Width), Math.Max(1, source.Height), PixelFormat.Format24bppRgb))
+            {
+                rgb24.SetResolution(
+                    source.HorizontalResolution > 0.0f ? source.HorizontalResolution : 96.0f,
+                    source.VerticalResolution > 0.0f ? source.VerticalResolution : 96.0f);
+                using (Graphics graphics = Graphics.FromImage(rgb24))
+                {
+                    graphics.CompositingMode = CompositingMode.SourceCopy;
+                    graphics.DrawImageUnscaled(source, 0, 0);
+                }
+                SaveBitmapEncoded(rgb24, filePath);
+            }
+        }
+
+        private static void SaveBitmapEncoded(Bitmap bitmap, string filePath)
+        {
+            string ext = (Path.GetExtension(filePath) ?? string.Empty).ToLowerInvariant();
+            if (ext == ".bmp")
+            {
+                bitmap.Save(filePath, ImageFormat.Bmp);
+                return;
+            }
+            if (ext == ".tif" || ext == ".tiff")
+            {
+                bitmap.Save(filePath, ImageFormat.Tiff);
+                return;
+            }
+            if (ext == ".jpg" || ext == ".jpeg")
+            {
+                ImageCodecInfo jpegCodec = FindImageCodec(ImageFormat.Jpeg);
+                if (jpegCodec != null)
+                {
+                    using (EncoderParameters encoderParams = new EncoderParameters(1))
+                    {
+                        encoderParams.Param[0] = new EncoderParameter(Encoder.Quality, 95L);
+                        bitmap.Save(filePath, jpegCodec, encoderParams);
+                    }
+                    return;
+                }
+                bitmap.Save(filePath, ImageFormat.Jpeg);
+                return;
+            }
+
+            bitmap.Save(filePath, ImageFormat.Png);
+        }
+
+        private static ImageCodecInfo FindImageCodec(ImageFormat format)
+        {
+            ImageCodecInfo[] codecs = ImageCodecInfo.GetImageEncoders();
+            for (int i = 0; i < codecs.Length; i++)
+            {
+                if (codecs[i].FormatID == format.Guid)
+                {
+                    return codecs[i];
+                }
+            }
+            return null;
+        }
+
+        private static string SanitizeFileNamePrefix(string prefix)
+        {
+            string value = string.IsNullOrWhiteSpace(prefix) ? "image" : prefix.Trim();
+            char[] invalidChars = Path.GetInvalidFileNameChars();
+            for (int i = 0; i < invalidChars.Length; i++)
+            {
+                value = value.Replace(invalidChars[i], '_');
+            }
+            return string.IsNullOrWhiteSpace(value) ? "image" : value;
         }
 
         /// <summary>

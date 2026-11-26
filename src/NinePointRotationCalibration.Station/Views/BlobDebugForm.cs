@@ -5,6 +5,7 @@ using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Globalization;
+using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -130,6 +131,35 @@ namespace NinePointRotationCalibration.Station.Views
             btnApply.Click += BtnApply_Click;
             btnToggleLayout.Click += delegate { TogglePreviewLayout(); };
             previewSplit.SizeChanged += delegate { BalancePreviewSplit(); };
+            sourceViewport.SaveFilePrefix = "blob_source";
+            binaryViewport.SaveFilePrefix = "blob_binary";
+            sourceViewport.ImageSaved += Viewport_ImageSaved;
+            binaryViewport.ImageSaved += Viewport_ImageSaved;
+        }
+
+        private void Viewport_ImageSaved(object sender, ImageSavedEventArgs e)
+        {
+            if (e == null || string.IsNullOrWhiteSpace(e.FilePath)) return;
+            string sourceTag = ReferenceEquals(sender, binaryViewport) ? "局部二值效果图" : "Blob 调试原图";
+            if (e.IncludedOverlays) sourceTag += "（含标注）";
+            if (lblPreviewStatus != null && !lblPreviewStatus.IsDisposed)
+            {
+                lblPreviewStatus.Text = string.Format(
+                    CultureInfo.InvariantCulture,
+                    "已保存{0}：{1}",
+                    sourceTag,
+                    Path.GetFileName(e.FilePath));
+            }
+            LocalDebugLog.Write(
+                "INFO",
+                "ui.blobDebug",
+                string.Format(
+                    CultureInfo.InvariantCulture,
+                    "Saved single image ({0}) to '{1}' ({2}x{3}).",
+                    sourceTag,
+                    e.FilePath,
+                    e.ImageSize.Width,
+                    e.ImageSize.Height));
         }
 
         private void BlobDebugForm_Shown(object sender, EventArgs e)

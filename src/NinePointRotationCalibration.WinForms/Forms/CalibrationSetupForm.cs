@@ -605,8 +605,42 @@ namespace NinePointRotationCalibration.WinForms.Forms
             _rotationGrid.CellFormatting += FormatSampleCell;
             _nameInput.TextChanged += StateSettingChanged;
             _unitCombo.SelectedIndexChanged += StateSettingChanged;
+            _canvas.MouseUp += CanvasMouseUpForContextMenu;
             KeyDown += FormKeyDown;
             FormClosed += (sender, args) => CancelCurrentOperation();
+        }
+
+        private void CanvasMouseUpForContextMenu(object sender, MouseEventArgs e)
+        {
+            if (e.Button != MouseButtons.Right ||
+                _busy ||
+                _canvas.LastRightClickConsumed ||
+                !_canvas.HasImage)
+            {
+                return;
+            }
+
+            ContextMenuStrip menu = new ContextMenuStrip();
+            ToolStripMenuItem saveImageItem = new ToolStripMenuItem("保存当前图片...");
+            saveImageItem.Click += (s, args) =>
+            {
+                string savedPath;
+                if (_canvas.SaveImageWithDialog(this, "calibration", out savedPath))
+                {
+                    SetStatus("已保存图片：" + savedPath, false);
+                }
+            };
+            ToolStripMenuItem fitItem = new ToolStripMenuItem("适应窗口");
+            fitItem.Click += (s, args) => _canvas.FitImage();
+            ToolStripMenuItem oneToOneItem = new ToolStripMenuItem("1:1 原始像素");
+            oneToOneItem.Click += (s, args) => _canvas.ShowOneToOne();
+
+            menu.Items.Add(saveImageItem);
+            menu.Items.Add(new ToolStripSeparator());
+            menu.Items.Add(fitItem);
+            menu.Items.Add(oneToOneItem);
+            menu.Closed += (s, args) => menu.Dispose();
+            menu.Show(_canvas, e.Location);
         }
 
         private void LoadStateToUi()

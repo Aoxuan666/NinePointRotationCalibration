@@ -329,7 +329,7 @@ namespace NinePointRotationCalibration.Station.Views
             lblSourceViewportTitle.ForeColor = Color.FromArgb(203, 213, 225);
             lblSourceViewportTitle.Text = "原图视口（独立缩放）";
             lblSourceViewportTitle.TextAlign = ContentAlignment.MiddleLeft;
-            toolTip.SetToolTip(lblSourceViewportTitle, "原图与检测效果视口各自独立滚轮缩放与拖拽平移，双击视口恢复适应");
+            toolTip.SetToolTip(lblSourceViewportTitle, "原图与检测效果视口各自独立滚轮缩放与拖拽平移，双击恢复适应，右键可保存单张图片");
             pnlSourceViewportHeader.Controls.Add(lblSourceViewportTitle);
             pnlSourceViewportHeader.Controls.Add(btnToggleDualLayout);
 
