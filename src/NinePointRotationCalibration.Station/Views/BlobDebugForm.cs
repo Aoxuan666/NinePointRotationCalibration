@@ -74,7 +74,8 @@ namespace NinePointRotationCalibration.Station.Views
                 "取消勾选后跳过定位模板，对整幅图直接执行二值化和 Blob 分析。");
             toolTip.SetToolTip(cmbDetectionPolarity, "选择不良标记相对背景的明暗极性：黑底白点检测亮标记，白底黑点检测暗标记。");
             toolTip.SetToolTip(cmbHoleFillMode, "选择是否填充检出目标内部的封闭空洞（自动按当前检测极性处理）。");
-            toolTip.SetToolTip(nudMorphologyRadius, "形态学开运算去噪半径（像素），设为 0 表示关闭去噪。");
+            toolTip.SetToolTip(nudMorphologyRadius, "形态学开运算去噪与边缘光滑半径（像素），先闭后开不伤主笔画；设为 0 表示关闭。");
+            toolTip.SetToolTip(nudClosingRadius, "形态学闭运算断笔桥接半径（像素），可连接约 2 倍半径宽度的丝印/焊盘断裂并平滑凹口；设为 0 表示关闭。");
             toolTip.SetToolTip(nudRectangularity, "面积与最小外接矩形之比上限，达到该值的规整矩形将被判定为标签干扰并过滤。");
             toolTip.SetToolTip(btnRefresh, "立即使用当前参数刷新预览。");
             toolTip.SetToolTip(btnFit, "使当前图像适应窗口。");
@@ -104,6 +105,7 @@ namespace NinePointRotationCalibration.Station.Views
             nudMaximumBlobArea.ValueChanged += ParameterControl_Changed;
             nudRectangularity.ValueChanged += ParameterControl_Changed;
             nudMorphologyRadius.ValueChanged += ParameterControl_Changed;
+            nudClosingRadius.ValueChanged += ParameterControl_Changed;
             chkAutoThreshold.CheckedChanged += ParameterControl_Changed;
             foreach (NumericUpDown input in new[]
             {
@@ -111,7 +113,8 @@ namespace NinePointRotationCalibration.Station.Views
                 nudMinimumBlobArea,
                 nudMaximumBlobArea,
                 nudRectangularity,
-                nudMorphologyRadius
+                nudMorphologyRadius,
+                nudClosingRadius
             })
             {
                 input.MouseWheel += NumericInput_MouseWheel;
@@ -798,6 +801,7 @@ namespace NinePointRotationCalibration.Station.Views
                 SetNumericValue(nudMaximumBlobArea, value.MaximumBlobArea);
                 SetNumericValue(nudRectangularity, value.RectangleFillThreshold);
                 SetNumericValue(nudMorphologyRadius, value.MorphologyRadius);
+                SetNumericValue(nudClosingRadius, value.ClosingRadius);
             }
             finally
             {
@@ -831,7 +835,8 @@ namespace NinePointRotationCalibration.Station.Views
                 RectangleFillThreshold = Decimal.ToDouble(nudRectangularity.Value),
                 FillHoles = fillEnabled,
                 FillDarkHoles = fillEnabled,
-                MorphologyRadius = Decimal.ToInt32(nudMorphologyRadius.Value)
+                MorphologyRadius = Decimal.ToInt32(nudMorphologyRadius.Value),
+                ClosingRadius = Decimal.ToInt32(nudClosingRadius.Value)
             };
             return true;
         }
@@ -948,7 +953,8 @@ namespace NinePointRotationCalibration.Station.Views
                 RectangleFillThreshold = value.RectangleFillThreshold,
                 FillHoles = value.FillHoles,
                 FillDarkHoles = value.FillDarkHoles,
-                MorphologyRadius = value.MorphologyRadius
+                MorphologyRadius = value.MorphologyRadius,
+                ClosingRadius = value.ClosingRadius
             };
         }
 

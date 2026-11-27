@@ -3681,6 +3681,7 @@ namespace NinePointRotationCalibration.Station.Services
                 FillHoles = source.FillHoles,
                 FillDarkHoles = source.FillDarkHoles,
                 MorphologyRadius = source.MorphologyRadius,
+                ClosingRadius = source.ClosingRadius,
                 FollowTemplateTransform = source.FollowTemplateTransform,
                 TemplateMatchingEnabled = source.TemplateMatchingEnabled
             };

@@ -168,7 +168,9 @@ namespace NinePointRotationCalibration.Station.Services.Inspection
                 RectangleFillThreshold = profile.RectangleFillThreshold,
                 FillHoles = profile.FillHoles,
                 FillDarkHoles = profile.FillDarkHoles,
-                MorphologyRadius = profile.MorphologyRadius
+                MorphologyRadius = profile.MorphologyRadius,
+                ClosingRadius = profile.ClosingRadius,
+                SmoothEdges = true
             };
 
             List<HalconBlobResult> halconResults = null;

@@ -39,6 +39,7 @@ namespace NinePointRotationCalibration.Station.Services.Communication
             VerifyWideFovCalibrationSolver();
             VerifyDualRTargetMapping();
             VerifyInspectionSemantics();
+            VerifyCrossBlobAntiFractureAndSmoothing();
             await VerifyCalibrationSessionsAndPreservationAsync(cancellationToken).ConfigureAwait(false);
             await VerifyLowScoreCalibrationAbortAsync(cancellationToken).ConfigureAwait(false);
             await VerifyTwoStepTeachingAsync(cancellationToken).ConfigureAwait(false);
@@ -684,6 +685,172 @@ namespace NinePointRotationCalibration.Station.Services.Communication
                            prioInvalidMark.Items[0].Valid && !prioInvalidMark.Items[0].HasManualMark &&
                            !prioInvalidMark.Items[1].Valid && prioInvalidMark.Items[1].HasManualMark,
                         "COORDINATE_MAPPING_FAILED must beat MANUAL_MARK_FOUND and preserve trustworthy hasManualMark on valid=false board.");
+                }
+            }
+        }
+
+        private static void VerifyCrossBlobAntiFractureAndSmoothing()
+        {
+            HalconBlobRegion roi = new HalconBlobRegion
+            {
+                Row = 200.0,
+                Column = 200.0,
+                PhiDegrees = 0.0,
+                HalfWidth = 180.0,
+                HalfHeight = 180.0,
+                ImageBounds = new Rectangle(20, 20, 360, 360)
+            };
+
+            // 1. 模拟绿油打叉板：黑色 X 被白丝印横向切出 10px 断口，边缘带锯齿，周围有孤立小黑点，且同框存在规整黑色矩形标签
+            using (Bitmap fracturedBoard = new Bitmap(400, 400, System.Drawing.Imaging.PixelFormat.Format24bppRgb))
+            {
+                using (Graphics g = Graphics.FromImage(fracturedBoard))
+                {
+                    g.Clear(Color.FromArgb(145, 165, 145));
+                    using (Pen xPen = new Pen(Color.FromArgb(18, 22, 18), 18.0f))
+                    {
+                        g.DrawLine(xPen, 95, 75, 285, 325);
+                        g.DrawLine(xPen, 285, 75, 95, 325);
+                    }
+                    // 在笔画边缘叠加锯齿毛刺与孤立黑噪点
+                    using (SolidBrush noiseBrush = new SolidBrush(Color.FromArgb(16, 18, 16)))
+                    {
+                        for (int y = 90; y <= 300; y += 16)
+                        {
+                            g.FillRectangle(noiseBrush, 182, y, 4, 2);
+                        }
+                        g.FillEllipse(noiseBrush, 125, 220, 4, 4);
+                        g.FillEllipse(noiseBrush, 250, 180, 3, 3);
+                        // 右上角放一块大面积规整黑色矩形标签，验证矩形过滤不被破坏
+                        g.FillRectangle(noiseBrush, 305, 40, 55, 110);
+                    }
+                    // 模拟白丝印横穿 X 上臂造成 10px 断口
+                    using (SolidBrush silkBrush = new SolidBrush(Color.FromArgb(230, 235, 230)))
+                    {
+                        g.FillRectangle(silkBrush, 95, 130, 95, 10);
+                    }
+                }
+
+                HalconBlobParameters optParams = new HalconBlobParameters
+                {
+                    AutoThreshold = false,
+                    DetectDarkForeground = true,
+                    Threshold = 55,
+                    MinimumArea = 6500.0,
+                    MaximumArea = 100000.0,
+                    RectangleFilterEnabled = true,
+                    RectangleFillThreshold = 0.92,
+                    FillHoles = true,
+                    FillDarkHoles = true,
+                    MorphologyRadius = 2,
+                    ClosingRadius = 8,
+                    SmoothEdges = true
+                };
+                List<HalconBlobResult> results = HalconBlobEngine.Analyze(
+                    fracturedBoard, new[] { roi }, optParams, true, CancellationToken.None);
+                try
+                {
+                    Assert(results.Count == 1 && results[0].HasFinding && !results[0].RejectedAsRectangle,
+                        "Fractured dark X with 10px silkscreen gap must be bridged and detected as non-rectangular mark.");
+                    Assert(results[0].Area >= 8000.0,
+                        "Bridged X area should preserve full cross mass, got " + results[0].Area);
+                    Assert(results[0].Rectangularity < 0.85,
+                        "Bridged X must retain low rectangularity, got " + results[0].Rectangularity);
+                    Assert(results[0].Contour != null && results[0].Contour.Count >= 20,
+                        "Smoothed X contour must contain valid closed boundary points.");
+                    Assert(results[0].BinaryImage != null,
+                        "Binary preview bitmap must be generated.");
+                }
+                finally
+                {
+                    foreach (HalconBlobResult r in results) r.Dispose();
+                }
+            }
+
+            // 2. 模拟极端超宽白丝印（24px）将 X 正中彻底截断为两段（单段均 < MinimumArea），验证断叉碎片聚簇兜底不漏检
+            using (Bitmap severelySplitBoard = new Bitmap(400, 400, System.Drawing.Imaging.PixelFormat.Format24bppRgb))
+            {
+                using (Graphics g = Graphics.FromImage(severelySplitBoard))
+                {
+                    g.Clear(Color.FromArgb(145, 165, 145));
+                    using (Pen xPen = new Pen(Color.FromArgb(15, 18, 15), 18.0f))
+                    {
+                        g.DrawLine(xPen, 100, 80, 290, 320);
+                        g.DrawLine(xPen, 290, 80, 100, 320);
+                    }
+                    using (SolidBrush silkBrush = new SolidBrush(Color.FromArgb(235, 240, 235)))
+                    {
+                        g.FillRectangle(silkBrush, 70, 188, 250, 24);
+                    }
+                }
+
+                HalconBlobParameters recoveryParams = new HalconBlobParameters
+                {
+                    AutoThreshold = false,
+                    DetectDarkForeground = true,
+                    Threshold = 55,
+                    MinimumArea = 6500.0,
+                    MaximumArea = 100000.0,
+                    RectangleFilterEnabled = true,
+                    RectangleFillThreshold = 0.92,
+                    FillDarkHoles = true,
+                    MorphologyRadius = 2,
+                    ClosingRadius = 8,
+                    SmoothEdges = true
+                };
+                List<HalconBlobResult> splitResults = HalconBlobEngine.Analyze(
+                    severelySplitBoard, new[] { roi }, recoveryParams, false, CancellationToken.None);
+                try
+                {
+                    Assert(splitResults.Count == 1 && splitResults[0].HasFinding && !splitResults[0].RejectedAsRectangle,
+                        "Severely split X across 24px silkscreen block must be recovered by fragment clustering.");
+                }
+                finally
+                {
+                    foreach (HalconBlobResult r in splitResults) r.Dispose();
+                }
+            }
+
+            // 3. OK 良板（仅含零散黑过孔小点 + 规整矩形元件）绝不能因桥接或碎片聚簇误报 NG
+            using (Bitmap okBoard = new Bitmap(400, 400, System.Drawing.Imaging.PixelFormat.Format24bppRgb))
+            {
+                using (Graphics g = Graphics.FromImage(okBoard))
+                {
+                    g.Clear(Color.FromArgb(145, 165, 145));
+                    using (SolidBrush darkBrush = new SolidBrush(Color.FromArgb(18, 20, 18)))
+                    {
+                        g.FillRectangle(darkBrush, 80, 80, 90, 110); // 9900px² 规整矩形 IC/标签
+                        for (int i = 0; i < 12; i++)
+                        {
+                            g.FillEllipse(darkBrush, 60 + (i % 4) * 70, 240 + (i / 4) * 40, 8, 8);
+                        }
+                    }
+                }
+
+                HalconBlobParameters okParams = new HalconBlobParameters
+                {
+                    AutoThreshold = false,
+                    DetectDarkForeground = true,
+                    Threshold = 55,
+                    MinimumArea = 6500.0,
+                    MaximumArea = 100000.0,
+                    RectangleFilterEnabled = true,
+                    RectangleFillThreshold = 0.92,
+                    FillDarkHoles = true,
+                    MorphologyRadius = 2,
+                    ClosingRadius = 8,
+                    SmoothEdges = true
+                };
+                List<HalconBlobResult> okResults = HalconBlobEngine.Analyze(
+                    okBoard, new[] { roi }, okParams, false, CancellationToken.None);
+                try
+                {
+                    bool falseAlarm = okResults.Count == 1 && okResults[0].HasFinding && !okResults[0].RejectedAsRectangle;
+                    Assert(!falseAlarm, "OK board with rectangular component and scattered vias must not trigger false NG.");
+                }
+                finally
+                {
+                    foreach (HalconBlobResult r in okResults) r.Dispose();
                 }
             }
         }

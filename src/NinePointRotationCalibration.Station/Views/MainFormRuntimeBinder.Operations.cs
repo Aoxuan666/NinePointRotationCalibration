@@ -870,6 +870,8 @@ namespace NinePointRotationCalibration.Station.Views
             profile.FillDarkHoles = fillEnabled;
             profile.MorphologyRadius = Convert.ToInt32(
                 ReadNumeric("nudMorphologyRadius"), CultureInfo.InvariantCulture);
+            profile.ClosingRadius = Convert.ToInt32(
+                ReadNumeric("nudClosingRadius"), CultureInfo.InvariantCulture);
             profile.FollowTemplateTransform = FindControl<CheckBox>("chkRoiAffineWithTemplate").Checked;
             profile.TemplateMatchingEnabled = _view.TemplateMatchingInput.Checked;
             return profile;
@@ -887,6 +889,7 @@ namespace NinePointRotationCalibration.Station.Views
                 SetNumeric("nudMaximumBlobArea", profile.MaximumBlobArea);
                 SetNumeric("nudRectangularity", profile.RectangleFillThreshold);
                 SetNumeric("nudMorphologyRadius", profile.MorphologyRadius);
+                SetNumeric("nudClosingRadius", profile.ClosingRadius);
                 FindControl<CheckBox>("chkAutoThreshold").Checked = profile.AutoThreshold;
                 FindControl<NumericUpDown>("nudBrightThreshold").Enabled = !profile.AutoThreshold;
                 if (_view.DetectionPolarityInput != null && _view.DetectionPolarityInput.Items.Count >= 2)

@@ -178,7 +178,7 @@ namespace NinePointRotationCalibration.Station.Services
             if (profile == null) return "profile=<null>";
             return string.Format(
                 CultureInfo.InvariantCulture,
-                "tplMatch={0}, followTpl={1}, autoThresh={2}, darkFg={3}, thresh={4}, area=[{5:0.#},{6:0.#}], rectFilter={7}, rectThresh={8:0.###}, fillHoles={9}, fillDarkHoles={10}, morphR={11}",
+                "tplMatch={0}, followTpl={1}, autoThresh={2}, darkFg={3}, thresh={4}, area=[{5:0.#},{6:0.#}], rectFilter={7}, rectThresh={8:0.###}, fillHoles={9}, fillDarkHoles={10}, morphR={11}, closeR={12}",
                 profile.TemplateMatchingEnabled,
                 profile.FollowTemplateTransform,
                 profile.AutoThreshold,
@@ -190,7 +190,8 @@ namespace NinePointRotationCalibration.Station.Services
                 profile.RectangleFillThreshold,
                 profile.FillHoles,
                 profile.FillDarkHoles,
-                profile.MorphologyRadius);
+                profile.MorphologyRadius,
+                profile.ClosingRadius);
         }
 
         public static string FormatTeachingData(TeachingData data)

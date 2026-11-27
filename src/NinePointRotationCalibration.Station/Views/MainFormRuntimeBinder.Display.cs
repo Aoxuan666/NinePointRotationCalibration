@@ -825,12 +825,13 @@ namespace NinePointRotationCalibration.Station.Views
             bool fillEnabled = profile.DetectDarkForeground ? profile.FillDarkHoles : profile.FillHoles;
             return string.Format(
                 CultureInfo.InvariantCulture,
-                "{0}   {1}   {2}   {3}   去噪 {4}px   检出 {5}",
+                "{0}   {1}   {2}   {3}   去噪 {4}px   桥接 {5}px   检出 {6}",
                 binaryEnabled ? "局部二值分割（ROI 外保留原图）" : "原图叠加",
                 profile.DetectDarkForeground ? "白底黑点" : "黑底白点",
                 fillEnabled ? "填孔" : "不填孔",
                 profile.AutoThreshold ? "自动阈值" : "阈值 " + profile.BrightThreshold,
                 profile.MorphologyRadius,
+                profile.ClosingRadius,
                 blobCount);
         }
 
@@ -1043,7 +1044,7 @@ namespace NinePointRotationCalibration.Station.Views
             string modelHash = template == null ? string.Empty : (template.ModelHash ?? string.Empty);
             return string.Format(
                 CultureInfo.InvariantCulture,
-                "{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}|{8}|{9}|{10:0.####}|{11:0.####}|{12:0.####}|{13}|{14}|{15}|{16}|{17}",
+                "{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}|{8}|{9}|{10:0.####}|{11:0.####}|{12:0.####}|{13}|{14}|{15}|{16}|{17}|{18}",
                 generation,
                 overlayGeneration,
                 regionCount,
@@ -1061,6 +1062,7 @@ namespace NinePointRotationCalibration.Station.Views
                 safe.FillHoles ? 1 : 0,
                 safe.FillDarkHoles ? 1 : 0,
                 safe.MorphologyRadius,
+                safe.ClosingRadius,
                 templateRevision + ":" + modelHash);
         }
 

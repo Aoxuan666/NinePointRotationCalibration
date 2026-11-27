@@ -30,6 +30,7 @@ namespace NinePointRotationCalibration.Station.Models
             FillHoles = true;
             FillDarkHoles = true;
             MorphologyRadius = 1;
+            ClosingRadius = 8;
             FollowTemplateTransform = true;
             TemplateMatchingEnabled = true;
         }
@@ -51,6 +52,9 @@ namespace NinePointRotationCalibration.Station.Models
         /// <summary>检测黑色目标（白底黑点/黑叉）时是否填充黑色目标内部空洞。</summary>
         public bool FillDarkHoles { get; set; }
         public int MorphologyRadius { get; set; }
+        /// <summary>形态学闭运算断笔桥接半径（像素），用于连接打叉穿过白丝印/焊盘造成的断裂并平滑边缘凹口。</summary>
+        [field: OptionalField]
+        public int ClosingRadius { get; set; }
 
         // 旧版检测配置文件缺少新增开关字段，在反序列化前先预置安全的生产默认值。
         [OnDeserializing]
@@ -62,6 +66,7 @@ namespace NinePointRotationCalibration.Station.Models
             FillHoles = true;
             FillDarkHoles = true;
             MorphologyRadius = 1;
+            ClosingRadius = 8;
         }
     }
 

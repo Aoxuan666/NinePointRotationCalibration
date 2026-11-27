@@ -29,6 +29,8 @@ namespace NinePointRotationCalibration.Halcon
         {
             FillHoles = true;
             FillDarkHoles = true;
+            ClosingRadius = 8;
+            SmoothEdges = true;
         }
 
         public bool AutoThreshold { get; set; }
@@ -41,7 +43,12 @@ namespace NinePointRotationCalibration.Halcon
         public bool FillHoles { get; set; }
         /// <summary>检测暗目标（黑色叉/黑点）时是否填充黑色目标内部空洞。</summary>
         public bool FillDarkHoles { get; set; }
+        /// <summary>形态学开运算去噪与外凸边缘光滑半径（像素）。</summary>
         public int MorphologyRadius { get; set; }
+        /// <summary>形态学闭运算断笔桥接与内凹边缘光滑半径（像素，可桥接约 2 倍半径的丝印/焊盘断裂）。</summary>
+        public int ClosingRadius { get; set; }
+        /// <summary>是否启用 ROI 局部轻度灰度预平滑与 XLD 亚像素轮廓平滑以消除边缘锯齿。</summary>
+        public bool SmoothEdges { get; set; }
     }
 
     /// <summary>单个 ROI 的 Blob 检测结果及各阶段耗时。</summary>
@@ -190,6 +197,18 @@ namespace NinePointRotationCalibration.Halcon
                 if (input == null || input.ImageBounds.Width <= 0 || input.ImageBounds.Height <= 0)
                     return result;
 
+                int openRadius = Math.Max(0, Math.Min(100, parameters.MorphologyRadius));
+                int closeRadius = Math.Max(0, Math.Min(100, parameters.ClosingRadius));
+                double roiShortHalf = Math.Min(
+                    Math.Max(1.0, input.HalfWidth),
+                    Math.Max(1.0, input.HalfHeight));
+                // 在极小 ROI（如合成单测 36x36）中保护闭运算半径不过度填满整框；正常 20MP PCB ROI（半宽通常 > 120px）不受限。
+                int effectiveCloseRadius = closeRadius > 0
+                    ? Math.Max(1, Math.Min(closeRadius, Math.Max(1, (int)Math.Floor(roiShortHalf * 0.25))))
+                    : 0;
+                double minArea = Math.Max(0.0, parameters.MinimumArea);
+                double maxArea = Math.Max(minArea, parameters.MaximumArea);
+
                 using (HRegion roi = new HRegion())
                 {
                     // PhiDegrees 在行向下屏幕坐标系中顺时针为正，HALCON GenRectangle2 以逆时针为正，需取反。
@@ -211,32 +230,49 @@ namespace NinePointRotationCalibration.Halcon
                         }
 
                         Stopwatch stageWatch = Stopwatch.StartNew();
-                        if (parameters.AutoThreshold)
+                        // 启用边缘平滑且开启去噪或桥接时，仅在 ROI 局部执行 3x3 轻度高斯平滑（保持原图坐标系不变），
+                        // 提前压制高频像素噪点与微弱反光毛刺，大幅减轻二值化边缘锯齿与细微断墨。
+                        bool applyGraySmooth = parameters.SmoothEdges && (openRadius > 0 || effectiveCloseRadius > 0);
+                        HImage smoothedImage = null;
+                        try
                         {
-                            try
+                            HImage thresholdSource = reduced;
+                            if (applyGraySmooth)
                             {
-                                int usedThreshold;
-                                thresholded = reduced.BinaryThreshold(
-                                    "max_separability",
-                                    parameters.DetectDarkForeground ? "dark" : "light",
-                                    out usedThreshold);
-                                result.EffectiveThreshold = Math.Max(0, Math.Min(255, usedThreshold));
+                                smoothedImage = reduced.GaussFilter(3);
+                                thresholdSource = smoothedImage;
                             }
-                            catch (HalconException)
+
+                            if (parameters.AutoThreshold)
                             {
-                                // 纯色或无方差区域可能无法计算自动分割阈值，安全退化为空区域
-                                thresholded = new HRegion();
-                                thresholded.GenEmptyRegion();
-                                result.EffectiveThreshold = Math.Max(0, Math.Min(255, parameters.Threshold));
+                                try
+                                {
+                                    int usedThreshold;
+                                    thresholded = thresholdSource.BinaryThreshold(
+                                        "max_separability",
+                                        parameters.DetectDarkForeground ? "dark" : "light",
+                                        out usedThreshold);
+                                    result.EffectiveThreshold = Math.Max(0, Math.Min(255, usedThreshold));
+                                }
+                                catch (HalconException)
+                                {
+                                    // 纯色或无方差区域可能无法计算自动分割阈值，安全退化为空区域
+                                    thresholded = CreateEmptyRegion();
+                                    result.EffectiveThreshold = Math.Max(0, Math.Min(255, parameters.Threshold));
+                                }
+                            }
+                            else
+                            {
+                                int threshold = Math.Max(0, Math.Min(255, parameters.Threshold));
+                                thresholded = parameters.DetectDarkForeground
+                                    ? thresholdSource.Threshold(0.0, threshold)
+                                    : thresholdSource.Threshold(threshold, 255.0);
+                                result.EffectiveThreshold = threshold;
                             }
                         }
-                        else
+                        finally
                         {
-                            int threshold = Math.Max(0, Math.Min(255, parameters.Threshold));
-                            thresholded = parameters.DetectDarkForeground
-                                ? reduced.Threshold(0.0, threshold)
-                                : reduced.Threshold(threshold, 255.0);
-                            result.EffectiveThreshold = threshold;
+                            if (smoothedImage != null) smoothedImage.Dispose();
                         }
                         stageWatch.Stop();
                         result.ThresholdElapsedMilliseconds = stageWatch.Elapsed.TotalMilliseconds;
@@ -246,10 +282,11 @@ namespace NinePointRotationCalibration.Halcon
                 if (CancellationRequested(cancellationToken, throwOnCancellation))
                     return null;
                 Stopwatch morphologyWatch = Stopwatch.StartNew();
-                int radius = Math.Max(0, Math.Min(100, parameters.MorphologyRadius));
-                morphed = radius > 0
-                    ? thresholded.OpeningCircle((double)radius)
-                    : new HRegion(thresholded);
+                morphed = ApplyMorphology(
+                    thresholded,
+                    openRadius,
+                    effectiveCloseRadius,
+                    minArea);
                 morphologyWatch.Stop();
                 result.MorphologyElapsedMilliseconds = morphologyWatch.Elapsed.TotalMilliseconds;
 
@@ -268,10 +305,9 @@ namespace NinePointRotationCalibration.Halcon
                 Stopwatch componentWatch = Stopwatch.StartNew();
                 connected = filled.Connection();
                 int connectedCount = connected.CountObj();
-                double minArea = Math.Max(0.0, parameters.MinimumArea);
-                double maxArea = Math.Max(minArea, parameters.MaximumArea);
                 bool hasValidCandidate = false;
                 bool rejectedAsRectangle = false;
+                double contourBridgeRadius = 0.0;
 
                 if (connectedCount > 0)
                 {
@@ -308,11 +344,35 @@ namespace NinePointRotationCalibration.Halcon
                                 rejectedAsRectangle = false;
                             }
                         }
-                        else
+                    }
+
+                    // 若单连通域未找到合法非矩形标记（例如白丝印/大焊盘造成超宽断裂把整条叉切成两段，
+                    // 导致每段各自低于最小面积），对邻近的实质性非矩形碎片执行受限距离聚簇恢复，防止坏板漏检。
+                    if ((!hasValidCandidate || rejectedAsRectangle) && effectiveCloseRadius > 0 && connectedCount >= 2)
+                    {
+                        double clusterBridgeRadius;
+                        HRegion recovered = TryRecoverBrokenCrossCluster(
+                            connected,
+                            minArea,
+                            maxArea,
+                            parameters.RectangleFilterEnabled,
+                            parameters.RectangleFillThreshold,
+                            effectiveCloseRadius,
+                            out clusterBridgeRadius);
+                        if (recovered != null)
                         {
-                            // 无满足面积区间的目标时回退到最大连通域供调试界面展示诊断面积，HasFinding 置 false。
-                            selected = SelectSingleLargest(connected);
+                            if (selected != null) selected.Dispose();
+                            selected = recovered;
+                            hasValidCandidate = true;
+                            rejectedAsRectangle = false;
+                            contourBridgeRadius = clusterBridgeRadius;
                         }
+                    }
+
+                    if (selected == null)
+                    {
+                        // 无满足面积区间的目标时回退到最大连通域供调试界面展示诊断面积，HasFinding 置 false。
+                        selected = SelectSingleLargest(connected);
                     }
                 }
 
@@ -338,23 +398,12 @@ namespace NinePointRotationCalibration.Halcon
                     result.HasFinding = hasValidCandidate && area >= minArea && area <= maxArea;
                     if (result.HasFinding)
                     {
-                        using (HXLDCont contours = selected.GenContourRegionXld("border"))
-                        {
-                            List<List<ImagePoint>> segments = HalconContourConverter.Extract(contours);
-                            List<ImagePoint> largest = segments.OrderByDescending(segment => segment.Count).FirstOrDefault();
-                            if (largest != null)
-                            {
-                                result.Contour.AddRange(largest);
-                                // 确保边界轮廓首尾闭合以供绘制。
-                                if (largest.Count > 0)
-                                {
-                                    ImagePoint first = largest[0];
-                                    ImagePoint last = largest[largest.Count - 1];
-                                    if (first.Row != last.Row || first.Column != last.Column)
-                                        result.Contour.Add(first);
-                                }
-                            }
-                        }
+                        List<ImagePoint> smoothContour = ExtractSmoothPrimaryContour(
+                            selected,
+                            parameters.SmoothEdges,
+                            Math.Max(openRadius, effectiveCloseRadius),
+                            contourBridgeRadius);
+                        result.Contour.AddRange(smoothContour);
                     }
                 }
                 componentWatch.Stop();
@@ -389,6 +438,275 @@ namespace NinePointRotationCalibration.Halcon
                 if (thresholded != null) thresholded.Dispose();
                 totalWatch.Stop();
                 result.ElapsedMilliseconds = totalWatch.Elapsed.TotalMilliseconds;
+            }
+        }
+
+        /// <summary>
+        /// 打叉板抗断裂与双侧边缘光滑形态学链路：
+        /// 1. 闭运算前按面积剔除孤立细碎噪点（不腐蚀主笔画细颈，避免把浮动黑点粘连成边缘凸瘤）；
+        /// 2. 圆形闭运算（ClosingCircle）桥接白丝印/焊盘/反光引起的笔画断裂并填平内凹锯齿；
+        /// 3. 圆形开运算（OpeningCircle）在笔画加固后削平外凸毛刺，形成 Close-Open 交替平滑滤波器。
+        /// </summary>
+        private static HRegion ApplyMorphology(
+            HRegion thresholded,
+            int openRadius,
+            int closeRadius,
+            double minArea)
+        {
+            if (thresholded == null || thresholded.CountObj() <= 0)
+                return CreateEmptyRegion();
+
+            double dummyRow, dummyCol;
+            if (thresholded.AreaCenter(out dummyRow, out dummyCol) <= 0)
+                return CreateEmptyRegion();
+
+            // 未启用桥接闭运算时保持纯开运算去噪路径，兼容小圆点/精细斑点调试场景
+            if (closeRadius <= 0)
+            {
+                return openRadius > 0
+                    ? thresholded.OpeningCircle((double)openRadius)
+                    : new HRegion(thresholded);
+            }
+
+            HRegion cleaned = null;
+            HRegion closed = null;
+            try
+            {
+                if (openRadius > 0)
+                {
+                    double speckByRadius = Math.PI * openRadius * openRadius * 2.0;
+                    double speckLimit = minArea > 0.0
+                        ? Math.Min(speckByRadius, minArea * 0.05)
+                        : 0.0;
+                    if (speckLimit >= 2.0)
+                    {
+                        using (HRegion rawConn = thresholded.Connection())
+                        using (HRegion kept = rawConn.SelectShape("area", "and", speckLimit, 1.0e12))
+                        {
+                            cleaned = kept.CountObj() > 0 ? kept.Union1() : CreateEmptyRegion();
+                        }
+                    }
+                    else
+                    {
+                        cleaned = new HRegion(thresholded);
+                    }
+                }
+                else
+                {
+                    cleaned = new HRegion(thresholded);
+                }
+
+                if (cleaned.AreaCenter(out dummyRow, out dummyCol) <= 0)
+                    return CreateEmptyRegion();
+
+                // HALCON 推荐半整数圆半径以获得更对称的离散圆盘结构元素；+0.5 可稳定桥接约 2*closeRadius px 间隙
+                closed = cleaned.ClosingCircle(closeRadius + 0.5);
+                if (openRadius > 0)
+                {
+                    return closed.OpeningCircle(openRadius + 0.5);
+                }
+
+                HRegion result = closed;
+                closed = null;
+                return result;
+            }
+            finally
+            {
+                if (closed != null) closed.Dispose();
+                if (cleaned != null) cleaned.Dispose();
+            }
+        }
+
+        /// <summary>
+        /// 针对宽丝印/大焊盘导致主叉被截成多段（每段各自小于最小面积）的兜底恢复逻辑：
+        /// 仅在非矩形的实质性笔画碎片之间做局部距离聚簇，按未膨胀的真实像素并集核验面积与矩形度，
+        /// 杜绝零散细小过孔/噪点累加或规整矩形标签混入造成误报。
+        /// </summary>
+        private static HRegion TryRecoverBrokenCrossCluster(
+            HRegion connected,
+            double minArea,
+            double maxArea,
+            bool rectangleFilterEnabled,
+            double rectangleFillThreshold,
+            int effectiveCloseRadius,
+            out double displayBridgeRadius)
+        {
+            displayBridgeRadius = 0.0;
+            if (connected == null || connected.CountObj() < 2 || minArea <= 0.0)
+                return null;
+
+            // 仅聚簇严格小于 minArea 的实质性碎片：既排除细小噪点/过孔，也防止已被拒识的大型矩形标签混入合并。
+            double minFragmentArea = Math.Max(40.0, minArea * 0.10);
+            double maxFragmentArea = Math.Max(minFragmentArea, minArea - 1e-3);
+            double rectThreshold = Math.Max(0.0, Math.Min(1.0, rectangleFillThreshold));
+
+            HRegion fragments = null;
+            HRegion fragmentUnion = null;
+            HRegion dilated = null;
+            HRegion mergedDilated = null;
+            HRegion clusters = null;
+            HRegion bestCluster = null;
+            try
+            {
+                fragments = connected.SelectShape("area", "and", minFragmentArea, maxFragmentArea);
+                if (fragments.CountObj() < 2) return null;
+
+                // 单根被截断的直叉臂本身可能是细长条形（局部矩形度偏高），因此先按局部邻近距离聚簇，
+                // 再对合并后的整体簇判定真实面积与整体矩形度（整叉矩形度极低，规整矩形即便被切开整体矩形度仍高）。
+                fragmentUnion = fragments.Union1();
+                double clusterRadius = Math.Min(60.0, Math.Max(effectiveCloseRadius * 3.0, 18.0));
+                dilated = fragments.DilationCircle(clusterRadius + 0.5);
+                mergedDilated = dilated.Union1();
+                clusters = mergedDilated.Connection();
+
+                int clusterCount = clusters.CountObj();
+                double bestArea = -1.0;
+                for (int i = 1; i <= clusterCount; i++)
+                {
+                    using (HRegion clusterMask = clusters.SelectObj(i))
+                    using (HRegion trueCluster = clusterMask.Intersection(fragmentUnion))
+                    {
+                        double row, col;
+                        int trueArea = trueCluster.AreaCenter(out row, out col);
+                        if (trueArea < minArea || trueArea > maxArea) continue;
+
+                        if (rectangleFilterEnabled)
+                        {
+                            using (HTuple rect = trueCluster.Rectangularity())
+                            {
+                                double rectangularity = rect.Length == 0 ? 0.0 : rect[0].D;
+                                if (rectangularity >= rectThreshold) continue;
+                            }
+                        }
+
+                        if (trueArea > bestArea)
+                        {
+                            bestArea = trueArea;
+                            if (bestCluster != null) bestCluster.Dispose();
+                            bestCluster = new HRegion(trueCluster);
+                        }
+                    }
+                }
+
+                if (bestCluster != null)
+                {
+                    displayBridgeRadius = clusterRadius + 1.5;
+                }
+                HRegion output = bestCluster;
+                bestCluster = null;
+                return output;
+            }
+            catch (HalconException)
+            {
+                if (bestCluster != null) bestCluster.Dispose();
+                return null;
+            }
+            finally
+            {
+                if (bestCluster != null) bestCluster.Dispose();
+                if (clusters != null) clusters.Dispose();
+                if (mergedDilated != null) mergedDilated.Dispose();
+                if (dilated != null) dilated.Dispose();
+                if (fragmentUnion != null) fragmentUnion.Dispose();
+                if (fragments != null) fragments.Dispose();
+            }
+        }
+
+        /// <summary>提取目标主外边界并通过 HALCON SmoothContoursXld 消除离散像素阶梯锯齿。</summary>
+        private static List<ImagePoint> ExtractSmoothPrimaryContour(
+            HRegion selected,
+            bool smoothEdges,
+            int smoothHintRadius,
+            double contourBridgeRadius)
+        {
+            List<ImagePoint> output = new List<ImagePoint>();
+            if (selected == null || selected.CountObj() <= 0) return output;
+
+            HRegion contourRegion = null;
+            HXLDCont rawContours = null;
+            HXLDCont longest = null;
+            HXLDCont smoothed = null;
+            try
+            {
+                contourRegion = contourBridgeRadius > 0.0
+                    ? selected.ClosingCircle(contourBridgeRadius)
+                    : new HRegion(selected);
+
+                rawContours = contourRegion.GenContourRegionXld("border");
+                int count = rawContours.CountObj();
+                if (count <= 0) return output;
+
+                int bestIndex = 1;
+                int bestLength = -1;
+                for (int i = 1; i <= count; i++)
+                {
+                    using (HXLDCont candidate = rawContours.SelectObj(i))
+                    {
+                        HTuple rows = null;
+                        HTuple cols = null;
+                        try
+                        {
+                            candidate.GetContourXld(out rows, out cols);
+                            int len = Math.Min(rows.Length, cols.Length);
+                            if (len > bestLength)
+                            {
+                                bestLength = len;
+                                bestIndex = i;
+                            }
+                        }
+                        finally
+                        {
+                            if (rows != null) rows.Dispose();
+                            if (cols != null) cols.Dispose();
+                        }
+                    }
+                }
+
+                if (bestLength < 2) return output;
+                longest = rawContours.SelectObj(bestIndex);
+
+                HXLDCont activeContour = longest;
+                if (smoothEdges && bestLength >= 9)
+                {
+                    // SmoothContoursXld 要求回归点数为 >= 5 的奇数，按形态学尺度自适应选取 9..17
+                    int desired = Math.Max(9, Math.Min(17, (smoothHintRadius * 2 + 5) | 1));
+                    int maxAllowed = bestLength - 2;
+                    if ((maxAllowed & 1) == 0) maxAllowed--;
+                    int smoothPoints = Math.Min(desired, maxAllowed);
+                    if (smoothPoints >= 5)
+                    {
+                        try
+                        {
+                            smoothed = longest.SmoothContoursXld(smoothPoints);
+                            activeContour = smoothed;
+                        }
+                        catch (HOperatorException)
+                        {
+                            activeContour = longest;
+                        }
+                    }
+                }
+
+                List<List<ImagePoint>> segments = HalconContourConverter.Extract(activeContour);
+                List<ImagePoint> largest = segments.OrderByDescending(segment => segment.Count).FirstOrDefault();
+                if (largest != null && largest.Count > 0)
+                {
+                    output.AddRange(largest);
+                    // 确保边界轮廓首尾闭合以供绘制。
+                    ImagePoint first = largest[0];
+                    ImagePoint last = largest[largest.Count - 1];
+                    if (first.Row != last.Row || first.Column != last.Column)
+                        output.Add(first);
+                }
+
+                return output;
+            }
+            finally
+            {
+                if (smoothed != null) smoothed.Dispose();
+                if (longest != null) longest.Dispose();
+                if (rawContours != null) rawContours.Dispose();
+                if (contourRegion != null) contourRegion.Dispose();
             }
         }
 

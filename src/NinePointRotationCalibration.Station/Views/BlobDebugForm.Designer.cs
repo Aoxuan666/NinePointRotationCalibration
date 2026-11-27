@@ -33,6 +33,7 @@ namespace NinePointRotationCalibration.Station.Views
         private NumericUpDown nudMaximumBlobArea;
         private NumericUpDown nudRectangularity;
         private NumericUpDown nudMorphologyRadius;
+        private NumericUpDown nudClosingRadius;
         private ComboBox cmbDetectionPolarity;
         private ComboBox cmbHoleFillMode;
         private CheckBox chkAutoThreshold;
@@ -171,18 +172,20 @@ namespace NinePointRotationCalibration.Station.Views
             nudMaximumBlobArea = CreateNumeric("nudMaximumBlobArea", 100000.0M, 0.0M, 10000000.0M, 0, 100.0M);
             nudRectangularity = CreateNumeric("nudRectangularity", 0.92M, 0.0M, 1.0M, 2, 0.01M);
             nudMorphologyRadius = CreateNumeric("nudMorphologyRadius", 1.0M, 0.0M, 20.0M, 0, 1.0M);
+            nudClosingRadius = CreateNumeric("nudClosingRadius", 8.0M, 0.0M, 30.0M, 0, 1.0M);
             AddField(thresholdFields, 0, "检测极性", cmbDetectionPolarity);
             AddField(thresholdFields, 1, "空洞填充", cmbHoleFillMode);
             AddField(thresholdFields, 2, "手动阈值", nudBrightThreshold);
             AddField(thresholdFields, 3, "最小面积 (px²)", nudMinimumBlobArea);
             AddField(thresholdFields, 4, "最大面积 (px²)", nudMaximumBlobArea);
             AddField(thresholdFields, 5, "矩形度阈值", nudRectangularity);
-            AddField(thresholdFields, 6, "噪点半径 (px)", nudMorphologyRadius);
+            AddField(thresholdFields, 6, "去噪半径 (px)", nudMorphologyRadius);
+            AddField(thresholdFields, 7, "桥接半径 (px)", nudClosingRadius);
             chkAutoThreshold = CreateCheckBox("chkAutoThreshold", "检测 ROI 内自动阈值 (Otsu)");
-            thresholdFields.Controls.Add(chkAutoThreshold, 0, 7);
+            thresholdFields.Controls.Add(chkAutoThreshold, 0, 8);
             thresholdFields.SetColumnSpan(chkAutoThreshold, 2);
             chkRectangleFilter = CreateCheckBox("chkRectangleFilter", "启用矩形标签过滤");
-            thresholdFields.Controls.Add(chkRectangleFilter, 0, 8);
+            thresholdFields.Controls.Add(chkRectangleFilter, 0, 9);
             thresholdFields.SetColumnSpan(chkRectangleFilter, 2);
             Panel thresholdGroup = CreateCard("极性与 Blob 参数", thresholdFields);
 
